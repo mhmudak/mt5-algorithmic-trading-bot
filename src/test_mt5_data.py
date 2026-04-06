@@ -7,6 +7,7 @@ from src.strategy import generate_signal
 from src.risk import calculate_trade_plan
 from src.execution import check_trade_guard
 from src.order_executor import execute_trade
+from src.logger import logger
 from config.settings import (
     SYMBOL,
     TIMEFRAME,
