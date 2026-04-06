@@ -1,31 +1,17 @@
-# MT5 Trading Bot (Python + MetaTrader 5)
+# MT5 Algorithmic Trading Bot
 
-A production-minded MT5 trading bot prototype for intraday trading, currently focused on XAUUSD.  
-This project is being built step by step with a strong emphasis on:
-
-- risk control
-- market-data integrity
-- signal validation
-- execution guards
-- clean architecture
+A production-minded Python trading system connected to MetaTrader 5, built with a modular architecture for market data retrieval, signal generation, risk management, and guarded execution.
 
 ## Current Features
 
-- MT5 Python connection
-- candle data retrieval
+- MT5 terminal connection
+- Market data retrieval from MT5
 - EMA and ATR indicators
-- breakout + retest signal logic
-- trade-plan generation
-- execution guard
-- simulation-ready execution layer
-
-## Tech Stack
-
-- Python 3.12
-- MetaTrader5 Python package
-- pandas
-- VS Code
-- MetaTrader 5 terminal
+- Breakout + retest signal logic
+- Trade-plan generation
+- Execution guard
+- Simulation-ready execution layer
+- Config-driven settings
 
 ## Project Structure
 
