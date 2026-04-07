@@ -15,13 +15,13 @@ def check_trade_guard(signal, tick):
     if EXECUTION_MODE == "LIVE" and not ALLOW_LIVE_TRADING:
         return False, "Live trading is disabled in settings"
 
-    if has_same_direction_position(SYMBOL, signal):
-        return False, f"Same-direction position already exists on {SYMBOL}"
+    # if has_same_direction_position(SYMBOL, signal):
+    #     return False, f"Same-direction position already exists on {SYMBOL}"
 
-    if reached_max_trades_today(SYMBOL):
-        return False, f"Max trades per day reached for {SYMBOL}"
+    # if reached_max_trades_today(SYMBOL):
+    #     return False, f"Max trades per day reached for {SYMBOL}"
 
-    if in_cooldown_period(SYMBOL):
-        return False, f"Cooldown active for {SYMBOL}"
+    # if in_cooldown_period(SYMBOL):
+    #     return False, f"Cooldown active for {SYMBOL}"
 
     return True, "Trade allowed"
