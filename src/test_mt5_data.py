@@ -1,13 +1,21 @@
 from datetime import datetime
+
 import MetaTrader5 as mt5
 import pandas as pd
 
-from src.indicators import calculate_ema, calculate_atr
-from src.strategy import generate_signal
-from src.risk import calculate_trade_plan
 from src.execution import check_trade_guard
+from src.indicators import calculate_ema, calculate_atr
 from src.order_executor import execute_trade
+from src.risk import calculate_trade_plan
+from src.strategy import generate_signal
 from src.logger import logger
+from config.settings import FORCE_SIGNAL
+from src.position_guard import has_same_direction_position
+from src.notifier import send_telegram_message
+from src.daily_guard import reached_max_trades_today
+from src.cooldown_guard import in_cooldown_period
+from src.position_manager import manage_positions
+
 from config.settings import (
     SYMBOL,
     TIMEFRAME,
@@ -20,36 +28,37 @@ from config.settings import (
 
 
 def main() -> None:
-    print("Starting MT5 market data test...")
+    logger.info("🚀 Starting MT5 market data test...")
+    send_telegram_message("🚀 MT5 Bot started")
 
     if not mt5.initialize():
-        print("initialize() failed")
-        print("Error:", mt5.last_error())
+        logger.error("initialize() failed")
+        logger.error(f"Error: {mt5.last_error()}")
         return
 
-    print("MT5 initialized successfully")
+    logger.info("MT5 initialized successfully")
 
     symbol_info = mt5.symbol_info(SYMBOL)
     if symbol_info is None:
-        print(f"Symbol {SYMBOL} not found")
-        print("Error:", mt5.last_error())
+        logger.error(f"Symbol {SYMBOL} not found")
+        logger.error(f"Error: {mt5.last_error()}")
         mt5.shutdown()
         return
 
-    print(f"Symbol found: {SYMBOL}")
+    logger.info(f"Symbol found: {SYMBOL}")
 
     if not symbol_info.visible:
-        print(f"{SYMBOL} is not visible, trying to enable it...")
+        logger.info(f"{SYMBOL} is not visible, trying to enable it...")
         if not mt5.symbol_select(SYMBOL, True):
-            print(f"Failed to select {SYMBOL}")
-            print("Error:", mt5.last_error())
+            logger.error(f"Failed to select {SYMBOL}")
+            logger.error(f"Error: {mt5.last_error()}")
             mt5.shutdown()
             return
 
     rates = mt5.copy_rates_from_pos(SYMBOL, TIMEFRAME, 0, BARS_TO_FETCH)
     if rates is None:
-        print("Failed to fetch rates")
-        print("Error:", mt5.last_error())
+        logger.error("Failed to fetch rates")
+        logger.error(f"Error: {mt5.last_error()}")
         mt5.shutdown()
         return
 
@@ -60,40 +69,43 @@ def main() -> None:
     df["atr_14"] = calculate_atr(df, ATR_PERIOD)
 
     signal = generate_signal(df)
+    
+    
+
+    if FORCE_SIGNAL in ["BUY", "SELL"]:
+        logger.warning(f"⚠ FORCE SIGNAL ACTIVE: {FORCE_SIGNAL}")
+        signal = FORCE_SIGNAL
 
     last = df.iloc[-1]
-    recent_data = df.iloc[-(BREAKOUT_LOOKBACK + 1):-1]
+    recent_data = df.iloc[-(BREAKOUT_LOOKBACK + 1): -1]
     recent_resistance = recent_data["high"].max()
     recent_support = recent_data["low"].min()
 
-    print("\nSignal context:")
-    print(f"Last close: {last['close']}")
-    print(f"EMA: {last['ema_20']}")
-    print(f"ATR: {last['atr_14']}")
-    print(f"Recent resistance: {recent_resistance}")
-    print(f"Recent support: {recent_support}")
-    print(f"Breakout buffer: {BREAKOUT_BUFFER}")
+    logger.info("Signal context:")
+    logger.info(f"Last close: {last['close']}")
+    logger.info(f"EMA: {last['ema_20']}")
+    logger.info(f"ATR: {last['atr_14']}")
+    logger.info(f"Resistance: {recent_resistance}")
+    logger.info(f"Support: {recent_support}")
+    logger.info(f"Buffer: {BREAKOUT_BUFFER}")
 
-    print("\nGenerated signal:")
-    print(signal)
+    logger.info(f"Generated signal: {signal}")
+    send_telegram_message(f"📊 Signal: {signal}")
 
-    print("\nLast candles:")
-    print(df[["time", "open", "high", "low", "close", "tick_volume"]].tail())
-
-    print("\nWith indicators:")
-    print(df[["time", "close", "ema_20", "atr_14"]].tail())
+    logger.info("Last candles:")
+    logger.info(df[["time", "open", "high", "low", "close"]].tail())
 
     tick = mt5.symbol_info_tick(SYMBOL)
     if tick is None:
-        print("Failed to fetch current tick")
-        print("Error:", mt5.last_error())
+        logger.error("Failed to fetch current tick")
+        logger.error(f"Error: {mt5.last_error()}")
         mt5.shutdown()
         return
 
     account_info = mt5.account_info()
     if account_info is None:
-        print("Failed to fetch account info")
-        print("Error:", mt5.last_error())
+        logger.error("Failed to fetch account info")
+        logger.error(f"Error: {mt5.last_error()}")
         mt5.shutdown()
         return
 
@@ -105,30 +117,53 @@ def main() -> None:
     )
 
     trade_allowed, guard_reason = check_trade_guard(signal, tick)
+    
+    if trade_allowed and has_same_direction_position(SYMBOL, signal):
+        trade_allowed = False
+        guard_reason = f"Same-direction position already exists on {SYMBOL}"
+        
+    if trade_allowed and reached_max_trades_today(SYMBOL):
+        trade_allowed = False
+        guard_reason = f"Max trades per day reached for {SYMBOL}"
+        
+    if trade_allowed and in_cooldown_period(SYMBOL):
+        trade_allowed = False
+        guard_reason = f"Cooldown active for {SYMBOL}"
 
     spread = tick.ask - tick.bid
 
-    print("\nCurrent tick:")
-    print(f"Bid: {tick.bid}")
-    print(f"Ask: {tick.ask}")
-    print(f"Spread: {spread}")
-    print(f"Time: {datetime.fromtimestamp(tick.time)}")
+    logger.info("Current tick:")
+    logger.info(f"Bid: {tick.bid}")
+    logger.info(f"Ask: {tick.ask}")
+    logger.info(f"Spread: {spread}")
+    logger.info(f"Time: {datetime.fromtimestamp(tick.time)}")
 
-    print("\nTrade plan:")
     if trade_plan is None:
-        print("No trade plan generated (signal is NO_TRADE)")
+        logger.info("No trade plan generated (NO_TRADE)")
     else:
+        logger.info("Trade plan:")
         for key, value in trade_plan.items():
-            print(f"{key}: {value}")
+            logger.info(f"{key}: {value}")
 
-    print("\nTrade guard:")
-    print(f"Allowed: {trade_allowed}")
-    print(f"Reason: {guard_reason}")
+    logger.info(f"Trade allowed: {trade_allowed}")
+    logger.info(f"Guard reason: {guard_reason}")
+
     if trade_allowed and trade_plan is not None:
+        logger.info("🔥 Executing trade...")
+        send_telegram_message(
+            f"🔥 TRADE EXECUTION\n"
+            f"Type: {signal}\n"
+            f"Entry: {trade_plan['entry_price']}\n"
+            f"SL: {trade_plan['stop_loss']}\n"
+            f"TP: {trade_plan['take_profit']}\n"
+            f"Lot: {trade_plan['lot']}"
+        )
         execute_trade(signal, trade_plan, SYMBOL)
 
+    manage_positions(SYMBOL)
+
     mt5.shutdown()
-    print("\nMT5 data test completed successfully")
+    logger.info("✅ MT5 data test completed successfully")
 
 
 if __name__ == "__main__":
