@@ -1,41 +1,47 @@
 import MetaTrader5 as mt5
 
+from src.logger import logger
+
 
 def manage_positions(symbol: str):
     positions = mt5.positions_get(symbol=symbol)
 
     if positions is None:
-        print("[MANAGER] No positions")
+        logger.info("[MANAGER] No positions returned")
+        return
+
+    if len(positions) == 0:
+        logger.info(f"[MANAGER] No open positions on {symbol}")
         return
 
     tick = mt5.symbol_info_tick(symbol)
     if tick is None:
-        print("[MANAGER] No tick data")
+        logger.error("[MANAGER] No tick data")
         return
 
     for position in positions:
-        print(f"[MANAGER] Checking position {position.ticket}")
+        logger.info(f"[MANAGER] Checking position {position.ticket}")
 
-        entry = position.price_open
-        sl = position.sl
+        entry_price = position.price_open
+        current_sl = position.sl
 
         if position.type == mt5.POSITION_TYPE_BUY:
-            price_current = tick.bid
+            current_price = tick.bid
         else:
-            price_current = tick.ask
+            current_price = tick.ask
 
         # Example: move to breakeven after small profit
-        profit_distance = abs(price_current - entry)
+        profit_distance = abs(current_price - entry_price)
 
         if profit_distance > 5:  # adjust later
-            new_sl = entry
+            new_sl = entry_price
 
             if position.type == mt5.POSITION_TYPE_BUY:
-                if sl < new_sl:
+                if current_sl < new_sl:
                     modify_sl(position, new_sl)
 
             elif position.type == mt5.POSITION_TYPE_SELL:
-                if sl == 0 or sl > new_sl:
+                if current_sl == 0 or current_sl > new_sl:
                     modify_sl(position, new_sl)
 
 
@@ -43,17 +49,17 @@ def modify_sl(position, new_sl):
     request = {
         "action": mt5.TRADE_ACTION_SLTP,
         "position": position.ticket,
-        "sl": new_sl,
+        "sl": round(new_sl, 2),
         "tp": position.tp,
     }
 
     result = mt5.order_send(request)
 
     if result is None:
-        print(f"[MANAGER] Failed to modify SL: {mt5.last_error()}")
+        logger.error(f"[MANAGER] Failed to modify SL: {mt5.last_error()}")
         return
 
     if result.retcode == mt5.TRADE_RETCODE_DONE:
-        print(f"[MANAGER] SL moved to BE for {position.ticket}")
+        logger.info(f"[MANAGER] SL moved to BE for {position.ticket}")
     else:
-        print(f"[MANAGER] Failed to modify SL: {result}")
+        logger.error(f"[MANAGER] Failed to modify SL: {result}")

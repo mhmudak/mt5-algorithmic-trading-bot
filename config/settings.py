@@ -52,3 +52,12 @@ COOLDOWN_MINUTES = 1
 
 MAX_SPREAD = 0.5      # adjust later (gold typical ~0.1–0.3)
 MAX_SLIPPAGE = 0.3    # max acceptable difference
+
+# =========================
+# Position Management
+# =========================
+ENABLE_BREAK_EVEN = True
+BREAK_EVEN_TRIGGER = 5.0
+
+ENABLE_TRAILING_STOP = True
+TRAILING_STOP_DISTANCE = 3.0
