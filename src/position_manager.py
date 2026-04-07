@@ -1,6 +1,12 @@
 import MetaTrader5 as mt5
 
 from src.logger import logger
+from config.settings import (
+    ENABLE_BREAK_EVEN,
+    BREAK_EVEN_TRIGGER,
+    ENABLE_TRAILING_STOP,
+    TRAILING_STOP_DISTANCE,
+)
 
 
 def manage_positions(symbol: str):
@@ -24,33 +30,43 @@ def manage_positions(symbol: str):
 
         entry_price = position.price_open
         current_sl = position.sl
+        current_tp = position.tp
 
         if position.type == mt5.POSITION_TYPE_BUY:
             current_price = tick.bid
-        else:
+            profit_distance = current_price - entry_price
+
+            if ENABLE_BREAK_EVEN and profit_distance >= BREAK_EVEN_TRIGGER:
+                breakeven_sl = entry_price
+                if current_sl == 0 or current_sl < breakeven_sl:
+                    modify_sl(position, breakeven_sl, current_tp, reason="Break-even")
+
+            if ENABLE_TRAILING_STOP and profit_distance >= BREAK_EVEN_TRIGGER:
+                trailing_sl = current_price - TRAILING_STOP_DISTANCE
+                if trailing_sl > entry_price and trailing_sl > current_sl:
+                    modify_sl(position, trailing_sl, current_tp, reason="Trailing stop")
+
+        elif position.type == mt5.POSITION_TYPE_SELL:
             current_price = tick.ask
+            profit_distance = entry_price - current_price
 
-        # Example: move to breakeven after small profit
-        profit_distance = abs(current_price - entry_price)
+            if ENABLE_BREAK_EVEN and profit_distance >= BREAK_EVEN_TRIGGER:
+                breakeven_sl = entry_price
+                if current_sl == 0 or current_sl > breakeven_sl:
+                    modify_sl(position, breakeven_sl, current_tp, reason="Break-even")
 
-        if profit_distance > 5:  # adjust later
-            new_sl = entry_price
-
-            if position.type == mt5.POSITION_TYPE_BUY:
-                if current_sl < new_sl:
-                    modify_sl(position, new_sl)
-
-            elif position.type == mt5.POSITION_TYPE_SELL:
-                if current_sl == 0 or current_sl > new_sl:
-                    modify_sl(position, new_sl)
+            if ENABLE_TRAILING_STOP and profit_distance >= BREAK_EVEN_TRIGGER:
+                trailing_sl = current_price + TRAILING_STOP_DISTANCE
+                if trailing_sl < entry_price and (current_sl == 0 or trailing_sl < current_sl):
+                    modify_sl(position, trailing_sl, current_tp, reason="Trailing stop")
 
 
-def modify_sl(position, new_sl):
+def modify_sl(position, new_sl, tp, reason="SL update"):
     request = {
         "action": mt5.TRADE_ACTION_SLTP,
         "position": position.ticket,
         "sl": round(new_sl, 2),
-        "tp": position.tp,
+        "tp": tp,
     }
 
     result = mt5.order_send(request)
@@ -60,6 +76,9 @@ def modify_sl(position, new_sl):
         return
 
     if result.retcode == mt5.TRADE_RETCODE_DONE:
-        logger.info(f"[MANAGER] SL moved to BE for {position.ticket}")
+        logger.info(
+            f"[MANAGER] {reason} applied | "
+            f"ticket={position.ticket} new_sl={round(new_sl, 2)}"
+        )
     else:
         logger.error(f"[MANAGER] Failed to modify SL: {result}")

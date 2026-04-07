@@ -46,7 +46,7 @@ TELEGRAM_ENABLED = os.getenv("TELEGRAM_ENABLED", "False").lower() == "true"
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-FORCE_SIGNAL = "BUY"  # "BUY", "SELL", or None
+FORCE_SIGNAL = "SELL"  # "BUY", "SELL", or None
 
 COOLDOWN_MINUTES = 1
 
@@ -57,7 +57,7 @@ MAX_SLIPPAGE = 0.3    # max acceptable difference
 # Position Management
 # =========================
 ENABLE_BREAK_EVEN = True
-BREAK_EVEN_TRIGGER = 5.0
+BREAK_EVEN_TRIGGER = 0.2
 
 ENABLE_TRAILING_STOP = True
-TRAILING_STOP_DISTANCE = 3.0
+TRAILING_STOP_DISTANCE = 0.5
