@@ -12,6 +12,7 @@ from src.order_executor import execute_trade
 from src.position_manager import manage_positions
 from src.risk import calculate_trade_plan
 from src.strategy import generate_signal
+from src.trade_tracker import update_trade_lifecycle
 
 from config.settings import (
     SYMBOL,
@@ -56,11 +57,15 @@ def process_cycle(last_processed_candle_time):
         logger.error(f"Failed to fetch account info: {mt5.last_error()}")
         return last_processed_candle_time
 
-    # Always manage open positions every cycle
+    # Always manage existing positions and update lifecycle every cycle
     manage_positions(SYMBOL)
+    update_trade_lifecycle(SYMBOL)
 
-    # Only evaluate a new entry once per new candle
-    if last_processed_candle_time is not None and current_candle_time == last_processed_candle_time:
+    # Only evaluate new entries once per new candle
+    if (
+        last_processed_candle_time is not None
+        and current_candle_time == last_processed_candle_time
+    ):
         logger.info(f"No new candle yet. Current candle: {current_candle_time}")
         return last_processed_candle_time
 

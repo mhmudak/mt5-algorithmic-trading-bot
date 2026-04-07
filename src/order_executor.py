@@ -1,6 +1,8 @@
 import MetaTrader5 as mt5
+
 from config.settings import EXECUTION_MODE, MAX_SLIPPAGE
 from src.notifier import send_telegram_message
+from src.trade_tracker import register_executed_trade
 
 
 def execute_trade(signal, trade_plan, symbol):
@@ -71,6 +73,8 @@ def execute_trade(signal, trade_plan, symbol):
             )
 
         print("Order result:", result)
+
+        register_executed_trade(symbol, signal, trade_plan, result)
 
         send_telegram_message(
             f"✅ *Trade Executed*\n"
