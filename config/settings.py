@@ -1,4 +1,8 @@
+import os
 import MetaTrader5 as mt5
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # =========================
 # Market / Data Settings
@@ -38,9 +42,9 @@ EXECUTION_MODE = "LIVE"  # SIMULATION or LIVE
 ALLOW_LIVE_TRADING = True
 ENABLE_TELEGRAM_ALERTS = False
 
-TELEGRAM_ENABLED = True
-TELEGRAM_TOKEN = "8605584249:AAHdSnvR9TivRGTX3qbQi4vTtKPblNh5nMo"
-TELEGRAM_CHAT_ID = "781843365"
+TELEGRAM_ENABLED = os.getenv("TELEGRAM_ENABLED", "False").lower() == "true"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 FORCE_SIGNAL = "SELL"  # "BUY", "SELL", or None
 
