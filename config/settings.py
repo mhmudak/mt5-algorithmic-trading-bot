@@ -25,13 +25,19 @@ BREAKOUT_BUFFER = 0.20
 # Execution / Risk Settings
 # =========================
 POSITION_MODE = "fixed"   # "fixed" or "risk"
-FIXED_LOT = 0.01
+FIXED_LOT = 0.03
 RISK_PER_TRADE_PCT = 0.25
+
+# =========================
+# Strategy / Risk Settings
+# =========================
+STOP_BUFFER = 4.0
+USE_STRUCTURE_STOP = True
 
 STOP_LOSS_ATR_MULTIPLIER = 1.5
 TAKE_PROFIT_R_MULTIPLIER = 2.0
 
-MAX_TRADES_PER_DAY = 30
+MAX_TRADES_PER_DAY = 250
 MAX_ALLOWED_SPREAD = 0.50
 
 EXECUTION_MODE = "LIVE"  # SIMULATION or LIVE
@@ -56,8 +62,20 @@ MAX_SLIPPAGE = 0.3    # max acceptable difference
 # =========================
 # Position Management
 # =========================
+# ENABLE_BREAK_EVEN = True
+# BREAK_EVEN_TRIGGER = 0.2
+
+# ENABLE_TRAILING_STOP = True
+# TRAILING_STOP_DISTANCE = 0.4
+
+
+
+# =========================
+# Position Management
+# =========================
 ENABLE_BREAK_EVEN = True
-BREAK_EVEN_TRIGGER = 0.2
+BREAK_EVEN_R = 0.5
 
 ENABLE_TRAILING_STOP = True
-TRAILING_STOP_DISTANCE = 0.5
+TRAILING_START_R = 1.0
+TRAILING_STOP_R = 0.5
