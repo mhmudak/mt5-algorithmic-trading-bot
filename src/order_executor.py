@@ -1,5 +1,6 @@
 import MetaTrader5 as mt5
 from config.settings import EXECUTION_MODE, MAX_SLIPPAGE
+from src.notifier import send_telegram_message
 
 
 def execute_trade(signal, trade_plan, symbol):
@@ -8,6 +9,16 @@ def execute_trade(signal, trade_plan, symbol):
         print(f"Would execute {signal} trade:")
         for key, value in trade_plan.items():
             print(f"{key}: {value}")
+
+        send_telegram_message(
+            f"🧪 *Simulation Trade*\n"
+            f"Symbol: {symbol}\n"
+            f"Signal: {signal}\n"
+            f"Entry: {trade_plan['entry_price']}\n"
+            f"SL: {trade_plan['stop_loss']}\n"
+            f"TP: {trade_plan['take_profit']}\n"
+            f"Lot: {trade_plan['lot']}"
+        )
         return True
 
     if EXECUTION_MODE == "LIVE":
@@ -29,16 +40,19 @@ def execute_trade(signal, trade_plan, symbol):
         result = mt5.order_send(request)
 
         if result is None:
-            print("Order failed:", mt5.last_error())
+            error_message = f"❌ Order failed: {mt5.last_error()}"
+            print(error_message)
+            send_telegram_message(error_message)
             return False
 
         if result.retcode != mt5.TRADE_RETCODE_DONE:
-            print("Order failed:", result)
+            error_message = f"❌ Order rejected: {result}"
+            print(error_message)
+            send_telegram_message(error_message)
             return False
 
         executed_price = result.price
         expected_price = trade_plan["entry_price"]
-
         slippage = abs(executed_price - expected_price)
 
         print(f"[EXECUTION] Expected: {expected_price}")
@@ -47,8 +61,29 @@ def execute_trade(signal, trade_plan, symbol):
 
         if slippage > MAX_SLIPPAGE:
             print("[WARNING] High slippage detected!")
+            send_telegram_message(
+                f"⚠️ *High Slippage Detected*\n"
+                f"Symbol: {symbol}\n"
+                f"Signal: {signal}\n"
+                f"Expected: {expected_price}\n"
+                f"Executed: {executed_price}\n"
+                f"Slippage: {slippage}"
+            )
 
         print("Order result:", result)
+
+        send_telegram_message(
+            f"✅ *Trade Executed*\n"
+            f"Symbol: {symbol}\n"
+            f"Signal: {signal}\n"
+            f"Expected: {expected_price}\n"
+            f"Executed: {executed_price}\n"
+            f"SL: {trade_plan['stop_loss']}\n"
+            f"TP: {trade_plan['take_profit']}\n"
+            f"Lot: {trade_plan['lot']}\n"
+            f"Slippage: {slippage}"
+        )
+
         return True
 
     return False

@@ -46,7 +46,7 @@ TELEGRAM_ENABLED = os.getenv("TELEGRAM_ENABLED", "False").lower() == "true"
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-FORCE_SIGNAL = "SELL"  # "BUY", "SELL", or None
+FORCE_SIGNAL = "BUY"  # "BUY", "SELL", or None
 
 COOLDOWN_MINUTES = 1
 

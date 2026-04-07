@@ -10,10 +10,7 @@ from src.risk import calculate_trade_plan
 from src.strategy import generate_signal
 from src.logger import logger
 from config.settings import FORCE_SIGNAL
-from src.position_guard import has_same_direction_position
 from src.notifier import send_telegram_message
-from src.daily_guard import reached_max_trades_today
-from src.cooldown_guard import in_cooldown_period
 from src.position_manager import manage_positions
 
 from config.settings import (
@@ -115,21 +112,11 @@ def main() -> None:
         tick=tick,
         account_balance=account_info.balance,
     )
+    
+    manage_positions(SYMBOL)
 
     trade_allowed, guard_reason = check_trade_guard(signal, tick)
     
-    if trade_allowed and has_same_direction_position(SYMBOL, signal):
-        trade_allowed = False
-        guard_reason = f"Same-direction position already exists on {SYMBOL}"
-        
-    if trade_allowed and reached_max_trades_today(SYMBOL):
-        trade_allowed = False
-        guard_reason = f"Max trades per day reached for {SYMBOL}"
-        
-    if trade_allowed and in_cooldown_period(SYMBOL):
-        trade_allowed = False
-        guard_reason = f"Cooldown active for {SYMBOL}"
-
     spread = tick.ask - tick.bid
 
     logger.info("Current tick:")
@@ -148,6 +135,14 @@ def main() -> None:
     logger.info(f"Trade allowed: {trade_allowed}")
     logger.info(f"Guard reason: {guard_reason}")
 
+    if not trade_allowed:
+        send_telegram_message(
+            f"⛔ *Trade Blocked*\n"
+            f"Symbol: {SYMBOL}\n"
+            f"Signal: {signal}\n"
+            f"Reason: {guard_reason}"
+        )
+
     if trade_allowed and trade_plan is not None:
         logger.info("🔥 Executing trade...")
         send_telegram_message(
@@ -159,8 +154,6 @@ def main() -> None:
             f"Lot: {trade_plan['lot']}"
         )
         execute_trade(signal, trade_plan, SYMBOL)
-
-    manage_positions(SYMBOL)
 
     mt5.shutdown()
     logger.info("✅ MT5 data test completed successfully")
