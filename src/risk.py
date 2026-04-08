@@ -2,8 +2,11 @@ from config.settings import (
     POSITION_MODE,
     FIXED_LOT,
     RISK_PER_TRADE_PCT,
-    STOP_LOSS_ATR_MULTIPLIER,
     TAKE_PROFIT_R_MULTIPLIER,
+    BREAKOUT_LOOKBACK,
+    BREAKOUT_BUFFER,
+    STOP_BUFFER,
+    USE_STRUCTURE_STOP,
 )
 
 
@@ -15,20 +18,37 @@ def calculate_trade_plan(df, signal, tick, account_balance):
     atr = last["atr_14"]
 
     entry_price = tick.ask if signal == "BUY" else tick.bid
-    stop_distance = atr * STOP_LOSS_ATR_MULTIPLIER
+
+    recent_data = df.iloc[-(BREAKOUT_LOOKBACK + 1):-1]
+    recent_resistance = recent_data["high"].max()
+    recent_support = recent_data["low"].min()
+
+    if USE_STRUCTURE_STOP:
+        if signal == "BUY":
+            stop_loss = recent_support - STOP_BUFFER
+        else:
+            stop_loss = recent_resistance + STOP_BUFFER
+    else:
+        # fallback to ATR-style stop if needed later
+        if signal == "BUY":
+            stop_loss = entry_price - atr
+        else:
+            stop_loss = entry_price + atr
+
+    stop_distance = abs(entry_price - stop_loss)
+
+    if stop_distance <= 0:
+        return None
 
     if signal == "BUY":
-        stop_loss = entry_price - stop_distance
         take_profit = entry_price + (stop_distance * TAKE_PROFIT_R_MULTIPLIER)
     else:
-        stop_loss = entry_price + stop_distance
         take_profit = entry_price - (stop_distance * TAKE_PROFIT_R_MULTIPLIER)
 
     if POSITION_MODE == "fixed":
         lot = FIXED_LOT
     else:
         # Placeholder for later true risk-based sizing
-        # For now, keep simple fallback
         lot = FIXED_LOT
 
     return {
@@ -41,4 +61,6 @@ def calculate_trade_plan(df, signal, tick, account_balance):
         "risk_mode": POSITION_MODE,
         "risk_pct": RISK_PER_TRADE_PCT,
         "account_balance": account_balance,
+        "recent_resistance": round(recent_resistance, 2),
+        "recent_support": round(recent_support, 2),
     }

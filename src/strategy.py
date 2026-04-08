@@ -26,8 +26,8 @@ def generate_signal(df):
     if distance > atr:
         return "NO_TRADE"
 
-    # 3. Recent levels
-    recent_data = df.iloc[-(BREAKOUT_LOOKBACK + 1):-1]
+    # 3. Recent levels (exclude prev candle itself)
+    recent_data = df.iloc[-(BREAKOUT_LOOKBACK + 2):-2]
     resistance = recent_data["high"].max()
     support = recent_data["low"].min()
 

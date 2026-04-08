@@ -1,30 +1,37 @@
 import MetaTrader5 as mt5
 
+from src.logger import logger
 
-def has_same_direction_position(symbol: str, signal: str) -> bool:
+
+def count_same_direction_positions(symbol: str, signal: str) -> int:
     positions = mt5.positions_get(symbol=symbol)
 
     if positions is None:
-        print(f"[POSITION GUARD] No positions returned for {symbol}")
-        return False
+        logger.info(f"[POSITION GUARD] No positions returned for {symbol}")
+        return 0
 
     if len(positions) == 0:
-        print(f"[POSITION GUARD] No open positions on {symbol}")
-        return False
+        logger.info(f"[POSITION GUARD] No open positions on {symbol}")
+        return 0
 
-    print(f"[POSITION GUARD] Found {len(positions)} open position(s) on {symbol}")
+    count = 0
 
     for position in positions:
         direction = "BUY" if position.type == mt5.POSITION_TYPE_BUY else "SELL"
-        print(
+
+        logger.info(
             f"[POSITION GUARD] ticket={position.ticket} "
             f"direction={direction} volume={position.volume} open_price={position.price_open}"
         )
 
-        if signal == "BUY" and position.type == mt5.POSITION_TYPE_BUY:
-            return True
+        if direction == signal:
+            count += 1
 
-        if signal == "SELL" and position.type == mt5.POSITION_TYPE_SELL:
-            return True
+    logger.info(
+        f"[POSITION GUARD] Same-direction count for {signal} on {symbol}: {count}"
+    )
+    return count
 
-    return False
+
+def has_same_direction_position(symbol: str, signal: str) -> bool:
+    return count_same_direction_positions(symbol, signal) > 0
