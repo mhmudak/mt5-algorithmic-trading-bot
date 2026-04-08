@@ -12,7 +12,8 @@ from src.order_executor import execute_trade
 from src.position_manager import manage_positions
 from src.risk import calculate_trade_plan
 from src.strategy import generate_signal
-from src.trade_tracker import update_trade_lifecycle
+from src.trade_tracker import update_trade_lifecycle, sync_open_positions
+from src.health_monitor import send_heartbeat, send_critical_alert
 
 from config.settings import (
     SYMBOL,
@@ -56,6 +57,9 @@ def process_cycle(last_processed_candle_time):
     if account_info is None:
         logger.error(f"Failed to fetch account info: {mt5.last_error()}")
         return last_processed_candle_time
+
+    # Sync manual / pre-existing positions first
+    sync_open_positions(SYMBOL)
 
     # Always manage existing positions and update lifecycle every cycle
     manage_positions(SYMBOL)
@@ -117,13 +121,14 @@ def process_cycle(last_processed_candle_time):
     logger.info(f"Guard reason: {guard_reason}")
 
     if not trade_allowed:
-        send_telegram_message(
-            f"⛔ Trade Blocked\n"
-            f"Symbol: {SYMBOL}\n"
-            f"Signal: {signal}\n"
-            f"Reason: {guard_reason}"
-        )
-        return current_candle_time
+        if signal in ["BUY", "SELL"]:
+            send_telegram_message(
+                f"⛔ Trade Blocked\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Signal: {signal}\n"
+                f"Reason: {guard_reason}"
+            )
+            return current_candle_time
 
     if trade_plan is not None:
         logger.info("🔥 Executing trade...")
@@ -159,9 +164,10 @@ def main():
         while True:
             try:
                 last_processed_candle_time = process_cycle(last_processed_candle_time)
+                send_heartbeat(SYMBOL)
             except Exception as e:
                 logger.exception(f"Loop cycle failed: {e}")
-                send_telegram_message(f"❌ Loop cycle failed: {e}")
+                send_critical_alert(str(e))
 
             time.sleep(10)
 
