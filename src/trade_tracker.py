@@ -81,6 +81,7 @@ def _build_trade_record(
     order_id,
     imported_manually=False,
     setup_score=0,
+    strategy_name="UNKNOWN",
 ):
     return {
         "position_id": str(position_id),
@@ -108,6 +109,7 @@ def _build_trade_record(
         "reached_levels": {str(level): False for level in TRACKED_LEVELS},
         "final_result": None,
         "close_reason": None,
+        "strategy": strategy_name,
     }
 
 
@@ -152,6 +154,7 @@ def register_executed_trade(symbol, signal, trade_plan, result):
         order_id=result.order,
         imported_manually=False,
         setup_score=trade_plan.get("score", 0),
+        strategy_name=trade_plan.get("strategy", "UNKNOWN"),
     )
 
     save_trades(trades)

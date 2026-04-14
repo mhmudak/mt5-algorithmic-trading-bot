@@ -110,14 +110,46 @@ def process_cycle(last_processed_candle_time):
     # =========================
     # SIGNAL GENERATION
     # =========================
-    strategy_output = generate_signal(df)
+    from src.strategies.strategy_fast import generate_signal as fast_signal
+    from src.strategies.strategy_sniper_v2 import generate_signal as sniper_signal
+    from src.strategies.strategy_strict import generate_signal as strict_signal
 
-    if isinstance(strategy_output, dict):
-        signal = strategy_output.get("signal", "NO_TRADE")
-        score = strategy_output.get("score", 0)
-    else:
-        signal = strategy_output
+    signals = []
+
+    for strat in [strict_signal, sniper_signal, fast_signal]:
+        result = strat(df)
+
+        if result and result["signal"] in ["BUY", "SELL"]:
+            signals.append(result)
+
+    # =========================
+    # SIGNAL SELECTION (SMART)
+    # =========================
+    if not signals:
+        signal = "NO_TRADE"
         score = 0
+        strategy_name = None
+    else:
+        strict = [s for s in signals if s["strategy"] == "STRICT"]
+        sniper = [s for s in signals if s["strategy"] == "SNIPER_V2"]
+
+        if strict:
+            best = strict[0]
+        elif sniper:
+            best = sniper[0]
+        else:
+            best = signals[0]
+
+        signal = best["signal"]
+        score = best["score"]
+        strategy_name = best["strategy"]
+
+        send_telegram_message(
+            f"📡 Signal Detected\n"
+            f"Strategy: {strategy_name}\n"
+            f"Signal: {signal}\n"
+            f"Score: {score}"
+        )
 
     # =========================
     # BASIC SCORE FILTER (ANTI-FAKE)
@@ -216,6 +248,7 @@ def process_cycle(last_processed_candle_time):
 
     if trade_plan is not None:
         trade_plan["score"] = score
+        trade_plan["strategy"] = strategy_name
 
     trade_allowed, guard_reason = check_trade_guard(signal, tick)
 
