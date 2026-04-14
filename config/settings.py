@@ -16,8 +16,8 @@ BARS_TO_FETCH = 100
 # =========================
 EMA_PERIOD = 20
 ATR_PERIOD = 14
-ATR_MIN = 5.0
-ATR_MAX = 50.0
+ATR_MIN = 2.0
+ATR_MAX = 40.0
 BREAKOUT_LOOKBACK = 10
 BREAKOUT_BUFFER = 0.20
 
@@ -39,11 +39,17 @@ TAKE_PROFIT_R_MULTIPLIER = 1.5
 # =========================
 # Trading Limits
 # =========================
-MAX_TRADES_PER_DAY = 250
-MAX_ALLOWED_SPREAD = 0.50
+MAX_TRADES_PER_DAY = 500
+# MAX_ALLOWED_SPREAD = 0.50
 MAX_SPREAD = 0.5
 MAX_SLIPPAGE = 0.3
 COOLDOWN_MINUTES = 1
+
+# =========================
+# Cooldown After SL Hit
+# =========================
+ENABLE_COOLDOWN_AFTER_SL = True
+COOLDOWN_AFTER_SL_MINUTES = 5
 
 # =========================
 # Same Direction Entries
@@ -57,7 +63,7 @@ MAX_SAME_DIRECTION_TRADES = 5  # main + extras = total max open same-side trades
 EXECUTION_MODE = "LIVE"  # SIMULATION or LIVE
 ALLOW_LIVE_TRADING = True
 ENABLE_TELEGRAM_ALERTS = False
-FORCE_SIGNAL = None  # "BUY", "SELL", or None
+FORCE_SIGNAL = None  # "BUY", "SELL", or None or BOTH
 
 # =========================
 # Telegram
@@ -71,7 +77,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 # =========================
 ENABLE_MAIN_STAGE_MANAGEMENT = True
 
-MAIN_STAGE_1_TRIGGER_PRICE = 7.5
+MAIN_STAGE_1_TRIGGER_PRICE = 6.5
 MAIN_STAGE_1_CLOSE_PCT = 0.25
 
 MAIN_EARLY_LOCK_TRIGGER_PRICE = 12.0
@@ -101,3 +107,46 @@ EXTRA_ENTRY_TAKE_PROFIT_PRICE = 8.0
 ENABLE_WORST_EXTRA_LOCK = True
 WORST_EXTRA_LOCK_TRIGGER_PRICE = 5.0
 WORST_EXTRA_LOCK_PROFIT_PRICE = 3.0
+
+# =========================
+# Manual Trades Aggressive Trailing
+# =========================
+ENABLE_MANUAL_TRAILING = False
+MANUAL_TRAILING_START_PRICE = 0.35
+MANUAL_TRAILING_DISTANCE_PRICE = 0.2
+
+# =========================
+# Global Risk Kill Switch
+# =========================
+ENABLE_GLOBAL_DRAWDOWN_STOP = False
+MAX_DRAWDOWN_USD = 75.0
+
+
+
+
+# =========================
+# Strategy Mode
+# =========================
+TRADING_MODE = "DUAL"  
+# "NORMAL" = use strategy
+# "BUY_ONLY"
+# "SELL_ONLY"
+# "DUAL" = both directions allowed (safe)
+
+
+# =========================
+# Reversal Mode
+# =========================
+ENABLE_REVERSAL_MODE = True
+REVERSAL_CONFIRMATION_CANDLES = 2
+ENABLE_REVERSAL_ALERTS = True
+REVERSAL_MIN_SCORE = 60
+
+
+# =========================
+# Smart Structure TP/SL
+# =========================
+USE_STRUCTURE_TAKE_PROFIT = True
+
+STOP_EXTRA_BUFFER_PRICE = 5.0   # move SL farther behind structure
+TP_EARLY_BUFFER_PRICE = 3.0     # take profit earlier before structure target

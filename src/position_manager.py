@@ -2,7 +2,7 @@ import MetaTrader5 as mt5
 
 from src.logger import logger
 from src.notifier import send_telegram_message
-from src.trade_tracker import load_trades, save_trades
+from src.trade_tracker import load_trades, save_trades, update_trade_statistics
 from config.settings import (
     ENABLE_MAIN_STAGE_MANAGEMENT,
     MAIN_STAGE_1_TRIGGER_PRICE,
@@ -56,6 +56,10 @@ def manage_positions(symbol: str):
             logger.info(f"[MANAGER] Position {position_id} is not tracked")
             continue
 
+        if trade.get("imported_manually", False):
+            logger.info(f"[MANAGER] Position {position_id} is manual-imported, skipping normal manager")
+            continue
+
         tracked_positions.append((position, trade))
 
     if not tracked_positions:
@@ -107,10 +111,12 @@ def manage_direction_group(symbol, direction, group, tick, trades):
         )
 
     for position, trade in extras:
+        update_trade_statistics(position, trade, tick)
         manage_extra_entry(position, trade, tick)
 
     main_position = get_position_by_ticket(symbol, main_position.ticket)
     if main_position is not None:
+        update_trade_statistics(main_position, main_trade, tick)
         manage_main_trade(main_position, main_trade, tick)
 
 

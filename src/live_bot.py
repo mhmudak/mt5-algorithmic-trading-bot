@@ -1,3 +1,4 @@
+import sys
 import time
 from datetime import datetime
 
@@ -12,8 +13,15 @@ from src.order_executor import execute_trade
 from src.position_manager import manage_positions
 from src.risk import calculate_trade_plan
 from src.strategy import generate_signal
-from src.trade_tracker import update_trade_lifecycle, sync_open_positions
+from src.trade_tracker import (
+    update_trade_lifecycle,
+    sync_open_positions,
+    is_cooldown_active,
+)
 from src.health_monitor import send_heartbeat, send_critical_alert
+from src.manual_trailing_manager import manage_manual_trailing_positions
+from src.drawdown_guard import is_drawdown_exceeded
+from src.emergency_close import close_all_positions
 
 from config.settings import (
     SYMBOL,
@@ -24,7 +32,19 @@ from config.settings import (
     BREAKOUT_LOOKBACK,
     BREAKOUT_BUFFER,
     FORCE_SIGNAL,
+    ENABLE_MANUAL_TRAILING,
+    MANUAL_TRAILING_START_PRICE,
+    MANUAL_TRAILING_DISTANCE_PRICE,
+    ENABLE_GLOBAL_DRAWDOWN_STOP,
+    ENABLE_REVERSAL_MODE,
+    REVERSAL_CONFIRMATION_CANDLES,
+    ENABLE_REVERSAL_ALERTS,
+    REVERSAL_MIN_SCORE,
+    TRADING_MODE,
 )
+
+last_signal = None
+reversal_count = 0
 
 
 def fetch_market_data():
@@ -41,6 +61,8 @@ def fetch_market_data():
 
 
 def process_cycle(last_processed_candle_time):
+    global last_signal, reversal_count
+
     df = fetch_market_data()
     if df is None:
         return last_processed_candle_time
@@ -58,14 +80,24 @@ def process_cycle(last_processed_candle_time):
         logger.error(f"Failed to fetch account info: {mt5.last_error()}")
         return last_processed_candle_time
 
-    # Sync manual / pre-existing positions first
+    # =========================
+    # POSITION MANAGEMENT
+    # =========================
     sync_open_positions(SYMBOL)
 
-    # Always manage existing positions and update lifecycle every cycle
+    if ENABLE_MANUAL_TRAILING:
+        manage_manual_trailing_positions(
+            symbol=SYMBOL,
+            start_price=MANUAL_TRAILING_START_PRICE,
+            trail_distance=MANUAL_TRAILING_DISTANCE_PRICE,
+        )
+
     manage_positions(SYMBOL)
     update_trade_lifecycle(SYMBOL)
 
-    # Only evaluate new entries once per new candle
+    # =========================
+    # NEW CANDLE CHECK
+    # =========================
     if (
         last_processed_candle_time is not None
         and current_candle_time == last_processed_candle_time
@@ -75,25 +107,106 @@ def process_cycle(last_processed_candle_time):
 
     logger.info(f"New candle detected: {current_candle_time}")
 
-    signal = generate_signal(df)
+    # =========================
+    # SIGNAL GENERATION
+    # =========================
+    strategy_output = generate_signal(df)
 
+    if isinstance(strategy_output, dict):
+        signal = strategy_output.get("signal", "NO_TRADE")
+        score = strategy_output.get("score", 0)
+    else:
+        signal = strategy_output
+        score = 0
+
+    # =========================
+    # BASIC SCORE FILTER (ANTI-FAKE)
+    # =========================
+    if signal in ["BUY", "SELL"] and score < REVERSAL_MIN_SCORE:
+        logger.info("Signal rejected (low score filter)")
+        signal = "NO_TRADE"
+
+    # =========================
+    # REVERSAL DETECTION (FIXED)
+    # =========================
+    if ENABLE_REVERSAL_MODE:
+        if signal not in ["BUY", "SELL"]:
+            reversal_count = 0
+        else:
+            if last_signal is None:
+                last_signal = signal
+                reversal_count = 0
+
+            elif signal != last_signal:
+                reversal_count += 1
+
+                if reversal_count == 1 and ENABLE_REVERSAL_ALERTS:
+                    send_telegram_message(
+                        f"⚠️ Reversal candidate detected\n"
+                        f"From: {last_signal} -> {signal}"
+                    )
+
+                if reversal_count >= REVERSAL_CONFIRMATION_CANDLES:
+                    if score < REVERSAL_MIN_SCORE:
+                        logger.info("Reversal rejected (low score)")
+                        signal = "NO_TRADE"
+                        reversal_count = 0
+                    else:
+                        if ENABLE_REVERSAL_ALERTS:
+                            send_telegram_message(
+                                f"🔥 Reversal confirmed\n"
+                                f"From: {last_signal} -> {signal}\n"
+                                f"Score: {score}"
+                            )
+
+                        last_signal = signal
+                        reversal_count = 0
+
+            else:
+                reversal_count = 0
+                last_signal = signal
+
+    # =========================
+    # MODE CONTROL
+    # =========================
+    if TRADING_MODE == "BUY_ONLY":
+        if signal != "BUY":
+            signal = "NO_TRADE"
+
+    elif TRADING_MODE == "SELL_ONLY":
+        if signal != "SELL":
+            signal = "NO_TRADE"
+
+    elif TRADING_MODE == "DUAL":
+        pass
+
+    # =========================
+    # FORCE SIGNAL
+    # =========================
     if FORCE_SIGNAL in ["BUY", "SELL"]:
         logger.warning(f"⚠ FORCE SIGNAL ACTIVE: {FORCE_SIGNAL}")
         signal = FORCE_SIGNAL
+        score = 0
 
-    recent_data = df.iloc[-(BREAKOUT_LOOKBACK + 1): -1]
+    # =========================
+    # CONTEXT LOG
+    # =========================
+    recent_data = df.iloc[-(BREAKOUT_LOOKBACK + 1):-1]
     recent_resistance = recent_data["high"].max()
     recent_support = recent_data["low"].min()
 
     logger.info("Signal context:")
-    logger.info(f"Last close: {last['close']}")
+    logger.info(f"Close: {last['close']}")
     logger.info(f"EMA: {last['ema_20']}")
     logger.info(f"ATR: {last['atr_14']}")
     logger.info(f"Resistance: {recent_resistance}")
     logger.info(f"Support: {recent_support}")
-    logger.info(f"Buffer: {BREAKOUT_BUFFER}")
-    logger.info(f"Generated signal: {signal}")
+    logger.info(f"Signal: {signal}")
+    logger.info(f"Score: {score}")
 
+    # =========================
+    # TRADE PLAN
+    # =========================
     trade_plan = calculate_trade_plan(
         df=df,
         signal=signal,
@@ -101,36 +214,40 @@ def process_cycle(last_processed_candle_time):
         account_balance=account_info.balance,
     )
 
+    if trade_plan is not None:
+        trade_plan["score"] = score
+
     trade_allowed, guard_reason = check_trade_guard(signal, tick)
 
+    if is_cooldown_active() and signal in ["BUY", "SELL"]:
+        trade_allowed = False
+        guard_reason = "Cooldown after stop loss is active"
+
+    # =========================
+    # DEBUG
+    # =========================
     spread = tick.ask - tick.bid
-    logger.info("Current tick:")
-    logger.info(f"Bid: {tick.bid}")
-    logger.info(f"Ask: {tick.ask}")
     logger.info(f"Spread: {spread}")
-    logger.info(f"Time: {datetime.fromtimestamp(tick.time)}")
-
-    if trade_plan is None:
-        logger.info("No trade plan generated (NO_TRADE)")
-    else:
-        logger.info("Trade plan:")
-        for key, value in trade_plan.items():
-            logger.info(f"{key}: {value}")
-
-    logger.info(f"Trade allowed: {trade_allowed}")
-    logger.info(f"Guard reason: {guard_reason}")
 
     if not trade_allowed:
         if signal in ["BUY", "SELL"]:
             send_telegram_message(
-                f"⛔ Trade Blocked\n"
-                f"Symbol: {SYMBOL}\n"
-                f"Signal: {signal}\n"
-                f"Reason: {guard_reason}"
+                f"Trade Blocked\nSymbol: {SYMBOL}\nSignal: {signal}\nReason: {guard_reason}"
             )
+        return current_candle_time
+
+    # =========================
+    # SAFE EXECUTION (ANTI-FLIP)
+    # =========================
+    from src.position_guard import has_same_direction_position
+
+    if signal in ["BUY", "SELL"] and trade_plan is not None:
+        opposite = "SELL" if signal == "BUY" else "BUY"
+
+        if has_same_direction_position(SYMBOL, opposite):
+            logger.info("Opposite position exists → skipping execution")
             return current_candle_time
 
-    if trade_plan is not None:
         logger.info("🔥 Executing trade...")
         execute_trade(signal, trade_plan, SYMBOL)
 
@@ -139,40 +256,36 @@ def process_cycle(last_processed_candle_time):
 
 def main():
     logger.info("🚀 Starting live bot loop...")
-    send_telegram_message(f"🚀 Live bot started on {SYMBOL}")
+    send_telegram_message(f"Live bot started on {SYMBOL}")
 
     if not mt5.initialize():
         logger.error(f"initialize() failed: {mt5.last_error()}")
         return
 
-    symbol_info = mt5.symbol_info(SYMBOL)
-    if symbol_info is None:
-        logger.error(f"Symbol {SYMBOL} not found")
-        mt5.shutdown()
-        return
-
-    if not symbol_info.visible:
-        logger.info(f"{SYMBOL} is not visible, trying to enable it...")
-        if not mt5.symbol_select(SYMBOL, True):
-            logger.error(f"Failed to select {SYMBOL}: {mt5.last_error()}")
-            mt5.shutdown()
-            return
-
     last_processed_candle_time = None
 
     try:
         while True:
+            if ENABLE_GLOBAL_DRAWDOWN_STOP:
+                exceeded, pnl = is_drawdown_exceeded(SYMBOL)
+
+                if exceeded:
+                    logger.info(f"🚨 MAX DRAWDOWN HIT: {pnl} USD")
+                    close_all_positions(SYMBOL)
+                    mt5.shutdown()
+                    sys.exit()
+
             try:
                 last_processed_candle_time = process_cycle(last_processed_candle_time)
                 send_heartbeat(SYMBOL)
             except Exception as e:
-                logger.exception(f"Loop cycle failed: {e}")
+                logger.exception(f"Loop failed: {e}")
                 send_critical_alert(str(e))
 
             time.sleep(10)
 
     except KeyboardInterrupt:
-        logger.info("🛑 Bot stopped manually by user")
+        logger.info("🛑 Bot stopped manually")
 
     finally:
         mt5.shutdown()

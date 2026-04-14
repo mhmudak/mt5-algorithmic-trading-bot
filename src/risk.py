@@ -2,11 +2,12 @@ from config.settings import (
     POSITION_MODE,
     FIXED_LOT,
     RISK_PER_TRADE_PCT,
-    TAKE_PROFIT_R_MULTIPLIER,
     BREAKOUT_LOOKBACK,
-    BREAKOUT_BUFFER,
     STOP_BUFFER,
     USE_STRUCTURE_STOP,
+    USE_STRUCTURE_TAKE_PROFIT,
+    STOP_EXTRA_BUFFER_PRICE,
+    TP_EARLY_BUFFER_PRICE,
 )
 
 
@@ -23,13 +24,15 @@ def calculate_trade_plan(df, signal, tick, account_balance):
     recent_resistance = recent_data["high"].max()
     recent_support = recent_data["low"].min()
 
+    # =========================
+    # STOP LOSS
+    # =========================
     if USE_STRUCTURE_STOP:
         if signal == "BUY":
-            stop_loss = recent_support - STOP_BUFFER
+            stop_loss = recent_support - STOP_BUFFER - STOP_EXTRA_BUFFER_PRICE
         else:
-            stop_loss = recent_resistance + STOP_BUFFER
+            stop_loss = recent_resistance + STOP_BUFFER + STOP_EXTRA_BUFFER_PRICE
     else:
-        # fallback to ATR-style stop if needed later
         if signal == "BUY":
             stop_loss = entry_price - atr
         else:
@@ -40,15 +43,27 @@ def calculate_trade_plan(df, signal, tick, account_balance):
     if stop_distance <= 0:
         return None
 
-    if signal == "BUY":
-        take_profit = entry_price + (stop_distance * TAKE_PROFIT_R_MULTIPLIER)
+    # =========================
+    # TAKE PROFIT
+    # =========================
+    if USE_STRUCTURE_TAKE_PROFIT:
+        if signal == "BUY":
+            take_profit = recent_resistance - TP_EARLY_BUFFER_PRICE
+            if take_profit <= entry_price:
+                return None
+        else:
+            take_profit = recent_support + TP_EARLY_BUFFER_PRICE
+            if take_profit >= entry_price:
+                return None
     else:
-        take_profit = entry_price - (stop_distance * TAKE_PROFIT_R_MULTIPLIER)
+        if signal == "BUY":
+            take_profit = entry_price + (stop_distance * 1.5)
+        else:
+            take_profit = entry_price - (stop_distance * 1.5)
 
     if POSITION_MODE == "fixed":
         lot = FIXED_LOT
     else:
-        # Placeholder for later true risk-based sizing
         lot = FIXED_LOT
 
     return {
@@ -63,4 +78,5 @@ def calculate_trade_plan(df, signal, tick, account_balance):
         "account_balance": account_balance,
         "recent_resistance": round(recent_resistance, 2),
         "recent_support": round(recent_support, 2),
+        "atr": round(atr, 2),
     }
