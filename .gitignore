@@ -25,4 +25,6 @@ logs/
 .DS_Store
 Thumbs.db
 
-data/trades.json
+# runtime data
+data/
+*.json
