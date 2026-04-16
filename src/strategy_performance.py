@@ -107,3 +107,29 @@ def get_strategy_winrate(strategy_name, performance=None):
         return 0.0
 
     return round((wins / total) * 100, 2)
+
+def get_disabled_strategies():
+    from config.settings import (
+        ENABLE_STRATEGY_AUTO_DISABLE,
+        MIN_TRADES_TO_EVALUATE,
+        MIN_WINRATE_PERCENT,
+    )
+
+    if not ENABLE_STRATEGY_AUTO_DISABLE:
+        return set()
+
+    performance = load_performance()
+    disabled = set()
+
+    for strategy_name, data in performance.items():
+        total = data.get("total_trades", 0)
+
+        if total < MIN_TRADES_TO_EVALUATE:
+            continue
+
+        winrate = get_strategy_winrate(strategy_name, performance)
+
+        if winrate < MIN_WINRATE_PERCENT:
+            disabled.add(strategy_name)
+
+    return disabled

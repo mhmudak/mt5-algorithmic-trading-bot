@@ -82,6 +82,9 @@ def _build_trade_record(
     imported_manually=False,
     setup_score=0,
     strategy_name="UNKNOWN",
+    market_condition="UNKNOWN",
+    reason="N/A",
+    tp_buffer=0.0
 ):
     return {
         "position_id": str(position_id),
@@ -105,6 +108,10 @@ def _build_trade_record(
         "stage_3_done": False,
         "imported_manually": imported_manually,
         "setup_score": float(setup_score),
+        "strategy": strategy_name,
+        "market_condition": market_condition,
+        "reason": reason,
+        "tp_buffer": float(tp_buffer),
         "max_profit_price": 0.0,
         "reached_levels": {str(level): False for level in TRACKED_LEVELS},
         "final_result": None,
@@ -155,6 +162,9 @@ def register_executed_trade(symbol, signal, trade_plan, result):
         imported_manually=False,
         setup_score=trade_plan.get("score", 0),
         strategy_name=trade_plan.get("strategy", "UNKNOWN"),
+        market_condition=trade_plan.get("market_condition", "UNKNOWN"),
+        reason=trade_plan.get("reason", "N/A"),
+        tp_buffer=trade_plan.get("tp_buffer", 0.0),
     )
 
     save_trades(trades)
@@ -168,10 +178,14 @@ def register_executed_trade(symbol, signal, trade_plan, result):
         f"Main Position: {main_position_id}\n"
         f"Symbol: {symbol}\n"
         f"Side: {signal}\n"
+        f"Strategy: {trade_plan.get('strategy', 'UNKNOWN')}\n"
+        f"Market: {trade_plan.get('market_condition', 'UNKNOWN')}\n"
+        f"Reason: {trade_plan.get('reason', 'N/A')}\n"
         f"Volume: {trade_plan['lot']}\n"
         f"Entry: {trade_plan['entry_price']}\n"
         f"SL: {trade_plan['stop_loss']}\n"
         f"TP: {trade_plan['take_profit']}\n"
+        f"TP Buffer: {trade_plan.get('tp_buffer', 0.0)}\n"
         f"Setup Score: {trade_plan.get('score', 0)}"
     )
 
@@ -286,6 +300,10 @@ def update_trade_lifecycle(symbol: str):
                     f"Closed Volume: {trade['closed_volume']}\n"
                     f"Remaining Volume: 0.0\n"
                     f"Setup Score: {trade.get('setup_score', 0)}\n"
+                    f"Strategy: {trade.get('strategy', 'UNKNOWN')}\n"
+                    f"Market: {trade.get('market_condition', 'UNKNOWN')}\n"
+                    f"Reason: {trade.get('reason', 'N/A')}\n"
+                    f"TP Buffer: {trade.get('tp_buffer', 0.0)}\n"
                     f"Max Profit Price: {trade.get('max_profit_price', 0.0)}\n"
                     f"Close Reason: {close_reason}"
                 )
@@ -360,6 +378,10 @@ def sync_open_positions(symbol: str):
             order_id=None,
             imported_manually=True,
             setup_score=0,
+            strategy_name="MANUAL",
+            market_condition="MANUAL",
+            reason="Imported manual/open position",
+            tp_buffer=0.0,
         )
 
         logger.info(f"[TRACKER] Imported manual/open position {position_id}")
