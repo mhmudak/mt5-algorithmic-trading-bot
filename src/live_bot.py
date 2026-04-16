@@ -12,7 +12,6 @@ from src.notifier import send_telegram_message
 from src.order_executor import execute_trade
 from src.position_manager import manage_positions
 from src.risk import calculate_trade_plan
-from src.strategy import generate_signal
 from src.trade_tracker import (
     update_trade_lifecycle,
     sync_open_positions,
@@ -22,6 +21,7 @@ from src.health_monitor import send_heartbeat, send_critical_alert
 from src.manual_trailing_manager import manage_manual_trailing_positions
 from src.drawdown_guard import is_drawdown_exceeded
 from src.emergency_close import close_all_positions
+from src.dashboard import rebuild_dashboard
 
 from config.settings import (
     SYMBOL,
@@ -62,6 +62,9 @@ def fetch_market_data():
 
 def process_cycle(last_processed_candle_time):
     global last_signal, reversal_count
+    from src.strategy_performance import rebuild_strategy_performance
+
+    rebuild_strategy_performance()
 
     df = fetch_market_data()
     if df is None:
@@ -94,6 +97,7 @@ def process_cycle(last_processed_candle_time):
 
     manage_positions(SYMBOL)
     update_trade_lifecycle(SYMBOL)
+    rebuild_dashboard()
 
     # =========================
     # NEW CANDLE CHECK
@@ -114,13 +118,68 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_sniper_v2 import generate_signal as sniper_signal
     from src.strategies.strategy_strict import generate_signal as strict_signal
 
+    from src.strategy_performance import get_disabled_strategies
+
+    disabled_strategies = get_disabled_strategies()
+
     signals = []
 
-    for strat in [strict_signal, sniper_signal, fast_signal]:
-        result = strat(df)
+    from src.market_condition import detect_market_condition
 
-        if result and result["signal"] in ["BUY", "SELL"]:
-            signals.append(result)
+    market_condition = detect_market_condition(df)
+
+    strategy_map = []
+
+    # =========================
+    # AI STRATEGY SELECTION
+    # =========================
+    if market_condition == "TRENDING":
+        strategy_map = [
+            ("SNIPER_V2", sniper_signal),
+            ("STRICT", strict_signal),
+        ]
+
+    elif market_condition == "RANGING":
+        strategy_map = [
+            ("FAST", fast_signal),
+            ("SNIPER_V2", sniper_signal),
+        ]
+
+    elif market_condition == "VOLATILE":
+        strategy_map = [
+            ("STRICT", strict_signal),
+        ]
+
+    for name, strat in strategy_map:
+
+        # 🔒 AUTO-DISABLE
+        if name in disabled_strategies:
+            logger.info(f"[AUTO-DISABLE] Skipping {name} (low performance)")
+            continue
+
+        try:
+            result = strat(df)
+            logger.info(f"[STRATEGY RESULT] {name}: {result}")
+
+            # 🛡️ Safety: skip empty
+            if not result:
+                continue
+
+            # 🛡️ Safety: ensure signal exists
+            signal_value = result.get("signal")
+
+            if signal_value in ["BUY", "SELL"]:
+                # 🔥 enforce metadata (VERY IMPORTANT for dashboard later)
+                result["strategy"] = name
+
+                # optional (if missing from strategy)
+                result.setdefault("score", 0)
+                result.setdefault("reason", "N/A")
+
+                signals.append(result)
+
+        except Exception as e:
+            logger.error(f"[STRATEGY ERROR] {name}: {e}")
 
     # =========================
     # SIGNAL SELECTION (SMART)
@@ -129,34 +188,54 @@ def process_cycle(last_processed_candle_time):
         signal = "NO_TRADE"
         score = 0
         strategy_name = None
+        reason = None
     else:
-        strict = [s for s in signals if s["strategy"] == "STRICT"]
-        sniper = [s for s in signals if s["strategy"] == "SNIPER_V2"]
-
-        if strict:
-            best = strict[0]
-        elif sniper:
-            best = sniper[0]
-        else:
-            best = signals[0]
+        # 🔥 BEST SCORE selection (AI-ready)
+        best = max(signals, key=lambda x: x.get("score", 0))
 
         signal = best["signal"]
-        score = best["score"]
-        strategy_name = best["strategy"]
+        score = best.get("score", 0)
+        strategy_name = best.get("strategy", "UNKNOWN")
+        reason = best.get("reason", "N/A")
 
         send_telegram_message(
             f"📡 Signal Detected\n"
             f"Strategy: {strategy_name}\n"
+            f"Market: {market_condition}\n"
             f"Signal: {signal}\n"
-            f"Score: {score}"
+            f"Score: {score}\n"
+            f"Reason: {reason}"
         )
 
     # =========================
     # BASIC SCORE FILTER (ANTI-FAKE)
     # =========================
-    if signal in ["BUY", "SELL"] and score < REVERSAL_MIN_SCORE:
-        logger.info("Signal rejected (low score filter)")
-        signal = "NO_TRADE"
+    # if signal in ["BUY", "SELL"] and score < REVERSAL_MIN_SCORE:
+    #     logger.info("Signal rejected (low score filter)")
+    #     signal = "NO_TRADE"
+
+
+    from config.settings import FAST_MIN_SCORE, SNIPER_V2_MIN_SCORE, STRICT_MIN_SCORE
+
+    # =========================
+    # PER-STRATEGY SCORE FILTER
+    # =========================
+    if signal in ["BUY", "SELL"]:
+        min_required_score = 0
+    
+        if strategy_name == "FAST":
+            min_required_score = FAST_MIN_SCORE
+        elif strategy_name == "SNIPER_V2":
+            min_required_score = SNIPER_V2_MIN_SCORE
+        elif strategy_name == "STRICT":
+            min_required_score = STRICT_MIN_SCORE
+    
+        if score < min_required_score:
+            logger.info(
+                f"Signal rejected (score too low) | "
+                f"strategy={strategy_name} score={score} required={min_required_score}"
+            )
+            signal = "NO_TRADE"
 
     # =========================
     # REVERSAL DETECTION (FIXED)
@@ -249,6 +328,8 @@ def process_cycle(last_processed_candle_time):
     if trade_plan is not None:
         trade_plan["score"] = score
         trade_plan["strategy"] = strategy_name
+        trade_plan["market_condition"] = market_condition
+        trade_plan["reason"] = reason
 
     trade_allowed, guard_reason = check_trade_guard(signal, tick)
 
