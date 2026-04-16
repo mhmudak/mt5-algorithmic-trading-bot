@@ -55,7 +55,7 @@ COOLDOWN_AFTER_SL_MINUTES = 5
 # Same Direction Entries
 # =========================
 ALLOW_SAME_DIRECTION_ENTRIES = True
-MAX_SAME_DIRECTION_TRADES = 5  # main + extras = total max open same-side trades
+MAX_SAME_DIRECTION_TRADES = 25  # main + extras = total max open same-side trades
 
 # =========================
 # Runtime / Safety
@@ -63,7 +63,7 @@ MAX_SAME_DIRECTION_TRADES = 5  # main + extras = total max open same-side trades
 EXECUTION_MODE = "LIVE"  # SIMULATION or LIVE
 ALLOW_LIVE_TRADING = True
 ENABLE_TELEGRAM_ALERTS = False
-FORCE_SIGNAL = None  # "BUY", "SELL", or None or BOTH
+FORCE_SIGNAL = "BUY"  # "BUY", "SELL", or "None" or BOTH
 
 # =========================
 # Telegram
@@ -77,7 +77,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 # =========================
 ENABLE_MAIN_STAGE_MANAGEMENT = True
 
-MAIN_STAGE_1_TRIGGER_PRICE = 6.5
+MAIN_STAGE_1_TRIGGER_PRICE = 6.0
 MAIN_STAGE_1_CLOSE_PCT = 0.25
 
 MAIN_EARLY_LOCK_TRIGGER_PRICE = 12.0
@@ -97,16 +97,16 @@ MAIN_STAGE_3_LOCK_PRICE = 16.0
 ENABLE_EXTRA_ENTRY_MANAGEMENT = True
 
 EXTRA_ENTRY_BREAK_EVEN_TRIGGER_PRICE = 3.0
-EXTRA_ENTRY_LOCK_TRIGGER_PRICE = 5.0
+EXTRA_ENTRY_LOCK_TRIGGER_PRICE = 4.0
 EXTRA_ENTRY_LOCK_PRICE = 2.0
-EXTRA_ENTRY_TAKE_PROFIT_PRICE = 8.0
+EXTRA_ENTRY_TAKE_PROFIT_PRICE = 5.5
 
 # =========================
 # Worst Extra Profit Lock (PRICE UNITS)
 # =========================
 ENABLE_WORST_EXTRA_LOCK = True
-WORST_EXTRA_LOCK_TRIGGER_PRICE = 5.0
-WORST_EXTRA_LOCK_PROFIT_PRICE = 3.0
+WORST_EXTRA_LOCK_TRIGGER_PRICE = 2.0
+WORST_EXTRA_LOCK_PROFIT_PRICE = 1.0
 
 # =========================
 # Manual Trades Aggressive Trailing
@@ -119,8 +119,7 @@ MANUAL_TRAILING_DISTANCE_PRICE = 0.2
 # Global Risk Kill Switch
 # =========================
 ENABLE_GLOBAL_DRAWDOWN_STOP = False
-MAX_DRAWDOWN_USD = 75.0
-
+MAX_DRAWDOWN_USD = 100.0
 
 
 
@@ -137,10 +136,10 @@ TRADING_MODE = "DUAL"
 # =========================
 # Reversal Mode
 # =========================
-ENABLE_REVERSAL_MODE = True
+ENABLE_REVERSAL_MODE = False
 REVERSAL_CONFIRMATION_CANDLES = 2
 ENABLE_REVERSAL_ALERTS = True
-REVERSAL_MIN_SCORE = 60
+REVERSAL_MIN_SCORE = 50
 
 
 # =========================
@@ -149,4 +148,51 @@ REVERSAL_MIN_SCORE = 60
 USE_STRUCTURE_TAKE_PROFIT = True
 
 STOP_EXTRA_BUFFER_PRICE = 5.0   # move SL farther behind structure
-TP_EARLY_BUFFER_PRICE = 3.0     # take profit earlier before structure target
+TP_EARLY_BUFFER_PRICE = 5.0     # take profit earlier before structure target
+
+# =========================
+# Sniper v2 Filters
+# =========================
+ENABLE_SNIPER_V2 = True
+
+# Liquidity sweep / fake-breakout filters
+MIN_BREAKOUT_BODY_ATR = 0.35
+MAX_BREAKOUT_WICK_BODY_RATIO = 2.0
+
+# Volatility spike filter
+ENABLE_VOLATILITY_SPIKE_FILTER = True
+MAX_ATR_SPIKE_MULTIPLIER = 1.8
+
+# Session filter
+ENABLE_SESSION_FILTER = False
+SESSION_START_HOUR = 9
+SESSION_END_HOUR = 18
+
+
+# =========================
+# Strategy Auto Control
+# =========================
+ENABLE_STRATEGY_AUTO_DISABLE = False
+
+MIN_TRADES_TO_EVALUATE = 5
+MIN_WINRATE_PERCENT = 45.0
+
+DISABLE_FAST = False
+DISABLE_SNIPER_V2 = False
+DISABLE_STRICT = False
+
+# =========================
+# ATR Adaptive TP Buffer
+# =========================
+ENABLE_ATR_ADAPTIVE_TP = True
+TP_ATR_BUFFER_MULTIPLIER = 0.40
+MIN_TP_BUFFER_PRICE = 3.0
+MAX_TP_BUFFER_PRICE = 8.0
+
+# =========================
+# Per-Strategy Minimum Scores
+# =========================
+FAST_MIN_SCORE = 55
+SNIPER_V2_MIN_SCORE = 70
+STRICT_MIN_SCORE = 85
+

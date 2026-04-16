@@ -8,6 +8,10 @@ from config.settings import (
     USE_STRUCTURE_TAKE_PROFIT,
     STOP_EXTRA_BUFFER_PRICE,
     TP_EARLY_BUFFER_PRICE,
+    ENABLE_ATR_ADAPTIVE_TP,
+    TP_ATR_BUFFER_MULTIPLIER,
+    MIN_TP_BUFFER_PRICE,
+    MAX_TP_BUFFER_PRICE,
 )
 
 
@@ -44,15 +48,25 @@ def calculate_trade_plan(df, signal, tick, account_balance):
         return None
 
     # =========================
+    # ADAPTIVE TP BUFFER
+    # =========================
+    if ENABLE_ATR_ADAPTIVE_TP:
+        tp_buffer = atr * TP_ATR_BUFFER_MULTIPLIER
+        tp_buffer = max(MIN_TP_BUFFER_PRICE, tp_buffer)
+        tp_buffer = min(MAX_TP_BUFFER_PRICE, tp_buffer)
+    else:
+        tp_buffer = TP_EARLY_BUFFER_PRICE
+
+    # =========================
     # TAKE PROFIT
     # =========================
     if USE_STRUCTURE_TAKE_PROFIT:
         if signal == "BUY":
-            take_profit = recent_resistance - TP_EARLY_BUFFER_PRICE
+            take_profit = recent_resistance - tp_buffer
             if take_profit <= entry_price:
                 return None
         else:
-            take_profit = recent_support + TP_EARLY_BUFFER_PRICE
+            take_profit = recent_support + tp_buffer
             if take_profit >= entry_price:
                 return None
     else:
@@ -60,6 +74,11 @@ def calculate_trade_plan(df, signal, tick, account_balance):
             take_profit = entry_price + (stop_distance * 1.5)
         else:
             take_profit = entry_price - (stop_distance * 1.5)
+
+    # Optional sanity check
+    min_tp_distance = 1.0
+    if abs(take_profit - entry_price) < min_tp_distance:
+        return None
 
     if POSITION_MODE == "fixed":
         lot = FIXED_LOT
@@ -72,6 +91,7 @@ def calculate_trade_plan(df, signal, tick, account_balance):
         "stop_loss": round(stop_loss, 2),
         "take_profit": round(take_profit, 2),
         "stop_distance": round(stop_distance, 2),
+        "tp_buffer": round(tp_buffer, 2),
         "lot": lot,
         "risk_mode": POSITION_MODE,
         "risk_pct": RISK_PER_TRADE_PCT,
