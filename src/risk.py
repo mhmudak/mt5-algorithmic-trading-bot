@@ -15,7 +15,7 @@ from config.settings import (
 )
 
 
-def calculate_trade_plan(df, signal, tick, account_balance):
+def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
     if signal not in ["BUY", "SELL"]:
         return None
 
@@ -58,9 +58,26 @@ def calculate_trade_plan(df, signal, tick, account_balance):
         tp_buffer = TP_EARLY_BUFFER_PRICE
 
     # =========================
-    # TAKE PROFIT
+    # TAKE PROFIT (SMART)
     # =========================
-    if USE_STRUCTURE_TAKE_PROFIT:
+    strategy = None
+    if signal_data:
+        strategy = signal_data.get("strategy")
+
+    # Pattern-based TP
+    if strategy in ["HEAD_SHOULDERS", "TRIANGLE_PENNANT"] and signal_data:
+        height = signal_data.get("pattern_height", 0)
+
+        if height > 0:
+            if signal == "BUY":
+                take_profit = entry_price + height
+            else:
+                take_profit = entry_price - height
+        else:
+            return None
+
+    # Default structure TP
+    elif USE_STRUCTURE_TAKE_PROFIT:
         if signal == "BUY":
             take_profit = recent_resistance - tp_buffer
             if take_profit <= entry_price:
@@ -69,6 +86,8 @@ def calculate_trade_plan(df, signal, tick, account_balance):
             take_profit = recent_support + tp_buffer
             if take_profit >= entry_price:
                 return None
+
+    # RR fallback
     else:
         if signal == "BUY":
             take_profit = entry_price + (stop_distance * 1.5)
@@ -76,14 +95,14 @@ def calculate_trade_plan(df, signal, tick, account_balance):
             take_profit = entry_price - (stop_distance * 1.5)
 
     # Optional sanity check
-    min_tp_distance = 1.0
+    min_tp_distance = 0.3
     if abs(take_profit - entry_price) < min_tp_distance:
         return None
 
     if POSITION_MODE == "fixed":
         lot = FIXED_LOT
     else:
-        lot = FIXED_LOT
+        lot = round((account_balance * RISK_PER_TRADE_PCT) / stop_distance, 2)
 
     return {
         "signal": signal,
