@@ -63,7 +63,7 @@ MAX_SAME_DIRECTION_TRADES = 25  # main + extras = total max open same-side trade
 EXECUTION_MODE = "LIVE"  # SIMULATION or LIVE
 ALLOW_LIVE_TRADING = True
 ENABLE_TELEGRAM_ALERTS = False
-FORCE_SIGNAL = "BUY"  # "BUY", "SELL", or "None" or BOTH
+FORCE_SIGNAL = "SELL"  # "BUY", "SELL", or "None" or BOTH
 
 # =========================
 # Telegram
@@ -194,5 +194,47 @@ MAX_TP_BUFFER_PRICE = 8.0
 # =========================
 FAST_MIN_SCORE = 55
 SNIPER_V2_MIN_SCORE = 70
+FLAG_MIN_SCORE = 78
+FLAG_REFINED_MIN_SCORE = 84
 STRICT_MIN_SCORE = 85
+LIQUIDITY_SWEEP_MIN_SCORE = 86
 
+
+# =========================
+# Adaptive Strategy Thresholds
+# =========================
+ENABLE_ADAPTIVE_THRESHOLDS = True
+
+ADAPTIVE_MIN_TRADES = 10
+ADAPTIVE_WINRATE_HIGH = 60.0
+ADAPTIVE_WINRATE_LOW = 40.0
+
+ADAPTIVE_SCORE_STEP = 3
+
+FAST_BASE_MIN_SCORE = 55
+SNIPER_V2_BASE_MIN_SCORE = 75
+FLAG_BASE_MIN_SCORE = 78
+FLAG_REFINED_BASE_MIN_SCORE = 84
+LIQUIDITY_SWEEP_BASE_MIN_SCORE = 86
+TRIANGLE_PENNANT_BASE_MIN_SCORE = 88
+STRICT_BASE_MIN_SCORE = 90
+HEAD_SHOULDERS_BASE_MIN_SCORE = 90
+
+# =========================
+# Multi-Timeframe Confirmation
+# =========================
+ENABLE_MTF_CONFIRMATION = True
+MTF_TIMEFRAME = mt5.TIMEFRAME_H1
+MTF_BARS_TO_FETCH = 120
+
+
+# =========================
+# Market Condition Modifiers
+# =========================
+ENABLE_MARKET_ADAPTATION = True
+
+MARKET_THRESHOLD_MODIFIERS = {
+    "TRENDING": -2,
+    "RANGING": +4,
+    "VOLATILE": +6,
+}

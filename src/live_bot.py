@@ -22,6 +22,7 @@ from src.manual_trailing_manager import manage_manual_trailing_positions
 from src.drawdown_guard import is_drawdown_exceeded
 from src.emergency_close import close_all_positions
 from src.dashboard import rebuild_dashboard
+from src.mtf_confirmation import get_mtf_bias
 
 from config.settings import (
     SYMBOL,
@@ -117,6 +118,11 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_fast import generate_signal as fast_signal
     from src.strategies.strategy_sniper_v2 import generate_signal as sniper_signal
     from src.strategies.strategy_strict import generate_signal as strict_signal
+    from src.strategies.strategy_flag import generate_signal as flag_signal
+    from src.strategies.strategy_flag_refined import generate_signal as flag_refined_signal
+    from src.strategies.strategy_liquidity_sweep import generate_signal as liquidity_sweep_signal
+    from src.strategies.strategy_head_shoulders import generate_signal as head_shoulders_signal
+    from src.strategies.strategy_triangle_pennant import generate_signal as triangle_pennant_signal
 
     from src.strategy_performance import get_disabled_strategies
 
@@ -130,23 +136,33 @@ def process_cycle(last_processed_candle_time):
 
     strategy_map = []
 
+
+    from src.mtf_confirmation import get_mtf_bias
+
     # =========================
     # AI STRATEGY SELECTION
     # =========================
     if market_condition == "TRENDING":
         strategy_map = [
+            ("TRIANGLE_PENNANT", triangle_pennant_signal),
+            ("FLAG_REFINED", flag_refined_signal),
+            ("FLAG", flag_signal),
             ("SNIPER_V2", sniper_signal),
             ("STRICT", strict_signal),
+            ("HEAD_SHOULDERS", head_shoulders_signal),
         ]
 
     elif market_condition == "RANGING":
         strategy_map = [
+            ("LIQUIDITY_SWEEP", liquidity_sweep_signal),
+            ("HEAD_SHOULDERS", head_shoulders_signal),
             ("FAST", fast_signal),
             ("SNIPER_V2", sniper_signal),
         ]
 
     elif market_condition == "VOLATILE":
         strategy_map = [
+            ("LIQUIDITY_SWEEP", liquidity_sweep_signal),
             ("STRICT", strict_signal),
         ]
 
@@ -184,28 +200,31 @@ def process_cycle(last_processed_candle_time):
     # =========================
     # SIGNAL SELECTION (SMART)
     # =========================
+    original_signal = "NO_TRADE"
+    original_strategy_name = None
+    original_reason = None
+    original_score = 0
+    selected_signal_data = {}
+    
     if not signals:
         signal = "NO_TRADE"
         score = 0
         strategy_name = None
         reason = None
+        selected_signal_data = {}
     else:
-        # 🔥 BEST SCORE selection (AI-ready)
         best = max(signals, key=lambda x: x.get("score", 0))
 
         signal = best["signal"]
         score = best.get("score", 0)
         strategy_name = best.get("strategy", "UNKNOWN")
         reason = best.get("reason", "N/A")
+        selected_signal_data = best.copy()
 
-        send_telegram_message(
-            f"📡 Signal Detected\n"
-            f"Strategy: {strategy_name}\n"
-            f"Market: {market_condition}\n"
-            f"Signal: {signal}\n"
-            f"Score: {score}\n"
-            f"Reason: {reason}"
-        )
+        original_signal = signal
+        original_strategy_name = strategy_name
+        original_reason = reason
+        original_score = score
 
     # =========================
     # BASIC SCORE FILTER (ANTI-FAKE)
@@ -215,20 +234,11 @@ def process_cycle(last_processed_candle_time):
     #     signal = "NO_TRADE"
 
 
-    from config.settings import FAST_MIN_SCORE, SNIPER_V2_MIN_SCORE, STRICT_MIN_SCORE
-
-    # =========================
-    # PER-STRATEGY SCORE FILTER
-    # =========================
-    if signal in ["BUY", "SELL"]:
-        min_required_score = 0
+    from src.adaptive_thresholds import get_adaptive_min_score
     
-        if strategy_name == "FAST":
-            min_required_score = FAST_MIN_SCORE
-        elif strategy_name == "SNIPER_V2":
-            min_required_score = SNIPER_V2_MIN_SCORE
-        elif strategy_name == "STRICT":
-            min_required_score = STRICT_MIN_SCORE
+    if signal in ["BUY", "SELL"]:
+        min_required_score = get_adaptive_min_score(strategy_name, market_condition)
+        
     
         if score < min_required_score:
             logger.info(
@@ -236,6 +246,22 @@ def process_cycle(last_processed_candle_time):
                 f"strategy={strategy_name} score={score} required={min_required_score}"
             )
             signal = "NO_TRADE"
+
+    # =========================
+    # MTF CONFIRMATION
+    # =========================
+    from config.settings import ENABLE_MTF_CONFIRMATION
+
+    if ENABLE_MTF_CONFIRMATION and signal in ["BUY", "SELL"]:
+        mtf_bias = get_mtf_bias()
+        logger.info(f"[MTF] bias={mtf_bias} signal={signal}")
+
+        if mtf_bias is not None and mtf_bias != signal:
+            logger.info(
+                f"[MTF] Signal rejected by higher timeframe | signal={signal} mtf_bias={mtf_bias}"
+            )
+            signal = "NO_TRADE"
+            reason = f"Rejected by MTF confirmation -> higher timeframe bias is {mtf_bias}"
 
     # =========================
     # REVERSAL DETECTION (FIXED)
@@ -292,12 +318,52 @@ def process_cycle(last_processed_candle_time):
         pass
 
     # =========================
-    # FORCE SIGNAL
+    # FORCE SIGNAL (SAFE MODE)
     # =========================
     if FORCE_SIGNAL in ["BUY", "SELL"]:
-        logger.warning(f"⚠ FORCE SIGNAL ACTIVE: {FORCE_SIGNAL}")
-        signal = FORCE_SIGNAL
-        score = 0
+        logger.warning(f"⚠ FORCE SIGNAL REQUESTED: {FORCE_SIGNAL}")
+
+        if original_signal in ["BUY", "SELL"]:
+            if FORCE_SIGNAL == original_signal:
+                signal = FORCE_SIGNAL
+                strategy_name = original_strategy_name
+                score = original_score
+                reason = f"{original_reason} -> force confirmed same direction"
+                logger.info(f"[SAFE FORCE] Confirmed strategy direction: {FORCE_SIGNAL}")
+            else:
+                logger.warning(
+                    f"[SAFE FORCE] Blocked conflicting force | "
+                    f"strategy={original_signal} forced={FORCE_SIGNAL}"
+                )
+                signal = "NO_TRADE"
+                score = 0
+                strategy_name = "FORCE_BLOCKED"
+                reason = (
+                    f"Force blocked -> strategy wanted {original_signal} via "
+                    f"{original_strategy_name}, forced {FORCE_SIGNAL} rejected"
+                )
+                selected_signal_data = {}
+        else:
+            # no strategy signal exists
+            signal = FORCE_SIGNAL
+            score = 0
+            strategy_name = "FORCED"
+            reason = f"Manual forced direction override without strategy signal -> forced {FORCE_SIGNAL}"
+            selected_signal_data = {}
+            logger.info(f"[SAFE FORCE] No strategy signal, forced {FORCE_SIGNAL} allowed")
+            
+    # =========================
+    # FINAL SIGNAL NOTIFICATION
+    # =========================
+    if signal in ["BUY", "SELL"]:
+        send_telegram_message(
+            f"📡 Signal Detected\n"
+            f"Strategy: {strategy_name}\n"
+            f"Market: {market_condition}\n"
+            f"Signal: {signal}\n"
+            f"Score: {score}\n"
+            f"Reason: {reason}"
+        )
 
     # =========================
     # CONTEXT LOG
@@ -317,12 +383,13 @@ def process_cycle(last_processed_candle_time):
 
     # =========================
     # TRADE PLAN
-    # =========================
+    # =========================         
     trade_plan = calculate_trade_plan(
         df=df,
         signal=signal,
         tick=tick,
         account_balance=account_info.balance,
+        signal_data=selected_signal_data,
     )
 
     if trade_plan is not None:
