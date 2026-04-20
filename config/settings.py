@@ -63,7 +63,7 @@ MAX_SAME_DIRECTION_TRADES = 25  # main + extras = total max open same-side trade
 EXECUTION_MODE = "LIVE"  # SIMULATION or LIVE
 ALLOW_LIVE_TRADING = True
 ENABLE_TELEGRAM_ALERTS = False
-FORCE_SIGNAL = "SELL"  # "BUY", "SELL", or "None" or BOTH
+FORCE_SIGNAL = None  # "BUY", "SELL", or "None" or BOTH
 
 # =========================
 # Telegram
