@@ -42,6 +42,12 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
             return None
         stop_loss = sl_reference
 
+    elif strategy == "WAVETREND_PIVOT" and signal_data:
+        sl_reference = signal_data.get("sl_reference")
+        if sl_reference is None:
+            return None
+        stop_loss = sl_reference
+
     elif strategy == "FVG" and signal_data and signal_data.get("sl_reference") is not None:
         stop_loss = signal_data["sl_reference"]
 
@@ -101,6 +107,12 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
             take_profit = entry_price + (stop_distance * LIQUIDITY_CANDLE_R_MULTIPLIER)
         else:
             take_profit = entry_price - (stop_distance * LIQUIDITY_CANDLE_R_MULTIPLIER)
+
+    elif strategy == "WAVETREND_PIVOT" and signal_data:
+        pivot_target_level = signal_data.get("pivot_target_level")
+        if pivot_target_level is None:
+            return None
+        take_profit = pivot_target_level
 
     elif strategy == "FVG" and signal_data:
         height = signal_data.get("pattern_height", 0)

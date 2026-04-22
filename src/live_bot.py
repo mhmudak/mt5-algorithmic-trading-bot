@@ -140,6 +140,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_ob_fvg_combo import generate_signal as ob_fvg_combo_signal
     from src.strategies.strategy_liquidity_trap import generate_signal as liquidity_trap_signal
     from src.strategies.strategy_relief_rally import generate_signal as relief_rally_signal
+    from src.strategies.strategy_wavetrend_pivot import generate_signal as wavetrend_pivot_signal
 
 
     from src.strategy_performance import get_disabled_strategies
@@ -162,48 +163,20 @@ def process_cycle(last_processed_candle_time):
     # =========================
     if market_condition == "TRENDING":
         strategy_map = [
+            ("WAVETREND_PIVOT", wavetrend_pivot_signal),
             ("OB_FVG_COMBO", ob_fvg_combo_signal),
-            ("RELIEF_RALLY", relief_rally_signal),
-            ("ORB", orb_signal),
-            ("ORDER_BLOCK", order_block_signal),
-            ("FVG", fvg_signal),
-            ("TRIANGLE_PENNANT", triangle_pennant_signal),
-            ("FLAG_REFINED", flag_refined_signal),
-            ("FLAG", flag_signal),
-            ("LIQUIDITY_CANDLE", liquidity_candle_signal),
-            ("SMT_PRO", smt_pro_signal),
-            ("SMT", smt_signal),
-            ("SNIPER_V2", sniper_signal),
-            ("STRICT", strict_signal),
-            ("HEAD_SHOULDERS", head_shoulders_signal),
         ]
     
     elif market_condition == "RANGING":
         strategy_map = [
+            ("WAVETREND_PIVOT", wavetrend_pivot_signal),
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
-            ("CRT_TBS", crt_tbs_signal),
-            ("SMT_PRO", smt_pro_signal),
-            ("SMT", smt_signal),
-            ("LIQUIDITY_SWEEP", liquidity_sweep_signal),
-            ("LIQUIDITY_CANDLE", liquidity_candle_signal),
-            ("ORDER_BLOCK", order_block_signal),
-            ("HEAD_SHOULDERS", head_shoulders_signal),
-            ("FAST", fast_signal),
-            ("SNIPER_V2", sniper_signal),
         ]
     
     elif market_condition == "VOLATILE":
         strategy_map = [
+            ("WAVETREND_PIVOT", wavetrend_pivot_signal),
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
-            ("CRT_TBS", crt_tbs_signal),
-            ("SMT_PRO", smt_pro_signal),
-            ("SMT", smt_signal),
-            ("ORB", orb_signal),
-            ("LIQUIDITY_SWEEP", liquidity_sweep_signal),
-            ("LIQUIDITY_CANDLE", liquidity_candle_signal),
-            ("ORDER_BLOCK", order_block_signal),
-            ("STRICT", strict_signal),
-            ("FVG", fvg_signal),
         ]
 
     for name, strat in strategy_map:

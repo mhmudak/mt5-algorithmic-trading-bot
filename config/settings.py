@@ -8,7 +8,7 @@ load_dotenv()
 # Market / Data Settings
 # =========================
 SYMBOL = "XAUUSD"
-TIMEFRAME = mt5.TIMEFRAME_M15
+TIMEFRAME = mt5.TIMEFRAME_M5
 BARS_TO_FETCH = 100
 
 # =========================
@@ -31,7 +31,7 @@ RISK_PER_TRADE_PCT = 0.25
 # =========================
 # Stop / TP Settings
 # =========================
-STOP_BUFFER = 32
+STOP_BUFFER = 12
 USE_STRUCTURE_STOP = True
 STOP_LOSS_ATR_MULTIPLIER = 1.5
 TAKE_PROFIT_R_MULTIPLIER = 1.5
@@ -41,7 +41,7 @@ TAKE_PROFIT_R_MULTIPLIER = 1.5
 # =========================
 MAX_TRADES_PER_DAY = 500
 # MAX_ALLOWED_SPREAD = 0.50
-MAX_SPREAD = 0.5
+MAX_SPREAD = 0.35
 MAX_SLIPPAGE = 0.3
 COOLDOWN_MINUTES = 1
 
@@ -147,7 +147,7 @@ REVERSAL_MIN_SCORE = 50
 # =========================
 USE_STRUCTURE_TAKE_PROFIT = True
 
-STOP_EXTRA_BUFFER_PRICE = 5.0   # move SL farther behind structure
+STOP_EXTRA_BUFFER_PRICE = 2.5   # move SL farther behind structure
 TP_EARLY_BUFFER_PRICE = 5.0     # take profit earlier before structure target
 
 # =========================
@@ -217,6 +217,7 @@ RELIEF_RALLY_BASE_MIN_SCORE = 92
 CRT_TBS_BASE_MIN_SCORE = 93
 LIQUIDITY_TRAP_BASE_MIN_SCORE = 94
 SMT_PRO_BASE_MIN_SCORE = 95
+WAVETREND_PIVOT_BASE_MIN_SCORE = 95
 OB_FVG_COMBO_BASE_MIN_SCORE = 96
 
 
@@ -226,8 +227,8 @@ LIQUIDITY_CANDLE_R_MULTIPLIER = 2.0
 # Multi-Timeframe Confirmation
 # =========================
 ENABLE_MTF_CONFIRMATION = True
-MTF_TIMEFRAME = mt5.TIMEFRAME_H1
-MTF_BARS_TO_FETCH = 120
+MTF_TIMEFRAME = mt5.TIMEFRAME_M15
+MTF_BARS_TO_FETCH = 60
 
 
 # =========================
@@ -268,3 +269,17 @@ SESSION_LONDON_END = 13
 
 SESSION_NEWYORK_START = 13
 SESSION_NEWYORK_END = 21
+
+
+# =========================
+# WaveTrend Pivot Strategy
+# =========================
+WT_CHANNEL_LENGTH = 10
+WT_AVERAGE_LENGTH = 21
+
+PIVOT_PROXIMITY_BUFFER = 1.5
+PIVOT_BREAK_BUFFER = 0.8
+
+WAVETREND_OVERBOUGHT = 53
+WAVETREND_OVERSOLD = -53
+
