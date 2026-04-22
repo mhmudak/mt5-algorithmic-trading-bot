@@ -295,6 +295,27 @@ def process_cycle(last_processed_candle_time):
         best = max(signals, key=lambda x: x.get("score", 0))
 
         signal = best["signal"]
+        
+    # =========================
+    # ORB ANTI-CHASE FIX
+    # =========================
+    if strategy_name == "ORB" and signal in ["BUY", "SELL"]:
+    
+        orb_low = selected_signal_data.get("orb_low")
+        orb_high = selected_signal_data.get("orb_high")
+    
+        current_price = tick.ask if signal == "BUY" else tick.bid
+    
+        if signal == "SELL" and orb_low:
+            if abs(current_price - orb_low) > df.iloc[-1]["atr_14"] * 0.6:
+                logger.info("❌ ORB skipped (too extended below breakout)")
+                signal = "NO_TRADE"
+    
+        elif signal == "BUY" and orb_high:
+            if abs(current_price - orb_high) > df.iloc[-1]["atr_14"] * 0.6:
+                logger.info("❌ ORB skipped (too extended above breakout)")
+                signal = "NO_TRADE"
+        
         score = best.get("score", 0)
         strategy_name = best.get("strategy", "UNKNOWN")
         reason = best.get("reason", "N/A")
