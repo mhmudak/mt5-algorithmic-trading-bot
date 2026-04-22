@@ -75,6 +75,7 @@ def process_cycle(last_processed_candle_time):
     current_candle_time = last["time"]
 
     tick = mt5.symbol_info_tick(SYMBOL)
+    print("MT5 time:", tick.time)
     if tick is None:
         logger.error(f"Failed to fetch current tick: {mt5.last_error()}")
         return last_processed_candle_time
@@ -103,6 +104,9 @@ def process_cycle(last_processed_candle_time):
     # =========================
     # NEW CANDLE CHECK
     # =========================
+    from src.session_engine import detect_session, session_score_adjustment
+    from config.settings import ENABLE_SESSION_ENGINE
+    
     if (
         last_processed_candle_time is not None
         and current_candle_time == last_processed_candle_time
@@ -111,6 +115,8 @@ def process_cycle(last_processed_candle_time):
         return last_processed_candle_time
 
     logger.info(f"New candle detected: {current_candle_time}")
+    session_name = detect_session(current_candle_time)
+    logger.info(f"[SESSION] {session_name}")
 
     # =========================
     # SIGNAL GENERATION
@@ -123,6 +129,18 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_liquidity_sweep import generate_signal as liquidity_sweep_signal
     from src.strategies.strategy_head_shoulders import generate_signal as head_shoulders_signal
     from src.strategies.strategy_triangle_pennant import generate_signal as triangle_pennant_signal
+    from src.strategies.strategy_fvg import generate_signal as fvg_signal
+    from src.strategies.strategy_order_block import generate_signal as order_block_signal
+    from src.strategies.strategy_liquidity_candle import generate_signal as liquidity_candle_signal
+    from src.strategies.strategy_orb import generate_signal as orb_signal
+    from src.strategies.strategy_smt import generate_signal as smt_signal
+    from src.smc_engine import smc_validate
+    from src.strategies.strategy_smt_pro import generate_signal as smt_pro_signal
+    from src.strategies.strategy_crt_tbs import generate_signal as crt_tbs_signal
+    from src.strategies.strategy_ob_fvg_combo import generate_signal as ob_fvg_combo_signal
+    from src.strategies.strategy_liquidity_trap import generate_signal as liquidity_trap_signal
+    from src.strategies.strategy_relief_rally import generate_signal as relief_rally_signal
+
 
     from src.strategy_performance import get_disabled_strategies
 
@@ -144,26 +162,48 @@ def process_cycle(last_processed_candle_time):
     # =========================
     if market_condition == "TRENDING":
         strategy_map = [
+            ("OB_FVG_COMBO", ob_fvg_combo_signal),
+            ("RELIEF_RALLY", relief_rally_signal),
+            ("ORB", orb_signal),
+            ("ORDER_BLOCK", order_block_signal),
+            ("FVG", fvg_signal),
             ("TRIANGLE_PENNANT", triangle_pennant_signal),
             ("FLAG_REFINED", flag_refined_signal),
             ("FLAG", flag_signal),
+            ("LIQUIDITY_CANDLE", liquidity_candle_signal),
+            ("SMT_PRO", smt_pro_signal),
+            ("SMT", smt_signal),
             ("SNIPER_V2", sniper_signal),
             ("STRICT", strict_signal),
             ("HEAD_SHOULDERS", head_shoulders_signal),
         ]
-
+    
     elif market_condition == "RANGING":
         strategy_map = [
+            ("LIQUIDITY_TRAP", liquidity_trap_signal),
+            ("CRT_TBS", crt_tbs_signal),
+            ("SMT_PRO", smt_pro_signal),
+            ("SMT", smt_signal),
             ("LIQUIDITY_SWEEP", liquidity_sweep_signal),
+            ("LIQUIDITY_CANDLE", liquidity_candle_signal),
+            ("ORDER_BLOCK", order_block_signal),
             ("HEAD_SHOULDERS", head_shoulders_signal),
             ("FAST", fast_signal),
             ("SNIPER_V2", sniper_signal),
         ]
-
+    
     elif market_condition == "VOLATILE":
         strategy_map = [
+            ("LIQUIDITY_TRAP", liquidity_trap_signal),
+            ("CRT_TBS", crt_tbs_signal),
+            ("SMT_PRO", smt_pro_signal),
+            ("SMT", smt_signal),
+            ("ORB", orb_signal),
             ("LIQUIDITY_SWEEP", liquidity_sweep_signal),
+            ("LIQUIDITY_CANDLE", liquidity_candle_signal),
+            ("ORDER_BLOCK", order_block_signal),
             ("STRICT", strict_signal),
+            ("FVG", fvg_signal),
         ]
 
     for name, strat in strategy_map:
@@ -176,24 +216,44 @@ def process_cycle(last_processed_candle_time):
         try:
             result = strat(df)
             logger.info(f"[STRATEGY RESULT] {name}: {result}")
-
-            # 🛡️ Safety: skip empty
+        
             if not result:
                 continue
-
-            # 🛡️ Safety: ensure signal exists
+            
             signal_value = result.get("signal")
-
+        
             if signal_value in ["BUY", "SELL"]:
-                # 🔥 enforce metadata (VERY IMPORTANT for dashboard later)
+            
+                # 🔥 enforce metadata
                 result["strategy"] = name
-
-                # optional (if missing from strategy)
                 result.setdefault("score", 0)
                 result.setdefault("reason", "N/A")
-
+        
+                # =========================
+                # 🔥 APPLY SMC ENGINE HERE
+                # =========================
+                from config.settings import ENABLE_SMC_ENGINE, SMC_MIN_FINAL_SCORE
+                
+                score_boost, smc_reasons = smc_validate(df, result)
+        
+                result["score"] += score_boost
+                result["smc"] = smc_reasons
+        
+                if ENABLE_SMC_ENGINE and result["score"] < SMC_MIN_FINAL_SCORE:
+                    logger.info(
+                        f"[SMC FILTER] Rejected {name} "
+                        f"(score={result['score']} required={SMC_MIN_FINAL_SCORE})"
+                    )
+                    continue
+                
+                if ENABLE_SESSION_ENGINE:
+                    session_boost, session_reasons = session_score_adjustment(name, session_name)
+                    result["score"] += session_boost
+                    result.setdefault("session_reasons", [])
+                    result["session_reasons"].extend(session_reasons)
+                
                 signals.append(result)
-
+        
         except Exception as e:
             logger.error(f"[STRATEGY ERROR] {name}: {e}")
 
@@ -220,6 +280,12 @@ def process_cycle(last_processed_candle_time):
         strategy_name = best.get("strategy", "UNKNOWN")
         reason = best.get("reason", "N/A")
         selected_signal_data = best.copy()
+
+        if selected_signal_data.get("smc"):
+            reason += f" | SMC: {','.join(selected_signal_data['smc'])}"
+            
+        if selected_signal_data.get("session_reasons"):
+            reason += f" | SESSION: {','.join(selected_signal_data['session_reasons'])}"
 
         original_signal = signal
         original_strategy_name = strategy_name
