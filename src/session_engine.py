@@ -40,5 +40,17 @@ def session_score_adjustment(strategy_name: str, session_name: str):
         elif session_name == "OFF_HOURS":
             score_boost -= 2
             reasons.append("off_hours_structure_penalty")
+            
+    # Session filter
+    if strategy_name == "WAVETREND_PIVOT":
+        if session_name in ["LONDON", "NEWYORK"]:
+            score_boost += 2
+            reasons.append(f"{session_name.lower()}_pivot_scalping_session")
+        elif session_name == "ASIA":
+            score_boost -= 2
+            reasons.append("asia_pivot_penalty")
+        elif session_name == "OFF_HOURS":
+            score_boost -= 4
+            reasons.append("off_hours_pivot_penalty")
 
     return score_boost, reasons

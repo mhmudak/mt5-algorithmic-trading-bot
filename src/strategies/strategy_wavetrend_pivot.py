@@ -56,6 +56,10 @@ def generate_signal(df):
 
     if atr < ATR_MIN or atr > ATR_MAX:
         return None
+    
+    # avoid dead market / weak scalp conditions
+    if atr < 1.2:
+        return None
 
     body = abs(entry["close"] - entry["open"])
     candle_range = entry["high"] - entry["low"]
@@ -112,7 +116,7 @@ def generate_signal(df):
                 "pivot_support_level": support_level,
                 "pivot_target_name": resistance_name,
                 "pivot_target_level": resistance_level,
-                "sl_reference": round(support_level - max(atr * 0.12, 0.4), 2),
+                "sl_reference": round(support_level - max(atr * 0.15, 0.5), 2),
                 "reason": (
                     f"WaveTrend precision BUY -> wick touched {support_name} {round(support_level,2)} -> "
                     f"bullish rejection close -> WT bullish cross from oversold -> "
@@ -163,7 +167,7 @@ def generate_signal(df):
                 "pivot_resistance_level": resistance_level,
                 "pivot_target_name": support_name,
                 "pivot_target_level": support_level,
-                "sl_reference": round(resistance_level + max(atr * 0.12, 0.4), 2),
+                "sl_reference": round(resistance_level + max(atr * 0.15, 0.5), 2),
                 "reason": (
                     f"WaveTrend precision SELL -> wick touched {resistance_name} {round(resistance_level,2)} -> "
                     f"bearish rejection close -> WT bearish cross from overbought -> "
@@ -215,7 +219,7 @@ def generate_signal(df):
                 "pivot_break_level": breakout_level,
                 "pivot_target_name": target_name,
                 "pivot_target_level": target_level,
-                "sl_reference": round(breakout_level - max(atr * 0.12, 0.4), 2),
+                "sl_reference": round(breakout_level - max(atr * 0.15, 0.5), 2),
                 "reason": (
                     f"WaveTrend precision breakout BUY -> strong hold above {breakout_name} {round(breakout_level,2)} -> "
                     f"WT bullish continuation -> target {target_name} {round(target_level,2)}"
@@ -262,7 +266,7 @@ def generate_signal(df):
                 "pivot_break_level": breakdown_level,
                 "pivot_target_name": target_name,
                 "pivot_target_level": target_level,
-                "sl_reference": round(breakdown_level + max(atr * 0.12, 0.4), 2),
+                "sl_reference": round(breakdown_level + max(atr * 0.15, 0.5), 2),
                 "reason": (
                     f"WaveTrend precision breakout SELL -> strong hold below {breakdown_name} {round(breakdown_level,2)} -> "
                     f"WT bearish continuation -> target {target_name} {round(target_level,2)}"
