@@ -60,6 +60,24 @@ def fetch_market_data():
     df["atr_14"] = calculate_atr(df, ATR_PERIOD)
     return df
 
+def is_rr_valid(trade_plan, min_rr=1.5):
+    if not trade_plan:
+        return False
+
+    entry = trade_plan.get("entry_price")
+    sl = trade_plan.get("stop_loss")
+    tp = trade_plan.get("take_profit")
+    side = trade_plan.get("signal")
+
+    try:
+        if side == "BUY":
+            rr = (tp - entry) / (entry - sl)
+        else:
+            rr = (entry - tp) / (sl - entry)
+
+        return rr >= min_rr
+    except Exception:
+        return False
 
 def process_cycle(last_processed_candle_time):
     global last_signal, reversal_count
@@ -140,7 +158,6 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_ob_fvg_combo import generate_signal as ob_fvg_combo_signal
     from src.strategies.strategy_liquidity_trap import generate_signal as liquidity_trap_signal
     from src.strategies.strategy_relief_rally import generate_signal as relief_rally_signal
-    from src.strategies.strategy_wavetrend_pivot import generate_signal as wavetrend_pivot_signal
 
 
     from src.strategy_performance import get_disabled_strategies
@@ -159,8 +176,10 @@ def process_cycle(last_processed_candle_time):
     from src.mtf_confirmation import get_mtf_bias
 
     # =========================
-    # AI STRATEGY SELECTION
+    # AI STRATEGY SELECTION (M5 SCALPING MODE)
     # =========================
+    from src.strategies.strategy_wavetrend_pivot import generate_signal as wavetrend_pivot_signal
+    
     if market_condition == "TRENDING":
         strategy_map = [
             ("WAVETREND_PIVOT", wavetrend_pivot_signal),
@@ -201,6 +220,7 @@ def process_cycle(last_processed_candle_time):
                 result["strategy"] = name
                 result.setdefault("score", 0)
                 result.setdefault("reason", "N/A")
+                result["session"] = session_name
         
                 # =========================
                 # 🔥 APPLY SMC ENGINE HERE
@@ -249,6 +269,21 @@ def process_cycle(last_processed_candle_time):
         best = max(signals, key=lambda x: x.get("score", 0))
 
         signal = best["signal"]
+        
+    # =========================
+    # ANTI-CHASING FILTER (M5)
+    # =========================
+    if signal in ["BUY", "SELL"]:
+        pivot_level = selected_signal_data.get("pivot_support_level") if signal == "BUY" else selected_signal_data.get("pivot_resistance_level")
+    
+        if pivot_level is not None:
+            current_price = tick.ask if signal == "BUY" else tick.bid
+            distance = abs(current_price - pivot_level)
+    
+            if distance > df.iloc[-1]["atr_14"] * 0.5:
+                logger.info("❌ Skipped: price too far from pivot (anti-chase)")
+                signal = "NO_TRADE"
+        
         score = best.get("score", 0)
         strategy_name = best.get("strategy", "UNKNOWN")
         reason = best.get("reason", "N/A")
@@ -395,14 +430,24 @@ def process_cycle(last_processed_candle_time):
     # FINAL SIGNAL NOTIFICATION
     # =========================
     if signal in ["BUY", "SELL"]:
-        send_telegram_message(
-            f"📡 Signal Detected\n"
-            f"Strategy: {strategy_name}\n"
-            f"Market: {market_condition}\n"
-            f"Signal: {signal}\n"
-            f"Score: {score}\n"
-            f"Reason: {reason}"
-        )
+        from src.notifier import build_trade_message
+    
+        preview_data = {
+            "signal": signal,
+            "strategy": strategy_name,
+            "entry_model": selected_signal_data.get("entry_model", "N/A"),
+            "entry": tick.ask if signal == "BUY" else tick.bid,
+            "sl": selected_signal_data.get("sl_reference"),
+            "tp": selected_signal_data.get("pivot_target_level"),
+            "score": score,
+            "session": selected_signal_data.get("session", session_name),
+            "pivot_support_level": selected_signal_data.get("pivot_support_level"),
+            "pivot_resistance_level": selected_signal_data.get("pivot_resistance_level"),
+            "pivot_target_level": selected_signal_data.get("pivot_target_level"),
+            "reason": reason,
+        }
+    
+        send_telegram_message(build_trade_message(preview_data))
 
     # =========================
     # CONTEXT LOG
@@ -436,8 +481,14 @@ def process_cycle(last_processed_candle_time):
         trade_plan["strategy"] = strategy_name
         trade_plan["market_condition"] = market_condition
         trade_plan["reason"] = reason
+        trade_plan["session"] = selected_signal_data.get("session", session_name)
 
     trade_allowed, guard_reason = check_trade_guard(signal, tick)
+    
+    if signal in ["BUY", "SELL"] and trade_plan is not None:
+        if not is_rr_valid(trade_plan, min_rr=1.5):
+            trade_allowed = False
+            guard_reason = "Trade blocked - Due to the low risk-reward ratio RR"
 
     if is_cooldown_active() and signal in ["BUY", "SELL"]:
         trade_allowed = False
