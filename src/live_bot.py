@@ -269,25 +269,24 @@ def process_cycle(last_processed_candle_time):
         best = max(signals, key=lambda x: x.get("score", 0))
 
         signal = best["signal"]
-        
-    # =========================
-    # ANTI-CHASING FILTER (M5)
-    # =========================
-    if signal in ["BUY", "SELL"]:
-        pivot_level = selected_signal_data.get("pivot_support_level") if signal == "BUY" else selected_signal_data.get("pivot_resistance_level")
-    
-        if pivot_level is not None:
-            current_price = tick.ask if signal == "BUY" else tick.bid
-            distance = abs(current_price - pivot_level)
-    
-            if distance > df.iloc[-1]["atr_14"] * 0.5:
-                logger.info("❌ Skipped: price too far from pivot (anti-chase)")
-                signal = "NO_TRADE"
-        
         score = best.get("score", 0)
         strategy_name = best.get("strategy", "UNKNOWN")
         reason = best.get("reason", "N/A")
         selected_signal_data = best.copy()
+
+        # =========================
+        # ANTI-CHASING FILTER (M5)
+        # =========================
+        if signal in ["BUY", "SELL"]:
+            pivot_level = selected_signal_data.get("pivot_support_level") if signal == "BUY" else selected_signal_data.get("pivot_resistance_level")
+
+            if pivot_level is not None:
+                current_price = tick.ask if signal == "BUY" else tick.bid
+                distance = abs(current_price - pivot_level)
+
+                if distance > df.iloc[-1]["atr_14"] * 0.5:
+                    logger.info("❌ Skipped: price too far from pivot (anti-chase)")
+                    signal = "NO_TRADE"
 
         if selected_signal_data.get("smc"):
             reason += f" | SMC: {','.join(selected_signal_data['smc'])}"
@@ -437,8 +436,8 @@ def process_cycle(last_processed_candle_time):
             "strategy": strategy_name,
             "entry_model": selected_signal_data.get("entry_model", "N/A"),
             "entry": tick.ask if signal == "BUY" else tick.bid,
-            "sl": selected_signal_data.get("sl_reference"),
-            "tp": selected_signal_data.get("pivot_target_level"),
+            "sl": selected_signal_data.get("sl_reference") or "N/A",
+            "tp": selected_signal_data.get("pivot_target_level") or "N/A",
             "score": score,
             "session": selected_signal_data.get("session", session_name),
             "pivot_support_level": selected_signal_data.get("pivot_support_level"),
