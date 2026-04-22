@@ -1,7 +1,6 @@
 from config.settings import ATR_MIN, ATR_MAX
 
-
-ORB_WINDOW = 15  # 15 candles = approx 15 min if M1
+ORB_WINDOW = 15
 
 
 def generate_signal(df):
@@ -12,6 +11,7 @@ def generate_signal(df):
 
     orb_high = data["high"].max()
     orb_low = data["low"].min()
+    orb_width = orb_high - orb_low
 
     entry = df.iloc[-2]
 
@@ -25,57 +25,61 @@ def generate_signal(df):
     body = abs(entry["close"] - entry["open"])
 
     # =========================
-    # BUY breakout
+    # BUY
     # =========================
-    bullish_break = entry["close"] > orb_high
+    if price > orb_high and body > atr * 0.3 and price > ema:
 
-    bullish_momentum = (
-        entry["close"] > entry["open"]
-        and body > atr * 0.3
-        and price > ema
-    )
+        breakout_distance = price - orb_high
 
-    if bullish_break and bullish_momentum:
-        range_size = orb_high - orb_low
+        max_immediate = min(atr * 0.35, orb_width * 0.20)
+        max_retest = min(atr * 0.80, orb_width * 0.45)
+
+        if breakout_distance <= max_immediate:
+            entry_model = "BREAKOUT"
+        elif breakout_distance <= max_retest:
+            entry_model = "WAIT_RETEST"
+        else:
+            return None  # ❌ too extended → skip
 
         return {
             "signal": "BUY",
-            "score": 90,
+            "score": 92,
             "strategy": "ORB",
-            "pattern_height": range_size,
+            "entry_model": entry_model,
+            "pattern_height": orb_width,
             "orb_high": orb_high,
             "orb_low": orb_low,
-            "reason": (
-                f"ORB breakout BUY -> range {round(orb_low,2)} to {round(orb_high,2)} -> "
-                f"strong close above range -> price above EMA"
-            ),
+            "breakout_distance": breakout_distance,
+            "reason": f"ORB BUY ({entry_model}) -> range {round(orb_low,2)}-{round(orb_high,2)}",
         }
 
     # =========================
-    # SELL breakout
+    # SELL
     # =========================
-    bearish_break = entry["close"] < orb_low
+    if price < orb_low and body > atr * 0.3 and price < ema:
 
-    bearish_momentum = (
-        entry["close"] < entry["open"]
-        and body > atr * 0.3
-        and price < ema
-    )
+        breakout_distance = orb_low - price
 
-    if bearish_break and bearish_momentum:
-        range_size = orb_high - orb_low
+        max_immediate = min(atr * 0.35, orb_width * 0.20)
+        max_retest = min(atr * 0.80, orb_width * 0.45)
+
+        if breakout_distance <= max_immediate:
+            entry_model = "BREAKOUT"
+        elif breakout_distance <= max_retest:
+            entry_model = "WAIT_RETEST"
+        else:
+            return None  # ❌ too extended → skip
 
         return {
             "signal": "SELL",
-            "score": 90,
+            "score": 92,
             "strategy": "ORB",
-            "pattern_height": range_size,
+            "entry_model": entry_model,
+            "pattern_height": orb_width,
             "orb_high": orb_high,
             "orb_low": orb_low,
-            "reason": (
-                f"ORB breakout SELL -> range {round(orb_low,2)} to {round(orb_high,2)} -> "
-                f"strong close below range -> price below EMA"
-            ),
+            "breakout_distance": breakout_distance,
+            "reason": f"ORB SELL ({entry_model}) -> range {round(orb_low,2)}-{round(orb_high,2)}",
         }
 
     return None

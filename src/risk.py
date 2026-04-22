@@ -29,14 +29,36 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
     recent_resistance = recent_data["high"].max()
     recent_support = recent_data["low"].min()
 
-    strategy = None
-    if signal_data:
-        strategy = signal_data.get("strategy")
+    strategy = signal_data.get("strategy") if signal_data else None
 
     # =========================
     # STOP LOSS
     # =========================
-    if strategy == "LIQUIDITY_CANDLE" and signal_data:
+    if strategy == "ORB" and signal_data:
+        orb_high = signal_data.get("orb_high")
+        orb_low = signal_data.get("orb_low")
+        entry_model = signal_data.get("entry_model", "BREAKOUT")
+
+        if orb_high is None or orb_low is None:
+            return None
+
+        orb_width = orb_high - orb_low
+        breakout_buffer = max(atr * 0.15, orb_width * 0.05, 1.5)
+        execution_buffer = max(atr * 0.10, 1.0)
+
+        if entry_model == "BREAKOUT":
+            if signal == "SELL":
+                stop_loss = orb_high + breakout_buffer
+            else:
+                stop_loss = orb_low - breakout_buffer
+        else:
+            # WAIT_RETEST / EXTRA / tighter execution mode
+            if signal == "SELL":
+                stop_loss = entry_price + execution_buffer
+            else:
+                stop_loss = entry_price - execution_buffer
+
+    elif strategy == "LIQUIDITY_CANDLE" and signal_data:
         sl_reference = signal_data.get("sl_reference")
         if sl_reference is None:
             return None
@@ -66,6 +88,12 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
             stop_loss = triangle_low - atr * 0.25
         else:
             stop_loss = triangle_high + atr * 0.25
+
+    elif strategy == "WAVETREND_PIVOT" and signal_data:
+        sl_reference = signal_data.get("sl_reference")
+        if sl_reference is None:
+            return None
+        stop_loss = sl_reference
 
     elif USE_STRUCTURE_STOP:
         if signal == "BUY":
@@ -112,11 +140,32 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
         else:
             take_profit = max(recent_support, entry_price - height)
 
+    elif strategy == "ORB" and signal_data:
+        entry_model = signal_data.get("entry_model", "BREAKOUT")
+
+        # based on your real ORB cases:
+        # breakout entries deserve safer RR
+        # retest entries can target higher RR
+        if entry_model == "BREAKOUT":
+            rr = 1.8
+        else:
+            rr = 2.2
+
+        if signal == "BUY":
+            take_profit = entry_price + (stop_distance * rr)
+        else:
+            take_profit = entry_price - (stop_distance * rr)
+
+    elif strategy == "WAVETREND_PIVOT" and signal_data:
+        pivot_target_level = signal_data.get("pivot_target_level")
+        if pivot_target_level is None:
+            return None
+        take_profit = pivot_target_level
+
     elif strategy in [
         "HEAD_SHOULDERS",
         "TRIANGLE_PENNANT",
         "ORDER_BLOCK",
-        "ORB",
         "SMT",
         "SMT_PRO",
         "CRT_TBS",
