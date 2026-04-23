@@ -24,6 +24,9 @@ from src.emergency_close import close_all_positions
 from src.dashboard import rebuild_dashboard
 from src.mtf_confirmation import get_mtf_bias
 
+from src.execution_engine import ExecutionEngine
+execution_engine = ExecutionEngine()
+
 from config.settings import (
     SYMBOL,
     TIMEFRAME,
@@ -60,7 +63,7 @@ def fetch_market_data():
     df["atr_14"] = calculate_atr(df, ATR_PERIOD)
     return df
 
-def is_rr_valid(trade_plan, min_rr=1.5):
+def is_rr_valid(trade_plan, min_rr=1.2):
     if not trade_plan:
         return False
 
@@ -78,6 +81,22 @@ def is_rr_valid(trade_plan, min_rr=1.5):
         return rr >= min_rr
     except Exception:
         return False
+    
+
+def get_min_rr(strategy_name):
+    if strategy_name == "ORB":
+        return 1.8
+    elif strategy_name in ["FVG", "ORDER_BLOCK", "OB_FVG_COMBO"]:
+        return 1.6
+    elif strategy_name in ["SMT", "SMT_PRO", "LIQUIDITY_TRAP", "CRT_TBS"]:
+        return 1.3
+    elif strategy_name == "WAVETREND_PIVOT":
+        return 1.4
+    elif strategy_name in ["SNIPER_V2", "STRICT", "HEAD_SHOULDERS", "TRIANGLE_PENNANT"]:
+        return 1.5
+    else:
+        return 1.2
+
 
 def process_cycle(last_processed_candle_time):
     global last_signal, reversal_count
@@ -91,6 +110,8 @@ def process_cycle(last_processed_candle_time):
 
     last = df.iloc[-1]
     current_candle_time = last["time"]
+    close_price = last["close"]
+    atr = last["atr_14"]
 
     tick = mt5.symbol_info_tick(SYMBOL)
     print("MT5 time:", tick.time)
@@ -159,6 +180,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_liquidity_trap import generate_signal as liquidity_trap_signal
     from src.strategies.strategy_relief_rally import generate_signal as relief_rally_signal
 
+    
 
     from src.strategy_performance import get_disabled_strategies
 
@@ -299,6 +321,38 @@ def process_cycle(last_processed_candle_time):
         strategy_name = best.get("strategy", "UNKNOWN")
         reason = best.get("reason", "N/A")
         selected_signal_data = best.copy()
+        
+        
+        # =========================
+        # 📡 DETECTED SIGNAL (RAW)
+        # =========================
+        if signal in ["BUY", "SELL"]:
+            from src.notifier import build_trade_message
+        
+            detected_data = {
+                "signal": signal,
+                "strategy": strategy_name,
+                "entry_model": selected_signal_data.get("entry_model", "RAW"),
+                "entry": close_price,
+                "sl": selected_signal_data.get("sl_reference") or "N/A",
+                "tp": selected_signal_data.get("pivot_target_level") or "N/A",
+                "score": score,
+                "session": session_name,
+                "reason": f"[FINAL] {reason}",
+            }
+        
+            send_telegram_message(build_trade_message(detected_data))
+        
+                        
+        # =========================
+        # REGISTER SETUP (NEW)
+        # =========================
+        if signal != "NO_TRADE":
+            execution_engine.register_setup(
+                selected_signal_data,
+                close_price,
+                atr
+            )
 
         # =========================
         # ORB ANTI-CHASE FIX
@@ -495,6 +549,42 @@ def process_cycle(last_processed_candle_time):
     logger.info(f"Signal: {signal}")
     logger.info(f"Score: {score}")
 
+
+    # =========================
+    # EXECUTION ENGINE (NEW)
+    # =========================
+    ready_setups = execution_engine.process_setups(df, close_price, atr)
+
+    if not ready_setups:
+        signal = "NO_TRADE"
+        strategy_name = None
+        reason = "Waiting for execution conditions"
+    else:
+        best_setup = ready_setups[0]
+    
+        # =========================
+        # ✅ CONFIRMED ENTRY READY
+        # =========================
+        setup_data = best_setup["data"]
+    
+        if not best_setup.get("notified"):
+            send_telegram_message(
+            f"""✅ Setup Confirmed (Execution Ready)
+            Symbol: {SYMBOL}
+            Signal: {setup_data['signal']}
+            Strategy: {setup_data['strategy']}
+
+            Waiting execution trigger...
+            """
+            )
+            best_setup["notified"] = True
+        
+        selected_signal_data = best_setup["data"]
+        signal = selected_signal_data["signal"]
+        strategy_name = selected_signal_data["strategy"]
+        reason = selected_signal_data.get("reason", reason)
+        execution_engine.mark_executed(best_setup)
+
     # =========================
     # TRADE PLAN
     # =========================         
@@ -516,7 +606,8 @@ def process_cycle(last_processed_candle_time):
     trade_allowed, guard_reason = check_trade_guard(signal, tick)
     
     if signal in ["BUY", "SELL"] and trade_plan is not None:
-        if not is_rr_valid(trade_plan, min_rr=1.5):
+        min_rr_required = get_min_rr(strategy_name)
+        if not is_rr_valid(trade_plan, min_rr=min_rr_required):
             trade_allowed = False
             guard_reason = "Trade blocked - Due to the low risk-reward ratio RR"
 
@@ -531,10 +622,36 @@ def process_cycle(last_processed_candle_time):
     logger.info(f"Spread: {spread}")
 
     if not trade_allowed:
-        if signal in ["BUY", "SELL"]:
+        if signal in ["BUY", "SELL"] and trade_plan is not None:
+
+            rr_value = None
+            entry = trade_plan.get("entry_price")
+            sl = trade_plan.get("stop_loss")
+            tp = trade_plan.get("take_profit")
+            
+            try:
+                if signal == "BUY":
+                    rr_value = round((tp - entry) / (entry - sl), 2)
+                else:
+                    rr_value = round((entry - tp) / (sl - entry), 2)
+            except Exception:
+                pass
+
             send_telegram_message(
-                f"Trade Blocked\nSymbol: {SYMBOL}\nSignal: {signal}\nReason: {guard_reason}"
+            f"""🚫 Trade Blocked
+            Symbol: {SYMBOL}
+            Signal: {signal}
+            Strategy: {strategy_name}
+            
+            Entry: {entry}
+            SL: {sl}
+            TP: {tp}
+            
+            RR: {rr_value}
+            Reason: {guard_reason}
+            """
             )
+
         return current_candle_time
 
     # =========================
