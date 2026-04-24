@@ -3,6 +3,7 @@ def confirm_rejection_entry(df, signal, zone_low, zone_high, atr):
         return False
 
     candle = df.iloc[-2]
+
     body = abs(candle["close"] - candle["open"])
     candle_range = candle["high"] - candle["low"]
 
@@ -18,18 +19,20 @@ def confirm_rejection_entry(df, signal, zone_low, zone_high, atr):
         return False
 
     if signal == "BUY":
-        bullish_close = candle["close"] > candle["open"]
-        strong_close = candle["close"] >= candle["low"] + candle_range * 0.6
-        rejection = lower_wick > body * 1.2
-        body_ok = body > atr * 0.15
-        return bullish_close and strong_close and rejection and body_ok
+        return (
+            candle["close"] > candle["open"]
+            and lower_wick > body * 1.2
+            and candle["close"] >= candle["low"] + candle_range * 0.6
+            and body > atr * 0.15
+        )
 
     if signal == "SELL":
-        bearish_close = candle["close"] < candle["open"]
-        strong_close = candle["close"] <= candle["high"] - candle_range * 0.6
-        rejection = upper_wick > body * 1.2
-        body_ok = body > atr * 0.15
-        return bearish_close and strong_close and rejection and body_ok
+        return (
+            candle["close"] < candle["open"]
+            and upper_wick > body * 1.2
+            and candle["close"] <= candle["high"] - candle_range * 0.6
+            and body > atr * 0.15
+        )
 
     return False
 
@@ -39,6 +42,7 @@ def confirm_breakout_hold(df, signal, level, atr):
         return False
 
     candle = df.iloc[-2]
+
     body = abs(candle["close"] - candle["open"])
     candle_range = candle["high"] - candle["low"]
 
@@ -46,17 +50,19 @@ def confirm_breakout_hold(df, signal, level, atr):
         return False
 
     if signal == "BUY":
-        broke = candle["close"] > level
-        held = candle["low"] >= level - atr * 0.10
-        strong_close = candle["close"] >= candle["low"] + candle_range * 0.7
-        body_ok = body > atr * 0.20
-        return broke and held and strong_close and body_ok
+        return (
+            candle["close"] > level
+            and candle["low"] >= level - atr * 0.10
+            and candle["close"] >= candle["low"] + candle_range * 0.7
+            and body > atr * 0.20
+        )
 
     if signal == "SELL":
-        broke = candle["close"] < level
-        held = candle["high"] <= level + atr * 0.10
-        strong_close = candle["close"] <= candle["high"] - candle_range * 0.7
-        body_ok = body > atr * 0.20
-        return broke and held and strong_close and body_ok
+        return (
+            candle["close"] < level
+            and candle["high"] <= level + atr * 0.10
+            and candle["close"] <= candle["high"] - candle_range * 0.7
+            and body > atr * 0.20
+        )
 
     return False

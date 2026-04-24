@@ -23,6 +23,7 @@ from src.drawdown_guard import is_drawdown_exceeded
 from src.emergency_close import close_all_positions
 from src.dashboard import rebuild_dashboard
 from src.mtf_confirmation import get_mtf_bias
+from src.htf_filter import get_htf_context, htf_allows_signal
 
 from src.execution_engine import ExecutionEngine
 execution_engine = ExecutionEngine()
@@ -420,6 +421,27 @@ def process_cycle(last_processed_candle_time):
             )
             signal = "NO_TRADE"
             reason = f"Rejected by MTF confirmation -> higher timeframe bias is {mtf_bias}"
+            
+    # =========================
+    # HTF FILTER
+    # =========================
+    if signal in ["BUY", "SELL"]:
+        htf_context = get_htf_context()
+    
+        if not htf_allows_signal(signal, htf_context, allow_neutral=True):
+            logger.info(
+                f"[HTF] Signal rejected | signal={signal} "
+                f"htf_bias={htf_context.get('bias')} "
+                f"price={htf_context.get('price')} "
+                f"ema={htf_context.get('ema')}"
+            )
+            signal = "NO_TRADE"
+            reason = (
+                f"Rejected by HTF filter -> "
+                f"HTF bias={htf_context.get('bias')}, "
+                f"HTF price={htf_context.get('price')}, "
+                f"HTF EMA={htf_context.get('ema')}"
+            )
 
     # =========================
     # REVERSAL DETECTION (FIXED)
@@ -553,36 +575,60 @@ def process_cycle(last_processed_candle_time):
     # =========================
     # EXECUTION ENGINE (NEW)
     # =========================
-    ready_setups = execution_engine.process_setups(df, close_price, atr)
+    from src.confirmation_engine import confirm_entry
 
+    ready_setups = execution_engine.process_setups(df, close_price, atr)
+    
     if not ready_setups:
         signal = "NO_TRADE"
         strategy_name = None
         reason = "Waiting for execution conditions"
+    
     else:
         best_setup = ready_setups[0]
-    
-        # =========================
-        # ✅ CONFIRMED ENTRY READY
-        # =========================
         setup_data = best_setup["data"]
     
+        # =========================
+        # 🔥 FINAL CONFIRMATION FILTER
+        # =========================
+        from src.smart_money_layer import smart_money_confirm
+        
+        confirmed = confirm_entry(df, setup_data["signal"])
+
+        if not confirmed:
+            logger.info("❌ Confirmation failed → waiting better candle")
+            return current_candle_time
+        
+        smc_check = smart_money_confirm(df, setup_data["signal"])
+        
+        if not smc_check["confirmed"]:
+            logger.info(
+                f"❌ Smart money confirmation failed → reasons={smc_check['reasons']}"
+            )
+            return current_candle_time
+    
+        # =========================
+        # ✅ CONFIRMED TRADE
+        # =========================
         if not best_setup.get("notified"):
             send_telegram_message(
-            f"""✅ Setup Confirmed (Execution Ready)
+            f"""✅ Entry Confirmed
             Symbol: {SYMBOL}
             Signal: {setup_data['signal']}
             Strategy: {setup_data['strategy']}
 
-            Waiting execution trigger...
+            Strong confirmation candle detected
+            Smart Money: {", ".join(smc_check['reasons'])}
+            Ready to execute 🚀
             """
             )
             best_setup["notified"] = True
-        
-        selected_signal_data = best_setup["data"]
-        signal = selected_signal_data["signal"]
-        strategy_name = selected_signal_data["strategy"]
-        reason = selected_signal_data.get("reason", reason)
+    
+        selected_signal_data = setup_data
+        signal = setup_data["signal"]
+        strategy_name = setup_data["strategy"]
+        reason = setup_data.get("reason", reason)
+    
         execution_engine.mark_executed(best_setup)
 
     # =========================
