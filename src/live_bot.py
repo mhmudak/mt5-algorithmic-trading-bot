@@ -23,6 +23,9 @@ from src.drawdown_guard import is_drawdown_exceeded
 from src.emergency_close import close_all_positions
 from src.dashboard import rebuild_dashboard
 from src.mtf_confirmation import get_mtf_bias
+from src.confirmation_engine import confirm_entry
+from src.htf_filter import get_htf_context, htf_allows_signal
+from src.sniper_entry import sniper_entry_allowed
 
 from config.settings import (
     SYMBOL,
@@ -337,6 +340,20 @@ def process_cycle(last_processed_candle_time):
             reason = f"Rejected by MTF confirmation -> higher timeframe bias is {mtf_bias}"
 
     # =========================
+    # HTF FILTER (M15 bias filter)
+    # =========================
+    if signal in ["BUY", "SELL"]:
+        htf_context = get_htf_context()
+
+        if not htf_allows_signal(signal, htf_context, allow_neutral=True):
+            logger.info(
+                f"[HTF] Rejected | signal={signal} "
+                f"htf_bias={htf_context.get('bias')}"
+            )
+            signal = "NO_TRADE"
+            reason = f"Rejected by HTF filter → bias={htf_context.get('bias')}"
+
+    # =========================
     # REVERSAL DETECTION (FIXED)
     # =========================
     if ENABLE_REVERSAL_MODE:
@@ -463,6 +480,35 @@ def process_cycle(last_processed_candle_time):
     logger.info(f"Support: {recent_support}")
     logger.info(f"Signal: {signal}")
     logger.info(f"Score: {score}")
+
+
+    # =========================
+    # FAST CONFIRMATION (M5)
+    # =========================
+    if signal in ["BUY", "SELL"]:
+        confirmed = confirm_entry(df, signal, mode="FAST")
+    
+        if not confirmed:
+            logger.info("❌ FAST confirmation failed (M5 entry)")
+            return current_candle_time
+    
+    # =========================
+    # SNIPER ENTRY FILTER (M5)
+    # =========================
+    if signal in ["BUY", "SELL"] and strategy_name == "WAVETREND_PIVOT":
+        sniper_ok, sniper_reason = sniper_entry_allowed(
+            df=df,
+            signal=signal,
+            signal_data=selected_signal_data,
+            atr=df.iloc[-1]["atr_14"],
+        )
+    
+        if not sniper_ok:
+            logger.info(f"❌ Sniper entry rejected: {sniper_reason}")
+            return current_candle_time
+    
+        reason += f" | SNIPER: {sniper_reason}"
+
 
     # =========================
     # TRADE PLAN
