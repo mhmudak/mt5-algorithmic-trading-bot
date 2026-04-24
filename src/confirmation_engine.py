@@ -66,3 +66,27 @@ def confirm_breakout_hold(df, signal, level, atr):
         )
 
     return False
+
+def confirm_entry(df, signal):
+    """
+    Unified confirmation entry point.
+    Decides which confirmation logic to use.
+    """
+
+    try:
+        # Example logic (you can refine later)
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+
+        if signal == "BUY":
+            # bullish confirmation
+            return last["close"] > prev["high"]
+
+        elif signal == "SELL":
+            # bearish confirmation
+            return last["close"] < prev["low"]
+
+        return False
+
+    except Exception:
+        return False

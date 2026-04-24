@@ -102,9 +102,6 @@ def get_min_rr(strategy_name):
 
 def process_cycle(last_processed_candle_time):
     global last_signal, reversal_count
-    from src.strategy_performance import rebuild_strategy_performance
-
-    rebuild_strategy_performance()
 
     df = fetch_market_data()
     if df is None:
@@ -154,6 +151,9 @@ def process_cycle(last_processed_candle_time):
     ):
         logger.info(f"No new candle yet. Current candle: {current_candle_time}")
         return last_processed_candle_time
+    
+    from src.strategy_performance import rebuild_strategy_performance
+    rebuild_strategy_performance()
 
     logger.info(f"New candle detected: {current_candle_time}")
     session_name = detect_session(current_candle_time)
@@ -449,7 +449,7 @@ def process_cycle(last_processed_candle_time):
     # =========================
     if signal in ["BUY", "SELL"]:
         liquidity_context = get_liquidity_context()
-    
+
         if not liquidity_allows_signal(signal, liquidity_context, allow_neutral=True):
             logger.info(
                 f"[HTF LIQUIDITY] Rejected | signal={signal} "
@@ -609,9 +609,14 @@ def process_cycle(last_processed_candle_time):
         # =========================
         # 🔥 FINAL CONFIRMATION FILTER
         # =========================
+        from src.confirmation_engine import confirm_entry
         from src.smart_money_layer import smart_money_confirm
         
-        confirmed = confirm_entry(df, setup_data["signal"])
+        try:
+            confirmed = confirm_entry(df, setup_data["signal"])
+        except Exception as e:
+            logger.error(f"[CONFIRMATION ERROR] {e}")
+            confirmed = False
 
         if not confirmed:
             logger.info("❌ Confirmation failed → waiting better candle")
@@ -763,6 +768,7 @@ def main():
             except Exception as e:
                 logger.exception(f"Loop failed: {e}")
                 send_critical_alert(str(e))
+                time.sleep(5)  # prevent CPU/log spam
 
             time.sleep(10)
 
