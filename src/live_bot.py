@@ -24,6 +24,7 @@ from src.emergency_close import close_all_positions
 from src.dashboard import rebuild_dashboard
 from src.mtf_confirmation import get_mtf_bias
 from src.htf_filter import get_htf_context, htf_allows_signal
+from src.liquidity_context import get_liquidity_context, liquidity_allows_signal
 
 from src.execution_engine import ExecutionEngine
 execution_engine = ExecutionEngine()
@@ -427,7 +428,7 @@ def process_cycle(last_processed_candle_time):
     # =========================
     if signal in ["BUY", "SELL"]:
         htf_context = get_htf_context()
-    
+
         if not htf_allows_signal(signal, htf_context, allow_neutral=True):
             logger.info(
                 f"[HTF] Signal rejected | signal={signal} "
@@ -441,6 +442,24 @@ def process_cycle(last_processed_candle_time):
                 f"HTF bias={htf_context.get('bias')}, "
                 f"HTF price={htf_context.get('price')}, "
                 f"HTF EMA={htf_context.get('ema')}"
+            )
+            
+    # =========================
+    # HTF LIQUIDITY CONTEXT FILTER
+    # =========================
+    if signal in ["BUY", "SELL"]:
+        liquidity_context = get_liquidity_context()
+    
+        if not liquidity_allows_signal(signal, liquidity_context, allow_neutral=True):
+            logger.info(
+                f"[HTF LIQUIDITY] Rejected | signal={signal} "
+                f"bias={liquidity_context.get('bias')} "
+                f"reason={liquidity_context.get('reason')}"
+            )
+            signal = "NO_TRADE"
+            reason = (
+                f"Rejected by HTF liquidity context -> "
+                f"{liquidity_context.get('reason')}"
             )
 
     # =========================
@@ -575,7 +594,6 @@ def process_cycle(last_processed_candle_time):
     # =========================
     # EXECUTION ENGINE (NEW)
     # =========================
-    from src.confirmation_engine import confirm_entry
 
     ready_setups = execution_engine.process_setups(df, close_price, atr)
     
