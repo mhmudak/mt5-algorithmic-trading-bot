@@ -340,21 +340,10 @@ def process_cycle(last_processed_candle_time):
                 "tp": selected_signal_data.get("pivot_target_level") or "N/A",
                 "score": score,
                 "session": session_name,
-                "reason": f"[FINAL] {reason}",
+                "reason": f"[DETECTED] {reason}",
             }
         
             send_telegram_message(build_trade_message(detected_data))
-        
-                        
-        # =========================
-        # REGISTER SETUP (NEW)
-        # =========================
-        if signal != "NO_TRADE":
-            execution_engine.register_setup(
-                selected_signal_data,
-                close_price,
-                atr
-            )
 
         # =========================
         # ORB ANTI-CHASE FIX
@@ -590,6 +579,17 @@ def process_cycle(last_processed_candle_time):
     logger.info(f"Signal: {signal}")
     logger.info(f"Score: {score}")
 
+
+                        
+    # =========================
+    # REGISTER SETUP AFTER FINAL FILTERS
+    # =========================
+    if signal in ["BUY", "SELL"]:
+        execution_engine.register_setup(
+            selected_signal_data,
+            close_price,
+            atr
+        )
 
     # =========================
     # EXECUTION ENGINE (NEW)
