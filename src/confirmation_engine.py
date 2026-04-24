@@ -72,8 +72,8 @@ def confirm_entry(df, signal, mode="FAST"):
         if len(df) < 4:
             return False
 
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
+        last = df.iloc[-2]
+        prev = df.iloc[-3]
 
         body = abs(last["close"] - last["open"])
         candle_range = last["high"] - last["low"]

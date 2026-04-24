@@ -81,12 +81,23 @@ def is_rr_valid(trade_plan, min_rr=1.5):
         return rr >= min_rr
     except Exception:
         return False
+    
+def get_min_rr(strategy_name, entry_model=None):
+    if strategy_name == "WAVETREND_PIVOT":
+        if entry_model == "PIVOT_REJECTION_PRECISION":
+            return 1.0
+        if entry_model == "PIVOT_BREAKOUT_PRECISION":
+            return 1.2
+        return 1.3
+
+    if strategy_name == "LIQUIDITY_TRAP":
+        return 1.3
+
+    return 1.5
 
 def process_cycle(last_processed_candle_time):
     global last_signal, reversal_count
-    from src.strategy_performance import rebuild_strategy_performance
-
-    rebuild_strategy_performance()
+    
 
     df = fetch_market_data()
     if df is None:
@@ -96,11 +107,12 @@ def process_cycle(last_processed_candle_time):
     current_candle_time = last["time"]
 
     tick = mt5.symbol_info_tick(SYMBOL)
-    print("MT5 time:", tick.time)
     if tick is None:
         logger.error(f"Failed to fetch current tick: {mt5.last_error()}")
         return last_processed_candle_time
 
+    print("MT5 time:", tick.time)
+    
     account_info = mt5.account_info()
     if account_info is None:
         logger.error(f"Failed to fetch account info: {mt5.last_error()}")
@@ -136,6 +148,10 @@ def process_cycle(last_processed_candle_time):
         return last_processed_candle_time
 
     logger.info(f"New candle detected: {current_candle_time}")
+    
+    from src.strategy_performance import rebuild_strategy_performance
+    rebuild_strategy_performance()
+    
     session_name = detect_session(current_candle_time)
     logger.info(f"[SESSION] {session_name}")
 
@@ -531,7 +547,12 @@ def process_cycle(last_processed_candle_time):
     trade_allowed, guard_reason = check_trade_guard(signal, tick)
     
     if signal in ["BUY", "SELL"] and trade_plan is not None:
-        if not is_rr_valid(trade_plan, min_rr=1.5):
+        min_rr_required = get_min_rr(
+            strategy_name,
+            selected_signal_data.get("entry_model")
+        )
+        
+        if not is_rr_valid(trade_plan, min_rr=min_rr_required):
             trade_allowed = False
             guard_reason = "Trade blocked - Due to the low risk-reward ratio RR"
 
@@ -546,10 +567,37 @@ def process_cycle(last_processed_candle_time):
     logger.info(f"Spread: {spread}")
 
     if not trade_allowed:
-        if signal in ["BUY", "SELL"]:
+        if signal in ["BUY", "SELL"] and trade_plan is not None:
+            entry = trade_plan.get("entry_price")
+            sl = trade_plan.get("stop_loss")
+            tp = trade_plan.get("take_profit")
+    
+            rr_value = None
+            try:
+                if signal == "BUY":
+                    rr_value = round((tp - entry) / (entry - sl), 2)
+                else:
+                    rr_value = round((entry - tp) / (sl - entry), 2)
+            except Exception:
+                pass
+            
             send_telegram_message(
-                f"Trade Blocked\nSymbol: {SYMBOL}\nSignal: {signal}\nReason: {guard_reason}"
+            f"""🚫 M5 Trade Blocked
+            Symbol: {SYMBOL}
+            Strategy: {strategy_name}
+            Signal: {signal}
+            Type: {selected_signal_data.get("entry_model")}
+            
+            Entry: {entry}
+            SL: {sl}
+            TP: {tp}
+            RR: {rr_value}
+            Required RR: {min_rr_required}
+            
+            Reason: {guard_reason}
+            """
             )
+    
         return current_candle_time
 
     # =========================
