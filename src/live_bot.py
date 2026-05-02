@@ -83,7 +83,7 @@ def is_rr_valid(trade_plan, min_rr=1.2):
         return rr >= min_rr
     except Exception:
         return False
-    
+
 
 def get_min_rr(strategy_name):
     if strategy_name == "ORB":
@@ -113,10 +113,11 @@ def process_cycle(last_processed_candle_time):
     atr = last["atr_14"]
 
     tick = mt5.symbol_info_tick(SYMBOL)
-    print("MT5 time:", tick.time)
     if tick is None:
         logger.error(f"Failed to fetch current tick: {mt5.last_error()}")
         return last_processed_candle_time
+
+    logger.info(f"MT5 time: {tick.time}")
 
     account_info = mt5.account_info()
     if account_info is None:
@@ -144,14 +145,14 @@ def process_cycle(last_processed_candle_time):
     # =========================
     from src.session_engine import detect_session, session_score_adjustment
     from config.settings import ENABLE_SESSION_ENGINE
-    
+
     if (
         last_processed_candle_time is not None
         and current_candle_time == last_processed_candle_time
     ):
         logger.info(f"No new candle yet. Current candle: {current_candle_time}")
         return last_processed_candle_time
-    
+
     from src.strategy_performance import rebuild_strategy_performance
     rebuild_strategy_performance()
 
@@ -182,7 +183,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_liquidity_trap import generate_signal as liquidity_trap_signal
     from src.strategies.strategy_relief_rally import generate_signal as relief_rally_signal
 
-    
+
 
     from src.strategy_performance import get_disabled_strategies
 
@@ -219,7 +220,7 @@ def process_cycle(last_processed_candle_time):
             ("STRICT", strict_signal),
             ("HEAD_SHOULDERS", head_shoulders_signal),
         ]
-    
+
     elif market_condition == "RANGING":
         strategy_map = [
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
@@ -233,7 +234,7 @@ def process_cycle(last_processed_candle_time):
             ("FAST", fast_signal),
             ("SNIPER_V2", sniper_signal),
         ]
-    
+
     elif market_condition == "VOLATILE":
         strategy_map = [
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
@@ -258,45 +259,45 @@ def process_cycle(last_processed_candle_time):
         try:
             result = strat(df)
             logger.info(f"[STRATEGY RESULT] {name}: {result}")
-        
+
             if not result:
                 continue
-            
+
             signal_value = result.get("signal")
-        
+
             if signal_value in ["BUY", "SELL"]:
-            
+
                 # 🔥 enforce metadata
                 result["strategy"] = name
                 result.setdefault("score", 0)
                 result.setdefault("reason", "N/A")
                 result["session"] = session_name
-        
+
                 # =========================
                 # 🔥 APPLY SMC ENGINE HERE
                 # =========================
                 from config.settings import ENABLE_SMC_ENGINE, SMC_MIN_FINAL_SCORE
-                
+
                 score_boost, smc_reasons = smc_validate(df, result)
-        
+
                 result["score"] += score_boost
                 result["smc"] = smc_reasons
-        
+
                 if ENABLE_SMC_ENGINE and result["score"] < SMC_MIN_FINAL_SCORE:
                     logger.info(
                         f"[SMC FILTER] Rejected {name} "
                         f"(score={result['score']} required={SMC_MIN_FINAL_SCORE})"
                     )
                     continue
-                
+
                 if ENABLE_SESSION_ENGINE:
                     session_boost, session_reasons = session_score_adjustment(name, session_name)
                     result["score"] += session_boost
                     result.setdefault("session_reasons", [])
                     result["session_reasons"].extend(session_reasons)
-                
+
                 signals.append(result)
-        
+
         except Exception as e:
             logger.error(f"[STRATEGY ERROR] {name}: {e}")
 
@@ -308,7 +309,7 @@ def process_cycle(last_processed_candle_time):
     original_reason = None
     original_score = 0
     selected_signal_data = {}
-    
+
     if not signals:
         signal = "NO_TRADE"
         score = 0
@@ -323,14 +324,14 @@ def process_cycle(last_processed_candle_time):
         strategy_name = best.get("strategy", "UNKNOWN")
         reason = best.get("reason", "N/A")
         selected_signal_data = best.copy()
-        
-        
+
+
         # =========================
         # 📡 DETECTED SIGNAL (RAW)
         # =========================
         if signal in ["BUY", "SELL"]:
             from src.notifier import build_trade_message
-        
+
             detected_data = {
                 "signal": signal,
                 "strategy": strategy_name,
@@ -342,7 +343,7 @@ def process_cycle(last_processed_candle_time):
                 "session": session_name,
                 "reason": f"[DETECTED] {reason}",
             }
-        
+
             send_telegram_message(build_trade_message(detected_data))
 
         # =========================
@@ -384,11 +385,11 @@ def process_cycle(last_processed_candle_time):
 
 
     from src.adaptive_thresholds import get_adaptive_min_score
-    
+
     if signal in ["BUY", "SELL"]:
         min_required_score = get_adaptive_min_score(strategy_name, market_condition)
-        
-    
+
+
         if score < min_required_score:
             logger.info(
                 f"Signal rejected (score too low) | "
@@ -411,7 +412,7 @@ def process_cycle(last_processed_candle_time):
             )
             signal = "NO_TRADE"
             reason = f"Rejected by MTF confirmation -> higher timeframe bias is {mtf_bias}"
-            
+
     # =========================
     # HTF FILTER
     # =========================
@@ -432,7 +433,7 @@ def process_cycle(last_processed_candle_time):
                 f"HTF price={htf_context.get('price')}, "
                 f"HTF EMA={htf_context.get('ema')}"
             )
-            
+
     # =========================
     # HTF LIQUIDITY CONTEXT FILTER
     # =========================
@@ -539,13 +540,13 @@ def process_cycle(last_processed_candle_time):
             reason = f"Manual forced direction override without strategy signal -> forced {FORCE_SIGNAL}"
             selected_signal_data = {}
             logger.info(f"[SAFE FORCE] No strategy signal, forced {FORCE_SIGNAL} allowed")
-            
+
     # =========================
     # FINAL SIGNAL NOTIFICATION
     # =========================
     if signal in ["BUY", "SELL"]:
         from src.notifier import build_trade_message
-    
+
         preview_data = {
             "signal": signal,
             "strategy": strategy_name,
@@ -560,7 +561,7 @@ def process_cycle(last_processed_candle_time):
             "pivot_target_level": selected_signal_data.get("pivot_target_level"),
             "reason": reason,
         }
-    
+
         send_telegram_message(build_trade_message(preview_data))
 
     # =========================
@@ -580,11 +581,15 @@ def process_cycle(last_processed_candle_time):
     logger.info(f"Score: {score}")
 
 
-                        
+
     # =========================
     # REGISTER SETUP AFTER FINAL FILTERS
     # =========================
-    if signal in ["BUY", "SELL"]:
+    if (
+        signal in ["BUY", "SELL"]
+        and selected_signal_data.get("signal") in ["BUY", "SELL"]
+        and selected_signal_data.get("strategy")
+    ):
         execution_engine.register_setup(
             selected_signal_data,
             close_price,
@@ -596,40 +601,54 @@ def process_cycle(last_processed_candle_time):
     # =========================
 
     ready_setups = execution_engine.process_setups(df, close_price, atr)
-    
+
     if not ready_setups:
         signal = "NO_TRADE"
         strategy_name = None
         reason = "Waiting for execution conditions"
-    
+
     else:
         best_setup = ready_setups[0]
         setup_data = best_setup["data"]
-    
+
         # =========================
         # 🔥 FINAL CONFIRMATION FILTER
         # =========================
         from src.confirmation_engine import confirm_entry
         from src.smart_money_layer import smart_money_confirm
-        
-        try:
-            confirmed = confirm_entry(df, setup_data["signal"])
-        except Exception as e:
-            logger.error(f"[CONFIRMATION ERROR] {e}")
-            confirmed = False
+
+        strategy_specific_confirmed = strategy_name in ["ORB", "FVG", "ORDER_BLOCK"]
+
+        if strategy_specific_confirmed:
+            confirmed = True
+            logger.info(
+                f"[CONFIRMATION] Generic confirmation skipped | "
+                f"strategy={strategy_name} already confirmed by execution engine"
+            )
+        else:
+            try:
+                confirmed = confirm_entry(df, setup_data["signal"])
+            except Exception as e:
+                logger.error(f"[CONFIRMATION ERROR] {e}")
+                confirmed = False
 
         if not confirmed:
-            logger.info("❌ Confirmation failed → waiting better candle")
+            logger.info(
+                f"❌ Confirmation failed → waiting better candle | "
+                f"strategy={strategy_name} "
+                f"signal={setup_data.get('signal')} "
+                f"entry_model={setup_data.get('entry_model')}"
+            )
             return current_candle_time
-        
+
         smc_check = smart_money_confirm(df, setup_data["signal"])
-        
+
         if not smc_check["confirmed"]:
             logger.info(
                 f"❌ Smart money confirmation failed → reasons={smc_check['reasons']}"
             )
             return current_candle_time
-    
+
         # =========================
         # ✅ CONFIRMED TRADE
         # =========================
@@ -646,17 +665,17 @@ def process_cycle(last_processed_candle_time):
             """
             )
             best_setup["notified"] = True
-    
+
         selected_signal_data = setup_data
         signal = setup_data["signal"]
         strategy_name = setup_data["strategy"]
         reason = setup_data.get("reason", reason)
-    
-        execution_engine.mark_executed(best_setup)
+
+
 
     # =========================
     # TRADE PLAN
-    # =========================         
+    # =========================
     trade_plan = calculate_trade_plan(
         df=df,
         signal=signal,
@@ -672,8 +691,56 @@ def process_cycle(last_processed_candle_time):
         trade_plan["reason"] = reason
         trade_plan["session"] = selected_signal_data.get("session", session_name)
 
+    if signal in ["BUY", "SELL"] and trade_plan is None:
+        logger.info(
+            f"[TRADE PLAN FAILED] "
+            f"strategy={strategy_name} "
+            f"signal={signal} "
+            f"data_keys={list(selected_signal_data.keys())}"
+        )
+
+        send_telegram_message(
+            f"🚫 Trade Plan Failed\n"
+            f"Symbol: {SYMBOL}\n"
+            f"Signal: {signal}\n"
+            f"Strategy: {strategy_name}\n\n"
+            f"Reason: Could not calculate SL/TP from signal data.\n"
+            f"Available data keys: {', '.join(selected_signal_data.keys())}"
+        )
+
+    return current_candle_time
+
+    if signal in ["BUY", "SELL"] and trade_plan is not None:
+        try:
+            if signal == "BUY":
+                rr_value = round(
+                    (trade_plan["take_profit"] - trade_plan["entry_price"])
+                    / (trade_plan["entry_price"] - trade_plan["stop_loss"]),
+                    2,
+                )
+            else:
+                rr_value = round(
+                    (trade_plan["entry_price"] - trade_plan["take_profit"])
+                    / (trade_plan["stop_loss"] - trade_plan["entry_price"]),
+                    2,
+                )
+        except Exception:
+            rr_value = "N/A"
+
+        send_telegram_message(
+            f"📐 Trade Plan Ready\n"
+            f"Symbol: {SYMBOL}\n"
+            f"Signal: {signal}\n"
+            f"Strategy: {strategy_name}\n\n"
+            f"Entry: {trade_plan['entry_price']}\n"
+            f"SL: {trade_plan['stop_loss']}\n"
+            f"TP: {trade_plan['take_profit']}\n"
+            f"RR: {rr_value}\n"
+            f"Lot: {trade_plan['lot']}"
+        )
+
     trade_allowed, guard_reason = check_trade_guard(signal, tick)
-    
+
     if signal in ["BUY", "SELL"] and trade_plan is not None:
         min_rr_required = get_min_rr(strategy_name)
         if not is_rr_valid(trade_plan, min_rr=min_rr_required):
@@ -697,7 +764,7 @@ def process_cycle(last_processed_candle_time):
             entry = trade_plan.get("entry_price")
             sl = trade_plan.get("stop_loss")
             tp = trade_plan.get("take_profit")
-            
+
             try:
                 if signal == "BUY":
                     rr_value = round((tp - entry) / (entry - sl), 2)
@@ -711,11 +778,11 @@ def process_cycle(last_processed_candle_time):
             Symbol: {SYMBOL}
             Signal: {signal}
             Strategy: {strategy_name}
-            
+
             Entry: {entry}
             SL: {sl}
             TP: {tp}
-            
+
             RR: {rr_value}
             Reason: {guard_reason}
             """
@@ -736,7 +803,10 @@ def process_cycle(last_processed_candle_time):
             return current_candle_time
 
         logger.info("🔥 Executing trade...")
-        execute_trade(signal, trade_plan, SYMBOL)
+        execution_result = execute_trade(signal, trade_plan, SYMBOL)
+
+        if execution_result:
+            execution_engine.mark_executed(best_setup)
 
     return current_candle_time
 

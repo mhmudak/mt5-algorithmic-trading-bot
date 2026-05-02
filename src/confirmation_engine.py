@@ -69,21 +69,25 @@ def confirm_breakout_hold(df, signal, level, atr):
 
 def confirm_entry(df, signal):
     """
-    Unified confirmation entry point.
-    Decides which confirmation logic to use.
+    Generic confirmation for strategies that do not already have
+    strategy-specific execution confirmation.
+
+    Uses closed candles only:
+    - last = last closed candle
+    - prev = candle before it
     """
 
     try:
-        # Example logic (you can refine later)
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
+        if len(df) < 4:
+            return False
+
+        last = df.iloc[-2]
+        prev = df.iloc[-3]
 
         if signal == "BUY":
-            # bullish confirmation
             return last["close"] > prev["high"]
 
-        elif signal == "SELL":
-            # bearish confirmation
+        if signal == "SELL":
             return last["close"] < prev["low"]
 
         return False

@@ -63,7 +63,7 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
         if sl_reference is None:
             return None
         stop_loss = sl_reference
-        
+
     elif strategy == "LIQUIDITY_SWEEP" and signal_data:
         sweep_low = signal_data.get("sweep_low")
         sweep_high = signal_data.get("sweep_high")
@@ -74,6 +74,20 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
             stop_loss = sweep_high + max(atr * 0.15, 1.0)
         else:
             return None
+
+    elif strategy == "RELIEF_RALLY" and signal_data:
+        sl_reference = signal_data.get("sl_reference")
+
+        if sl_reference is None:
+            return None
+
+        if signal == "BUY" and sl_reference >= entry_price:
+            return None
+
+        if signal == "SELL" and sl_reference <= entry_price:
+            return None
+
+        stop_loss = sl_reference
 
     elif strategy == "FVG" and signal_data and signal_data.get("sl_reference") is not None:
         stop_loss = signal_data["sl_reference"]
@@ -121,7 +135,7 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
     stop_distance = abs(entry_price - stop_loss)
     if stop_distance <= 0:
         return None
-    
+
 
     # =========================
     # ADAPTIVE TP BUFFER
@@ -151,10 +165,10 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
             take_profit = min(recent_resistance, entry_price + height)
         else:
             take_profit = max(recent_support, entry_price - height)
-            
+
     elif strategy == "LIQUIDITY_SWEEP" and signal_data:
         rr = 1.5
-    
+
         if signal == "BUY":
             take_profit = entry_price + (stop_distance * rr)
         else:
@@ -194,13 +208,23 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
         "RELIEF_RALLY",
     ] and signal_data:
         height = signal_data.get("pattern_height", 0)
-        if height <= 0:
-            return None
 
-        if signal == "BUY":
-            take_profit = entry_price + height
+        if height and height > 0:
+            if signal == "BUY":
+                take_profit = entry_price + height
+            else:
+                take_profit = entry_price - height
+
+        elif strategy in ["HEAD_SHOULDERS", "RELIEF_RALLY"]:
+            rr = 1.5
+
+            if signal == "BUY":
+                take_profit = entry_price + (stop_distance * rr)
+            else:
+                take_profit = entry_price - (stop_distance * rr)
+
         else:
-            take_profit = entry_price - height
+            return None
 
     elif USE_STRUCTURE_TAKE_PROFIT:
         if signal == "BUY":
