@@ -22,6 +22,18 @@ BREAKOUT_LOOKBACK = 10
 BREAKOUT_BUFFER = 0.20
 
 # =========================
+# Fractal Sweep Strategy Settings
+# =========================
+FRACTAL_LOOKBACK = 40
+
+FRACTAL_SWEEP_DISTANCE_MIN = 4.0    # $4
+FRACTAL_SWEEP_DISTANCE_MAX = 5.5    # $5 with slight flexibility
+
+FRACTAL_SL_DISTANCE = 5.0           # $5 stop loss
+FRACTAL_TP_DISTANCE = 10.0          # $10 target
+FRACTAL_TP_EXTENDED_DISTANCE = 15.0 # $15 optional extended target
+
+# =========================
 # Execution / Risk Settings
 # =========================
 POSITION_MODE = "fixed"   # "fixed" or "risk"
@@ -212,6 +224,7 @@ ORDER_BLOCK_BASE_MIN_SCORE = 89
 STRICT_BASE_MIN_SCORE = 90
 HEAD_SHOULDERS_BASE_MIN_SCORE = 90
 ORB_BASE_MIN_SCORE = 90
+FRACTAL_SWEEP_BASE_MIN_SCORE = 90
 SMT_BASE_MIN_SCORE = 91
 RELIEF_RALLY_BASE_MIN_SCORE = 92
 CRT_TBS_BASE_MIN_SCORE = 93

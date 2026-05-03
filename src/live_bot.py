@@ -182,6 +182,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_ob_fvg_combo import generate_signal as ob_fvg_combo_signal
     from src.strategies.strategy_liquidity_trap import generate_signal as liquidity_trap_signal
     from src.strategies.strategy_relief_rally import generate_signal as relief_rally_signal
+    from src.strategies.strategy_fractal_sweep import generate_signal as fractal_sweep_signal
 
 
 
@@ -223,6 +224,7 @@ def process_cycle(last_processed_candle_time):
 
     elif market_condition == "RANGING":
         strategy_map = [
+            ("FRACTAL_SWEEP", fractal_sweep_signal),
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
             ("CRT_TBS", crt_tbs_signal),
             ("SMT_PRO", smt_pro_signal),
@@ -238,6 +240,7 @@ def process_cycle(last_processed_candle_time):
     elif market_condition == "VOLATILE":
         strategy_map = [
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
+            ("FRACTAL_SWEEP", fractal_sweep_signal),
             ("CRT_TBS", crt_tbs_signal),
             ("SMT_PRO", smt_pro_signal),
             ("SMT", smt_signal),

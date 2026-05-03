@@ -75,6 +75,20 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
         else:
             return None
 
+    elif strategy == "FRACTAL_SWEEP" and signal_data:
+        sl_reference = signal_data.get("sl_reference")
+
+        if sl_reference is None:
+            return None
+
+        if signal == "BUY" and sl_reference >= entry_price:
+            return None
+
+        if signal == "SELL" and sl_reference <= entry_price:
+            return None
+
+        stop_loss = sl_reference
+
     elif strategy == "RELIEF_RALLY" and signal_data:
         sl_reference = signal_data.get("sl_reference")
 
@@ -206,6 +220,7 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
         "OB_FVG_COMBO",
         "LIQUIDITY_TRAP",
         "RELIEF_RALLY",
+        "FRACTAL_SWEEP",
     ] and signal_data:
         height = signal_data.get("pattern_height", 0)
 
