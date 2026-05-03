@@ -81,7 +81,7 @@ def is_rr_valid(trade_plan, min_rr=1.5):
         return rr >= min_rr
     except Exception:
         return False
-    
+
 def get_min_rr(strategy_name, entry_model=None):
     if strategy_name == "WAVETREND_PIVOT":
         if entry_model == "PIVOT_REJECTION_PRECISION":
@@ -97,7 +97,7 @@ def get_min_rr(strategy_name, entry_model=None):
 
 def process_cycle(last_processed_candle_time):
     global last_signal, reversal_count
-    
+
 
     df = fetch_market_data()
     if df is None:
@@ -111,8 +111,8 @@ def process_cycle(last_processed_candle_time):
         logger.error(f"Failed to fetch current tick: {mt5.last_error()}")
         return last_processed_candle_time
 
-    print("MT5 time:", tick.time)
-    
+    logger.info(f"MT5 time: {tick.time}")
+
     account_info = mt5.account_info()
     if account_info is None:
         logger.error(f"Failed to fetch account info: {mt5.last_error()}")
@@ -139,7 +139,7 @@ def process_cycle(last_processed_candle_time):
     # =========================
     from src.session_engine import detect_session, session_score_adjustment
     from config.settings import ENABLE_SESSION_ENGINE
-    
+
     if (
         last_processed_candle_time is not None
         and current_candle_time == last_processed_candle_time
@@ -148,10 +148,10 @@ def process_cycle(last_processed_candle_time):
         return last_processed_candle_time
 
     logger.info(f"New candle detected: {current_candle_time}")
-    
+
     from src.strategy_performance import rebuild_strategy_performance
     rebuild_strategy_performance()
-    
+
     session_name = detect_session(current_candle_time)
     logger.info(f"[SESSION] {session_name}")
 
@@ -198,19 +198,19 @@ def process_cycle(last_processed_candle_time):
     # AI STRATEGY SELECTION (M5 SCALPING MODE)
     # =========================
     from src.strategies.strategy_wavetrend_pivot import generate_signal as wavetrend_pivot_signal
-    
+
     if market_condition == "TRENDING":
         strategy_map = [
             ("WAVETREND_PIVOT", wavetrend_pivot_signal),
             ("OB_FVG_COMBO", ob_fvg_combo_signal),
         ]
-    
+
     elif market_condition == "RANGING":
         strategy_map = [
             ("WAVETREND_PIVOT", wavetrend_pivot_signal),
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
         ]
-    
+
     elif market_condition == "VOLATILE":
         strategy_map = [
             ("WAVETREND_PIVOT", wavetrend_pivot_signal),
@@ -227,45 +227,45 @@ def process_cycle(last_processed_candle_time):
         try:
             result = strat(df)
             logger.info(f"[STRATEGY RESULT] {name}: {result}")
-        
+
             if not result:
                 continue
-            
+
             signal_value = result.get("signal")
-        
+
             if signal_value in ["BUY", "SELL"]:
-            
+
                 # 🔥 enforce metadata
                 result["strategy"] = name
                 result.setdefault("score", 0)
                 result.setdefault("reason", "N/A")
                 result["session"] = session_name
-        
+
                 # =========================
                 # 🔥 APPLY SMC ENGINE HERE
                 # =========================
                 from config.settings import ENABLE_SMC_ENGINE, SMC_MIN_FINAL_SCORE
-                
+
                 score_boost, smc_reasons = smc_validate(df, result)
-        
+
                 result["score"] += score_boost
                 result["smc"] = smc_reasons
-        
+
                 if ENABLE_SMC_ENGINE and result["score"] < SMC_MIN_FINAL_SCORE:
                     logger.info(
                         f"[SMC FILTER] Rejected {name} "
                         f"(score={result['score']} required={SMC_MIN_FINAL_SCORE})"
                     )
                     continue
-                
+
                 if ENABLE_SESSION_ENGINE:
                     session_boost, session_reasons = session_score_adjustment(name, session_name)
                     result["score"] += session_boost
                     result.setdefault("session_reasons", [])
                     result["session_reasons"].extend(session_reasons)
-                
+
                 signals.append(result)
-        
+
         except Exception as e:
             logger.error(f"[STRATEGY ERROR] {name}: {e}")
 
@@ -277,7 +277,7 @@ def process_cycle(last_processed_candle_time):
     original_reason = None
     original_score = 0
     selected_signal_data = {}
-    
+
     if not signals:
         signal = "NO_TRADE"
         score = 0
@@ -309,7 +309,7 @@ def process_cycle(last_processed_candle_time):
 
         if selected_signal_data.get("smc"):
             reason += f" | SMC: {','.join(selected_signal_data['smc'])}"
-            
+
         if selected_signal_data.get("session_reasons"):
             reason += f" | SESSION: {','.join(selected_signal_data['session_reasons'])}"
 
@@ -327,11 +327,11 @@ def process_cycle(last_processed_candle_time):
 
 
     from src.adaptive_thresholds import get_adaptive_min_score
-    
+
     if signal in ["BUY", "SELL"]:
         min_required_score = get_adaptive_min_score(strategy_name, market_condition)
-        
-    
+
+
         if score < min_required_score:
             logger.info(
                 f"Signal rejected (score too low) | "
@@ -457,13 +457,13 @@ def process_cycle(last_processed_candle_time):
             reason = f"Manual forced direction override without strategy signal -> forced {FORCE_SIGNAL}"
             selected_signal_data = {}
             logger.info(f"[SAFE FORCE] No strategy signal, forced {FORCE_SIGNAL} allowed")
-            
+
     # =========================
     # FINAL SIGNAL NOTIFICATION
     # =========================
     if signal in ["BUY", "SELL"]:
         from src.notifier import build_trade_message
-    
+
         preview_data = {
             "signal": signal,
             "strategy": strategy_name,
@@ -478,7 +478,7 @@ def process_cycle(last_processed_candle_time):
             "pivot_target_level": selected_signal_data.get("pivot_target_level"),
             "reason": reason,
         }
-    
+
         send_telegram_message(build_trade_message(preview_data))
 
     # =========================
@@ -502,12 +502,29 @@ def process_cycle(last_processed_candle_time):
     # FAST CONFIRMATION (M5)
     # =========================
     if signal in ["BUY", "SELL"]:
-        confirmed = confirm_entry(df, signal, mode="FAST")
-    
+        strategy_specific_confirmed = strategy_name in [
+            "WAVETREND_PIVOT",
+            "LIQUIDITY_TRAP",
+        ]
+
+        if strategy_specific_confirmed:
+            confirmed = True
+            logger.info(
+                f"[FAST CONFIRMATION] Generic confirmation skipped | "
+                f"strategy={strategy_name} already has strategy-specific confirmation"
+            )
+        else:
+            confirmed = confirm_entry(df, signal, mode="FAST")
+
         if not confirmed:
-            logger.info("❌ FAST confirmation failed (M5 entry)")
+            logger.info(
+                f"❌ FAST confirmation failed (M5 entry) | "
+                f"strategy={strategy_name} "
+                f"signal={signal} "
+                f"type={selected_signal_data.get('entry_model')}"
+            )
             return current_candle_time
-    
+
     # =========================
     # SNIPER ENTRY FILTER (M5)
     # =========================
@@ -518,17 +535,17 @@ def process_cycle(last_processed_candle_time):
             signal_data=selected_signal_data,
             atr=df.iloc[-1]["atr_14"],
         )
-    
+
         if not sniper_ok:
             logger.info(f"❌ Sniper entry rejected: {sniper_reason}")
             return current_candle_time
-    
+
         reason += f" | SNIPER: {sniper_reason}"
 
 
     # =========================
     # TRADE PLAN
-    # =========================         
+    # =========================
     trade_plan = calculate_trade_plan(
         df=df,
         signal=signal,
@@ -544,14 +561,67 @@ def process_cycle(last_processed_candle_time):
         trade_plan["reason"] = reason
         trade_plan["session"] = selected_signal_data.get("session", session_name)
 
+    if signal in ["BUY", "SELL"] and trade_plan is None:
+        logger.info(
+            f"[TRADE PLAN FAILED] "
+            f"strategy={strategy_name} "
+            f"signal={signal} "
+            f"type={selected_signal_data.get('entry_model')} "
+            f"keys={list(selected_signal_data.keys())}"
+        )
+
+        send_telegram_message(
+            f"🚫 M5 Trade Plan Failed\n"
+            f"Symbol: {SYMBOL}\n"
+            f"Strategy: {strategy_name}\n"
+            f"Signal: {signal}\n"
+            f"Type: {selected_signal_data.get('entry_model')}\n\n"
+            f"Reason: Could not calculate SL/TP.\n"
+            f"Available keys: {', '.join(selected_signal_data.keys())}"
+        )
+
+        return current_candle_time
+
+
+    if signal in ["BUY", "SELL"] and trade_plan is not None:
+        try:
+            if signal == "BUY":
+                rr_value = round(
+                    (trade_plan["take_profit"] - trade_plan["entry_price"])
+                    / (trade_plan["entry_price"] - trade_plan["stop_loss"]),
+                    2,
+                )
+            else:
+                rr_value = round(
+                    (trade_plan["entry_price"] - trade_plan["take_profit"])
+                    / (trade_plan["stop_loss"] - trade_plan["entry_price"]),
+                    2,
+                )
+        except Exception:
+            rr_value = "N/A"
+
+        send_telegram_message(
+            f"📐 M5 Trade Plan Ready\n"
+            f"Symbol: {SYMBOL}\n"
+            f"Strategy: {strategy_name}\n"
+            f"Signal: {signal}\n"
+            f"Type: {selected_signal_data.get('entry_model')}\n\n"
+            f"Entry: {trade_plan['entry_price']}\n"
+            f"SL: {trade_plan['stop_loss']}\n"
+            f"TP: {trade_plan['take_profit']}\n"
+            f"RR: {rr_value}\n"
+            f"Lot: {trade_plan['lot']}"
+        )
+
+
     trade_allowed, guard_reason = check_trade_guard(signal, tick)
-    
+
     if signal in ["BUY", "SELL"] and trade_plan is not None:
         min_rr_required = get_min_rr(
             strategy_name,
             selected_signal_data.get("entry_model")
         )
-        
+
         if not is_rr_valid(trade_plan, min_rr=min_rr_required):
             trade_allowed = False
             guard_reason = "Trade blocked - Due to the low risk-reward ratio RR"
@@ -571,7 +641,7 @@ def process_cycle(last_processed_candle_time):
             entry = trade_plan.get("entry_price")
             sl = trade_plan.get("stop_loss")
             tp = trade_plan.get("take_profit")
-    
+
             rr_value = None
             try:
                 if signal == "BUY":
@@ -580,24 +650,24 @@ def process_cycle(last_processed_candle_time):
                     rr_value = round((entry - tp) / (sl - entry), 2)
             except Exception:
                 pass
-            
+
             send_telegram_message(
             f"""🚫 M5 Trade Blocked
             Symbol: {SYMBOL}
             Strategy: {strategy_name}
             Signal: {signal}
             Type: {selected_signal_data.get("entry_model")}
-            
+
             Entry: {entry}
             SL: {sl}
             TP: {tp}
             RR: {rr_value}
             Required RR: {min_rr_required}
-            
+
             Reason: {guard_reason}
             """
             )
-    
+
         return current_candle_time
 
     # =========================

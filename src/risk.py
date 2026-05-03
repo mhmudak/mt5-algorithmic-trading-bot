@@ -110,9 +110,30 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
 
     elif strategy == "WAVETREND_PIVOT" and signal_data:
         pivot_target_level = signal_data.get("pivot_target_level")
-        if pivot_target_level is None:
-            return None
-        take_profit = pivot_target_level
+        entry_model = signal_data.get("entry_model")
+
+        if entry_model == "PIVOT_REJECTION_PRECISION":
+            rr_target = 1.1
+        elif entry_model == "PIVOT_BREAKOUT_PRECISION":
+            rr_target = 1.25
+        else:
+            rr_target = 1.3
+
+        if signal == "BUY":
+            fallback_tp = entry_price + (stop_distance * rr_target)
+
+            if pivot_target_level is None or pivot_target_level <= entry_price:
+                take_profit = fallback_tp
+            else:
+                take_profit = min(pivot_target_level, fallback_tp)
+
+        else:
+            fallback_tp = entry_price - (stop_distance * rr_target)
+
+            if pivot_target_level is None or pivot_target_level >= entry_price:
+                take_profit = fallback_tp
+            else:
+                take_profit = max(pivot_target_level, fallback_tp)
 
     elif strategy == "FVG" and signal_data:
         height = signal_data.get("pattern_height", 0)
