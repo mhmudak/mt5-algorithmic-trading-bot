@@ -336,6 +336,7 @@ def process_cycle(last_processed_candle_time):
             from src.notifier import build_trade_message
 
             detected_data = {
+                "stage": "SETUP DETECTED",
                 "signal": signal,
                 "strategy": strategy_name,
                 "entry_model": selected_signal_data.get("entry_model", "RAW"),
@@ -398,6 +399,16 @@ def process_cycle(last_processed_candle_time):
                 f"Signal rejected (score too low) | "
                 f"strategy={strategy_name} score={score} required={min_required_score}"
             )
+
+            send_telegram_message(
+                f"🚫 Signal Rejected by Score\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Strategy: {strategy_name}\n"
+                f"Signal: {signal}\n"
+                f"Score: {score}\n"
+                f"Required: {min_required_score}"
+            )
+
             signal = "NO_TRADE"
 
     # =========================
@@ -413,6 +424,15 @@ def process_cycle(last_processed_candle_time):
             logger.info(
                 f"[MTF] Signal rejected by higher timeframe | signal={signal} mtf_bias={mtf_bias}"
             )
+
+            send_telegram_message(
+                f"🚫 Signal Rejected by MTF\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Strategy: {strategy_name}\n"
+                f"Signal: {signal}\n"
+                f"MTF Bias: {mtf_bias}"
+            )
+
             signal = "NO_TRADE"
             reason = f"Rejected by MTF confirmation -> higher timeframe bias is {mtf_bias}"
 
@@ -428,6 +448,15 @@ def process_cycle(last_processed_candle_time):
                 f"htf_bias={htf_context.get('bias')} "
                 f"price={htf_context.get('price')} "
                 f"ema={htf_context.get('ema')}"
+            )
+            send_telegram_message(
+                f"🚫 Signal Rejected by HTF\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Strategy: {strategy_name}\n"
+                f"Signal: {signal}\n"
+                f"HTF Bias: {htf_context.get('bias')}\n"
+                f"HTF Price: {htf_context.get('price')}\n"
+                f"HTF EMA: {htf_context.get('ema')}"
             )
             signal = "NO_TRADE"
             reason = (
@@ -448,6 +477,14 @@ def process_cycle(last_processed_candle_time):
                 f"[HTF LIQUIDITY] Rejected | signal={signal} "
                 f"bias={liquidity_context.get('bias')} "
                 f"reason={liquidity_context.get('reason')}"
+            )
+            send_telegram_message(
+                f"🚫 Signal Rejected by HTF Liquidity\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Strategy: {strategy_name}\n"
+                f"Signal: {signal}\n"
+                f"Bias: {liquidity_context.get('bias')}\n"
+                f"Reason: {liquidity_context.get('reason')}"
             )
             signal = "NO_TRADE"
             reason = (
@@ -551,6 +588,7 @@ def process_cycle(last_processed_candle_time):
         from src.notifier import build_trade_message
 
         preview_data = {
+            "stage": "FILTERED SIGNAL",
             "signal": signal,
             "strategy": strategy_name,
             "entry_model": selected_signal_data.get("entry_model", "N/A"),
@@ -606,13 +644,41 @@ def process_cycle(last_processed_candle_time):
     ready_setups = execution_engine.process_setups(df, close_price, atr)
 
     if not ready_setups:
-        signal = "NO_TRADE"
-        strategy_name = None
-        reason = "Waiting for execution conditions"
+        waiting_reasons = [
+            setup.get("wait_reason")
+            for setup in execution_engine.active_setups
+            if setup.get("state") == "WAITING"
+            and setup.get("strategy") == strategy_name
+            and setup.get("signal") == signal
+            and setup.get("entry_model") == selected_signal_data.get("entry_model", "MARKET")
+                ]
+
+        waiting_reason = next((reason for reason in waiting_reasons if reason), None)
+
+        if signal in ["BUY", "SELL"]:
+            logger.info(
+                f"[EXECUTION WAITING] "
+                f"strategy={strategy_name} "
+                f"signal={signal} "
+                f"entry_model={selected_signal_data.get('entry_model', 'N/A')}"
+            )
+
+            send_telegram_message(
+                f"⏳ Setup Waiting for Execution\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Strategy: {strategy_name}\n"
+                f"Signal: {signal}\n"
+                f"Type: {selected_signal_data.get('entry_model', 'N/A')}\n\n"
+                f"Reason: {waiting_reason or 'Execution engine did not confirm entry yet.'}"
+            )
+
+        return current_candle_time
 
     else:
         best_setup = ready_setups[0]
         setup_data = best_setup["data"]
+        setup_strategy = setup_data.get("strategy")
+        setup_signal = setup_data.get("signal")
 
         # =========================
         # 🔥 FINAL CONFIRMATION FILTER
@@ -620,7 +686,7 @@ def process_cycle(last_processed_candle_time):
         from src.confirmation_engine import confirm_entry
         from src.smart_money_layer import smart_money_confirm
 
-        strategy_specific_confirmed = strategy_name in ["ORB", "FVG", "ORDER_BLOCK"]
+        strategy_specific_confirmed = setup_strategy in ["ORB", "FVG", "ORDER_BLOCK"]
 
         if strategy_specific_confirmed:
             confirmed = True
@@ -650,6 +716,15 @@ def process_cycle(last_processed_candle_time):
             logger.info(
                 f"❌ Smart money confirmation failed → reasons={smc_check['reasons']}"
             )
+
+            send_telegram_message(
+                f"🚫 Smart Money Confirmation Failed\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Strategy: {setup_strategy}\n"
+                f"Signal: {setup_signal}\n\n"
+                f"Reasons: {', '.join(smc_check['reasons'])}"
+            )
+
             return current_candle_time
 
         # =========================
@@ -670,8 +745,8 @@ def process_cycle(last_processed_candle_time):
             best_setup["notified"] = True
 
         selected_signal_data = setup_data
-        signal = setup_data["signal"]
-        strategy_name = setup_data["strategy"]
+        signal = setup_signal
+        strategy_name = setup_strategy
         reason = setup_data.get("reason", reason)
 
 
@@ -711,7 +786,7 @@ def process_cycle(last_processed_candle_time):
             f"Available data keys: {', '.join(selected_signal_data.keys())}"
         )
 
-    return current_candle_time
+        return current_candle_time
 
     if signal in ["BUY", "SELL"] and trade_plan is not None:
         try:

@@ -59,6 +59,8 @@ def build_trade_message(data: dict) -> str:
     strategy = data.get("strategy")
     entry_model = data.get("entry_model", "N/A")
 
+    stage = data.get("stage", "SIGNAL DETECTED")
+
     entry = data.get("entry")
     sl = data.get("sl")
     tp = data.get("tp")
@@ -90,7 +92,7 @@ def build_trade_message(data: dict) -> str:
         rr = "N/A"
 
     message = f"""
-📡 SIGNAL DETECTED
+📡 {stage}
 
 🔹 Strategy: {strategy}
 🔹 Type: {entry_model}

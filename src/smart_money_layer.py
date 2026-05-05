@@ -1,32 +1,33 @@
 def detect_liquidity_sweep(df, signal, lookback=6):
-    if len(df) < lookback + 2:
+    if len(df) < lookback + 3:
         return False
 
-    last = df.iloc[-1]
-    prev_data = df.iloc[-(lookback + 1):-1]
+    last = df.iloc[-2]  # last closed candle
+    prev_data = df.iloc[-(lookback + 2):-2]
 
     recent_high = prev_data["high"].max()
     recent_low = prev_data["low"].min()
 
     if signal == "BUY":
-        # swept sell-side liquidity then closed back up
         return last["low"] < recent_low and last["close"] > recent_low
 
     if signal == "SELL":
-        # swept buy-side liquidity then closed back down
         return last["high"] > recent_high and last["close"] < recent_high
 
     return False
 
 
-def detect_displacement(df, signal, atr_multiplier=0.6):
-    if len(df) < 2:
+def detect_displacement(df, signal, atr_multiplier=0.45):
+    if len(df) < 3:
         return False
 
-    last = df.iloc[-1]
+    last = df.iloc[-2]  # last closed candle
     atr = last["atr_14"]
 
     body = abs(last["close"] - last["open"])
+
+    if atr <= 0:
+        return False
 
     if body < atr * atr_multiplier:
         return False
@@ -41,11 +42,11 @@ def detect_displacement(df, signal, atr_multiplier=0.6):
 
 
 def detect_inducement_break(df, signal, lookback=4):
-    if len(df) < lookback + 2:
+    if len(df) < lookback + 3:
         return False
 
-    last = df.iloc[-1]
-    recent = df.iloc[-(lookback + 1):-1]
+    last = df.iloc[-2]  # last closed candle
+    recent = df.iloc[-(lookback + 2):-2]
 
     local_high = recent["high"].max()
     local_low = recent["low"].min()
@@ -80,7 +81,7 @@ def smart_money_confirm(df, signal):
         reasons.append("inducement_break")
 
     return {
-        "confirmed": score >= 2,
+        "confirmed": score >= 1,
         "score": score,
         "reasons": reasons,
     }

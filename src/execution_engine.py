@@ -35,6 +35,7 @@ class ExecutionEngine:
             "expires_at": datetime.utcnow() + timedelta(minutes=15),
             "data": signal_data,
             "notified": False,
+            "wait_reason": None,
         }
 
         self.active_setups.append(setup)
@@ -70,32 +71,34 @@ class ExecutionEngine:
                     setup["state"] = "WAITING"
 
             elif strategy == "ORDER_BLOCK":
-                ob_high = data.get("ob_high")
-                ob_low = data.get("ob_low")
-                if ob_high is None or ob_low is None:
-                    continue
-
-                zone_low = min(ob_low, ob_high)
-                zone_high = max(ob_low, ob_high)
-
-                if confirm_rejection_entry(df, signal, zone_low, zone_high, atr):
-                    setup["state"] = "READY"
-                    executable.append(setup)
-                else:
-                    setup["state"] = "WAITING"
+                # Order block strategy already confirms displacement + revisit.
+                # Do not require a second zone rejection here, otherwise valid entries may be missed.
+                setup["state"] = "READY"
+                setup["wait_reason"] = None
+                executable.append(setup)
 
             elif strategy == "ORB":
                 orb_low = data.get("orb_low")
                 orb_high = data.get("orb_high")
                 entry_model = data.get("entry_model", "BREAKOUT")
 
+                if orb_low is None or orb_high is None:
+                    setup["state"] = "WAITING"
+                    setup["wait_reason"] = "ORB levels missing"
+                    continue
+
                 if signal == "SELL":
                     if entry_model == "BREAKOUT":
                         if confirm_breakout_hold(df, signal, orb_low, atr):
                             setup["state"] = "READY"
+                            setup["wait_reason"] = None
                             executable.append(setup)
                         else:
                             setup["state"] = "WAITING"
+                            setup["wait_reason"] = (
+                                f"ORB SELL breakout hold not confirmed | "
+                                f"level={round(orb_low, 2)}"
+                          )
                     else:
                         zone_low = orb_low
                         zone_high = orb_low + max(atr * 0.20, 2.0)
@@ -109,9 +112,14 @@ class ExecutionEngine:
                     if entry_model == "BREAKOUT":
                         if confirm_breakout_hold(df, signal, orb_high, atr):
                             setup["state"] = "READY"
+                            setup["wait_reason"] = None
                             executable.append(setup)
                         else:
                             setup["state"] = "WAITING"
+                            setup["wait_reason"] = (
+                                f"ORB BUY breakout hold not confirmed | "
+                                f"level={round(orb_high, 2)}"
+                            )
                     else:
                         zone_low = orb_high - max(atr * 0.20, 2.0)
                         zone_high = orb_high
