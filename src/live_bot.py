@@ -49,6 +49,7 @@ from config.settings import (
     REVERSAL_MIN_SCORE,
     TRADING_MODE,
     ENABLE_FCR_M1_FVG,
+    ENABLE_WAVETREND_PIVOT_M5,
 )
 
 last_signal = None
@@ -80,6 +81,7 @@ STRATEGY_SPECIFIC_CONFIRMED = {
     "FAST",
     "MTF_OB_ENTRY",
     "FCR_M1_FVG",
+    "WAVETREND_PIVOT",
 }
 
 def fetch_market_data():
@@ -229,6 +231,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_breaker_block import generate_signal as breaker_block_signal
     from src.strategies.strategy_mtf_order_block_entry import generate_signal as mtf_ob_entry_signal
     from src.strategies.strategy_fcr_m1_fvg import generate_signal as fcr_m1_fvg_signal
+    from src.strategies.strategy_wavetrend_pivot import generate_signal as wavetrend_pivot_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -272,6 +275,7 @@ def process_cycle(last_processed_candle_time):
     elif market_condition == "RANGING":
         strategy_map = [
             ("VWAP_RECLAIM", vwap_reclaim_signal),
+            ("WAVETREND_PIVOT", wavetrend_pivot_signal),
             ("FRACTAL_SWEEP", fractal_sweep_signal),
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
             ("CRT_TBS", crt_tbs_signal),
@@ -289,6 +293,7 @@ def process_cycle(last_processed_candle_time):
     elif market_condition == "VOLATILE":
         strategy_map = [
             ("VWAP_RECLAIM", vwap_reclaim_signal),
+            ("WAVETREND_PIVOT", wavetrend_pivot_signal),
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
             ("FRACTAL_SWEEP", fractal_sweep_signal),
             ("CRT_TBS", crt_tbs_signal),
@@ -307,6 +312,15 @@ def process_cycle(last_processed_candle_time):
     # =========================
     # STRATEGY TOGGLES
     # =========================
+
+    if not ENABLE_WAVETREND_PIVOT_M5:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "WAVETREND_PIVOT"
+        ]
+        logger.info("[STRATEGY TOGGLE] WAVETREND_PIVOT disabled")
+
     if not ENABLE_FCR_M1_FVG:
         strategy_map = [
             (name, strat)
