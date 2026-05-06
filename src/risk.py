@@ -37,6 +37,7 @@ STRATEGY_SL_REFERENCE_MODELS = {
     "SNIPER_V2",
     "STRICT",
     "FAST",
+    "HTF_TREND_PULLBACK",
 }
 
 

@@ -53,6 +53,7 @@ last_signal = None
 reversal_count = 0
 
 STRATEGY_SPECIFIC_CONFIRMED = {
+    "HTF_TREND_PULLBACK",
     "ORB",
     "FVG",
     "ORDER_BLOCK",
@@ -215,6 +216,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_relief_rally import generate_signal as relief_rally_signal
     from src.strategies.strategy_fractal_sweep import generate_signal as fractal_sweep_signal
     from src.strategy_performance import get_disabled_strategies
+    from src.strategies.strategy_htf_trend_pullback import generate_signal as htf_trend_pullback_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -234,6 +236,7 @@ def process_cycle(last_processed_candle_time):
     # =========================
     if market_condition == "TRENDING":
         strategy_map = [
+            ("HTF_TREND_PULLBACK", htf_trend_pullback_signal),
             ("OB_FVG_COMBO", ob_fvg_combo_signal),
             ("RELIEF_RALLY", relief_rally_signal),
             ("ORB", orb_signal),
