@@ -55,6 +55,7 @@ reversal_count = 0
 STRATEGY_SPECIFIC_CONFIRMED = {
     "HTF_TREND_PULLBACK",
     "SESSION_ORB_RETEST",
+    "VWAP_RECLAIM",
     "ORB",
     "FVG",
     "ORDER_BLOCK",
@@ -219,6 +220,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategy_performance import get_disabled_strategies
     from src.strategies.strategy_htf_trend_pullback import generate_signal as htf_trend_pullback_signal
     from src.strategies.strategy_session_orb_retest import generate_signal as session_orb_retest_signal
+    from src.strategies.strategy_vwap_reclaim import generate_signal as vwap_reclaim_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -258,6 +260,7 @@ def process_cycle(last_processed_candle_time):
 
     elif market_condition == "RANGING":
         strategy_map = [
+            ("VWAP_RECLAIM", vwap_reclaim_signal),
             ("FRACTAL_SWEEP", fractal_sweep_signal),
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
             ("CRT_TBS", crt_tbs_signal),
@@ -273,6 +276,7 @@ def process_cycle(last_processed_candle_time):
 
     elif market_condition == "VOLATILE":
         strategy_map = [
+            ("VWAP_RECLAIM", vwap_reclaim_signal),
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
             ("FRACTAL_SWEEP", fractal_sweep_signal),
             ("CRT_TBS", crt_tbs_signal),
