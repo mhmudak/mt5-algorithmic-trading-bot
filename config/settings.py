@@ -284,6 +284,26 @@ SMT_CONFIRMATION_SYMBOL = "XAGUSD"
 SMT_LOOKBACK_BARS = 20
 
 # =========================
+# External Macro Confirmation
+# =========================
+ENABLE_EXTERNAL_MACRO_CONFIRMATION = True
+
+# Use your broker's exact symbols.
+# If a symbol does not exist on your broker, the engine will skip it safely.
+EXTERNAL_MACRO_CONFIRMATIONS = [
+    {
+        "symbol": "DXY",
+        "mode": "INVERSE",
+        "weight": 2,
+    },
+    {
+        "symbol": "USDJPY",
+        "mode": "INVERSE",
+        "weight": 1,
+    },
+]
+
+# =========================
 # SMC Engine
 # =========================
 ENABLE_SMC_ENGINE = True
@@ -355,3 +375,7 @@ AMD_FVG_BASE_MIN_SCORE = 92
 # FVG CE MITIGATION
 ENABLE_FVG_CE_MITIGATION = True
 FVG_CE_MITIGATION_BASE_MIN_SCORE = 92
+
+# LIQUIDITY POOL OB
+ENABLE_LIQUIDITY_POOL_OB = True
+LIQUIDITY_POOL_OB_BASE_MIN_SCORE = 93

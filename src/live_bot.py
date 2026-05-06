@@ -27,6 +27,7 @@ from src.htf_filter import get_htf_context, htf_allows_signal
 from src.liquidity_context import get_liquidity_context, liquidity_allows_signal
 from src.news_filter import is_news_blackout_active
 from src.reversal_checker import build_blocked_setup_reversal
+from src.external_macro_confirmation import apply_external_macro_confirmation
 
 from src.execution_engine import ExecutionEngine
 execution_engine = ExecutionEngine()
@@ -59,6 +60,7 @@ from config.settings import (
     ENABLE_LVN_FVG_RECLAIM,
     ENABLE_AMD_FVG,
     ENABLE_FVG_CE_MITIGATION,
+    ENABLE_LIQUIDITY_POOL_OB,
 )
 
 from src.structure_liquidity_context import (
@@ -101,6 +103,7 @@ STRATEGY_SPECIFIC_CONFIRMED = {
     "LVN_FVG_RECLAIM",
     "AMD_FVG",
     "FVG_CE_MITIGATION",
+    "LIQUIDITY_POOL_OB",
 }
 
 def fetch_market_data():
@@ -277,6 +280,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_lvn_fvg_reclaim import generate_signal as lvn_fvg_reclaim_signal
     from src.strategies.strategy_amd_fvg import generate_signal as amd_fvg_signal
     from src.strategies.strategy_fvg_ce_mitigation import generate_signal as fvg_ce_mitigation_signal
+    from src.strategies.strategy_liquidity_pool_ob import generate_signal as liquidity_pool_ob_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -340,6 +344,7 @@ def process_cycle(last_processed_candle_time):
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
             ("STRUCTURE_LIQUIDITY", structure_liquidity_signal),
             ("CRT_TBS", crt_tbs_signal),
+            ("LIQUIDITY_POOL_OB", liquidity_pool_ob_signal),
             ("AMD_FVG", amd_fvg_signal),
             ("SMT_PRO", smt_pro_signal),
             ("SMT", smt_signal),
@@ -362,6 +367,7 @@ def process_cycle(last_processed_candle_time):
             ("CRT_TBS", crt_tbs_signal),
             ("SMT_PRO", smt_pro_signal),
             ("SMT", smt_signal),
+            ("LIQUIDITY_POOL_OB", liquidity_pool_ob_signal),
             ("SESSION_ORB_RETEST", session_orb_retest_signal),
             ("LVN_FVG_RECLAIM", lvn_fvg_reclaim_signal),
             ("AMD_FVG", amd_fvg_signal),
@@ -378,6 +384,14 @@ def process_cycle(last_processed_candle_time):
     # =========================
     # STRATEGY TOGGLES
     # =========================
+
+    if not ENABLE_LIQUIDITY_POOL_OB:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "LIQUIDITY_POOL_OB"
+        ]
+        logger.info("[STRATEGY TOGGLE] LIQUIDITY_POOL_OB disabled")
 
     if not ENABLE_FVG_CE_MITIGATION:
         strategy_map = [
@@ -460,6 +474,20 @@ def process_cycle(last_processed_candle_time):
 
                 result["score"] += score_boost
                 result["smc"] = smc_reasons
+
+                macro_boost, macro_reasons = apply_external_macro_confirmation(result)
+
+                result["score"] += macro_boost
+
+                if macro_reasons:
+                    result.setdefault("macro_reasons", [])
+                    result["macro_reasons"].extend(macro_reasons)
+
+                    logger.info(
+                        f"[MACRO CONFIRMATION] "
+                        f"strategy={name} signal={result.get('signal')} "
+                        f"boost={macro_boost} reasons={macro_reasons}"
+                    )
 
                 if ENABLE_STRUCTURE_LIQUIDITY_CONFIRMATION:
                     sl_boost, sl_reasons = apply_structure_liquidity_confirmation(
@@ -576,6 +604,12 @@ def process_cycle(last_processed_candle_time):
             reason += (
                 f" | STRUCTURE/LIQUIDITY: "
                 f"{','.join(selected_signal_data['structure_liquidity_reasons'])}"
+            )
+
+        if selected_signal_data.get("macro_reasons"):
+            reason += (
+                f" | MACRO: "
+                f"{','.join(selected_signal_data['macro_reasons'])}"
             )
 
         original_signal = signal
