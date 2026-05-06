@@ -52,6 +52,27 @@ from config.settings import (
 last_signal = None
 reversal_count = 0
 
+STRATEGY_SPECIFIC_CONFIRMED = {
+    "ORB",
+    "FVG",
+    "ORDER_BLOCK",
+    "CRT_TBS",
+    "LIQUIDITY_TRAP",
+    "LIQUIDITY_SWEEP",
+    "LIQUIDITY_CANDLE",
+    "FRACTAL_SWEEP",
+    "OB_FVG_COMBO",
+    "RELIEF_RALLY",
+    "HEAD_SHOULDERS",
+    "TRIANGLE_PENNANT",
+    "SMT",
+    "SMT_PRO",
+    "FLAG",
+    "FLAG_REFINED",
+    "SNIPER_V2",
+    "STRICT",
+    "FAST",
+}
 
 def fetch_market_data():
     rates = mt5.copy_rates_from_pos(SYMBOL, TIMEFRAME, 0, BARS_TO_FETCH)
@@ -87,15 +108,23 @@ def is_rr_valid(trade_plan, min_rr=1.2):
 
 def get_min_rr(strategy_name):
     if strategy_name == "ORB":
-        return 1.8
-    elif strategy_name in ["FVG", "ORDER_BLOCK", "OB_FVG_COMBO"]:
-        return 1.6
-    elif strategy_name in ["SMT", "SMT_PRO", "LIQUIDITY_TRAP", "CRT_TBS"]:
-        return 1.3
-    elif strategy_name == "WAVETREND_PIVOT":
-        return 1.4
-    elif strategy_name in ["SNIPER_V2", "STRICT", "HEAD_SHOULDERS", "TRIANGLE_PENNANT"]:
         return 1.5
+
+    elif strategy_name in ["FVG", "ORDER_BLOCK", "OB_FVG_COMBO"]:
+        return 1.4
+
+    elif strategy_name in ["SMT", "SMT_PRO", "LIQUIDITY_TRAP", "CRT_TBS", "FRACTAL_SWEEP"]:
+        return 1.25
+
+    elif strategy_name in ["SNIPER_V2", "STRICT", "HEAD_SHOULDERS", "TRIANGLE_PENNANT"]:
+        return 1.4
+
+    elif strategy_name in ["FLAG", "FLAG_REFINED", "LIQUIDITY_SWEEP", "LIQUIDITY_CANDLE", "RELIEF_RALLY"]:
+        return 1.25
+
+    elif strategy_name == "WAVETREND_PIVOT":
+        return 1.3
+
     else:
         return 1.2
 
@@ -107,10 +136,12 @@ def process_cycle(last_processed_candle_time):
     if df is None:
         return last_processed_candle_time
 
-    last = df.iloc[-1]
-    current_candle_time = last["time"]
-    close_price = last["close"]
-    atr = last["atr_14"]
+    current = df.iloc[-1]          # currently forming candle, used only for new-candle detection
+    signal_candle = df.iloc[-2]    # last closed candle, used for strategy context
+
+    current_candle_time = current["time"]
+    close_price = signal_candle["close"]
+    atr = signal_candle["atr_14"]
 
     tick = mt5.symbol_info_tick(SYMBOL)
     if tick is None:
@@ -183,9 +214,6 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_liquidity_trap import generate_signal as liquidity_trap_signal
     from src.strategies.strategy_relief_rally import generate_signal as relief_rally_signal
     from src.strategies.strategy_fractal_sweep import generate_signal as fractal_sweep_signal
-
-
-
     from src.strategy_performance import get_disabled_strategies
 
     disabled_strategies = get_disabled_strategies()
@@ -342,7 +370,11 @@ def process_cycle(last_processed_candle_time):
                 "entry_model": selected_signal_data.get("entry_model", "RAW"),
                 "entry": close_price,
                 "sl": selected_signal_data.get("sl_reference") or "N/A",
-                "tp": selected_signal_data.get("pivot_target_level") or "N/A",
+                "tp": (
+                    selected_signal_data.get("tp_reference")
+                    or selected_signal_data.get("pivot_target_level")
+                    or "N/A"
+                ),
                 "score": score,
                 "session": session_name,
                 "reason": f"[DETECTED] {reason}",
@@ -360,12 +392,12 @@ def process_cycle(last_processed_candle_time):
             current_price = tick.ask if signal == "BUY" else tick.bid
 
             if signal == "SELL" and orb_low is not None:
-                if abs(current_price - orb_low) > df.iloc[-1]["atr_14"] * 0.6:
+                if abs(current_price - orb_low) > atr * 0.6:
                     logger.info("❌ ORB skipped (too extended below breakout)")
                     signal = "NO_TRADE"
 
             elif signal == "BUY" and orb_high is not None:
-                if abs(current_price - orb_high) > df.iloc[-1]["atr_14"] * 0.6:
+                if abs(current_price - orb_high) > atr * 0.6:
                     logger.info("❌ ORB skipped (too extended above breakout)")
                     signal = "NO_TRADE"
 
@@ -635,9 +667,9 @@ def process_cycle(last_processed_candle_time):
     recent_support = recent_data["low"].min()
 
     logger.info("Signal context:")
-    logger.info(f"Close: {last['close']}")
-    logger.info(f"EMA: {last['ema_20']}")
-    logger.info(f"ATR: {last['atr_14']}")
+    logger.info(f"Close: {signal_candle['close']}")
+    logger.info(f"EMA: {signal_candle['ema_20']}")
+    logger.info(f"ATR: {signal_candle['atr_14']}")
     logger.info(f"Resistance: {recent_resistance}")
     logger.info(f"Support: {recent_support}")
     logger.info(f"Signal: {signal}")
@@ -673,7 +705,7 @@ def process_cycle(last_processed_candle_time):
             and setup.get("strategy") == strategy_name
             and setup.get("signal") == signal
             and setup.get("entry_model") == selected_signal_data.get("entry_model", "MARKET")
-                ]
+        ]
 
         waiting_reason = next((reason for reason in waiting_reasons if reason), None)
 
@@ -726,6 +758,60 @@ def process_cycle(last_processed_candle_time):
         setup_data = best_setup["data"]
         setup_strategy = setup_data.get("strategy")
         setup_signal = setup_data.get("signal")
+        setup_score = setup_data.get("score", score)
+
+        # =========================
+        # FINAL CONTEXT REVALIDATION
+        # =========================
+        final_mtf_bias = get_mtf_bias()
+        final_mtf_conflict = final_mtf_bias is not None and final_mtf_bias != setup_signal
+
+        final_mtf_override_strategies = [
+            "CRT_TBS",
+            "LIQUIDITY_TRAP",
+            "FRACTAL_SWEEP",
+        ]
+
+        final_allow_mtf_override = (
+            setup_strategy in final_mtf_override_strategies
+            and setup_score >= 98
+        )
+
+        if final_mtf_conflict and not final_allow_mtf_override:
+            logger.info(
+                f"[FINAL MTF] Ready setup rejected | "
+                f"strategy={setup_strategy} signal={setup_signal} mtf_bias={final_mtf_bias}"
+            )
+
+            send_telegram_message(
+                f"🚫 Ready Setup Rejected by Final MTF\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Strategy: {setup_strategy}\n"
+                f"Signal: {setup_signal}\n"
+                f"Score: {setup_score}\n"
+                f"MTF Bias: {final_mtf_bias}"
+            )
+
+            return current_candle_time
+
+        final_htf_context = get_htf_context()
+
+        if not htf_allows_signal(setup_signal, final_htf_context, allow_neutral=True):
+            logger.info(
+                f"[FINAL HTF] Ready setup rejected | "
+                f"strategy={setup_strategy} signal={setup_signal} "
+                f"htf_bias={final_htf_context.get('bias') if final_htf_context else None}"
+            )
+
+            send_telegram_message(
+                f"🚫 Ready Setup Rejected by Final HTF\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Strategy: {setup_strategy}\n"
+                f"Signal: {setup_signal}\n"
+                f"HTF Bias: {final_htf_context.get('bias') if final_htf_context else None}"
+            )
+
+            return current_candle_time
 
         # =========================
         # 🔥 FINAL CONFIRMATION FILTER
@@ -733,13 +819,13 @@ def process_cycle(last_processed_candle_time):
         from src.confirmation_engine import confirm_entry
         from src.smart_money_layer import smart_money_confirm
 
-        strategy_specific_confirmed = setup_strategy in ["ORB", "FVG", "ORDER_BLOCK"]
+        strategy_specific_confirmed = setup_strategy in STRATEGY_SPECIFIC_CONFIRMED
 
         if strategy_specific_confirmed:
             confirmed = True
             logger.info(
                 f"[CONFIRMATION] Generic confirmation skipped | "
-                f"strategy={strategy_name} already confirmed by execution engine"
+                f"strategy={setup_strategy} already confirmed by execution engine"
             )
         else:
             try:
@@ -798,8 +884,7 @@ def process_cycle(last_processed_candle_time):
         signal = setup_signal
         strategy_name = setup_strategy
         reason = setup_data.get("reason", reason)
-
-
+        score = setup_score
 
     # =========================
     # TRADE PLAN
@@ -855,25 +940,30 @@ def process_cycle(last_processed_candle_time):
         except Exception:
             rr_value = "N/A"
 
-        send_telegram_message(
-            f"📐 Trade Plan Ready\n"
-            f"Symbol: {SYMBOL}\n"
-            f"Signal: {signal}\n"
-            f"Strategy: {strategy_name}\n\n"
-            f"Entry: {trade_plan['entry_price']}\n"
-            f"SL: {trade_plan['stop_loss']}\n"
-            f"TP: {trade_plan['take_profit']}\n"
-            f"RR: {rr_value}\n"
-            f"Lot: {trade_plan['lot']}"
-        )
+        min_rr_required = get_min_rr(strategy_name)
+
+        if not best_setup.get("trade_plan_notified"):
+            send_telegram_message(
+                f"📐 Trade Plan Ready\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Signal: {signal}\n"
+                f"Strategy: {strategy_name}\n\n"
+                f"Entry: {trade_plan['entry_price']}\n"
+                f"SL: {trade_plan['stop_loss']}\n"
+                f"TP: {trade_plan['take_profit']}\n"
+                f"RR: {rr_value}\n"
+                f"Required RR: {min_rr_required}\n"
+                f"Lot: {trade_plan['lot']}"
+            )
+
+            best_setup["trade_plan_notified"] = True
 
     trade_allowed, guard_reason = check_trade_guard(signal, tick)
 
     if signal in ["BUY", "SELL"] and trade_plan is not None:
-        min_rr_required = get_min_rr(strategy_name)
         if not is_rr_valid(trade_plan, min_rr=min_rr_required):
             trade_allowed = False
-            guard_reason = "Trade blocked - Due to the low risk-reward ratio RR"
+            guard_reason = f"Low RR — calculated {rr_value}, required {min_rr_required}"
 
     if is_cooldown_active() and signal in ["BUY", "SELL"]:
         trade_allowed = False
