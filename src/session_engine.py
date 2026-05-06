@@ -57,6 +57,7 @@ def session_score_adjustment(strategy_name: str, session_name: str):
         "SMT_PRO",
         "LIQUIDITY_CANDLE",
         "VWAP_RECLAIM",
+        "STRUCTURE_LIQUIDITY",
     }
 
     if strategy_name in reversal_strategies:

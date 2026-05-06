@@ -50,6 +50,7 @@ from config.settings import (
     TRADING_MODE,
     ENABLE_FCR_M1_FVG,
     ENABLE_WAVETREND_PIVOT_M5,
+    ENABLE_STRUCTURE_LIQUIDITY,
 )
 
 last_signal = None
@@ -82,6 +83,7 @@ STRATEGY_SPECIFIC_CONFIRMED = {
     "MTF_OB_ENTRY",
     "FCR_M1_FVG",
     "WAVETREND_PIVOT",
+    "STRUCTURE_LIQUIDITY",
 }
 
 def fetch_market_data():
@@ -232,6 +234,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_mtf_order_block_entry import generate_signal as mtf_ob_entry_signal
     from src.strategies.strategy_fcr_m1_fvg import generate_signal as fcr_m1_fvg_signal
     from src.strategies.strategy_wavetrend_pivot import generate_signal as wavetrend_pivot_signal
+    from src.strategies.strategy_structure_liquidity import generate_signal as structure_liquidity_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -278,6 +281,7 @@ def process_cycle(last_processed_candle_time):
             ("WAVETREND_PIVOT", wavetrend_pivot_signal),
             ("FRACTAL_SWEEP", fractal_sweep_signal),
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
+            ("STRUCTURE_LIQUIDITY", structure_liquidity_signal),
             ("CRT_TBS", crt_tbs_signal),
             ("SMT_PRO", smt_pro_signal),
             ("SMT", smt_signal),
@@ -296,6 +300,7 @@ def process_cycle(last_processed_candle_time):
             ("WAVETREND_PIVOT", wavetrend_pivot_signal),
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
             ("FRACTAL_SWEEP", fractal_sweep_signal),
+            ("STRUCTURE_LIQUIDITY", structure_liquidity_signal),
             ("CRT_TBS", crt_tbs_signal),
             ("SMT_PRO", smt_pro_signal),
             ("SMT", smt_signal),
@@ -312,6 +317,14 @@ def process_cycle(last_processed_candle_time):
     # =========================
     # STRATEGY TOGGLES
     # =========================
+
+    if not ENABLE_STRUCTURE_LIQUIDITY:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "STRUCTURE_LIQUIDITY"
+        ]
+        logger.info("[STRATEGY TOGGLE] STRUCTURE_LIQUIDITY disabled")
 
     if not ENABLE_WAVETREND_PIVOT_M5:
         strategy_map = [
