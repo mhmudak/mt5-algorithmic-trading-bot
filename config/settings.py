@@ -34,6 +34,22 @@ FRACTAL_TP_DISTANCE = 10.0          # $10 target
 FRACTAL_TP_EXTENDED_DISTANCE = 15.0 # $15 optional extended target
 
 # =========================
+# News Volatility Filter
+# =========================
+ENABLE_NEWS_FILTER = True
+
+NEWS_BLOCK_BEFORE_MINUTES = 15
+NEWS_BLOCK_AFTER_MINUTES = 15
+
+# Manual high-impact news blackout windows.
+# Format: "YYYY-MM-DD HH:MM"
+NEWS_BLACKOUT_WINDOWS = [
+    # Example:
+    # {"name": "US CPI", "time": "2026-05-06 15:30"},
+    # {"name": "FOMC", "time": "2026-05-07 21:00"},
+]
+
+# =========================
 # Execution / Risk Settings
 # =========================
 POSITION_MODE = "fixed"   # "fixed" or "risk"

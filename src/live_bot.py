@@ -25,6 +25,7 @@ from src.dashboard import rebuild_dashboard
 from src.mtf_confirmation import get_mtf_bias
 from src.htf_filter import get_htf_context, htf_allows_signal
 from src.liquidity_context import get_liquidity_context, liquidity_allows_signal
+from src.news_filter import is_news_blackout_active
 
 from src.execution_engine import ExecutionEngine
 execution_engine = ExecutionEngine()
@@ -661,6 +662,29 @@ def process_cycle(last_processed_candle_time):
             reason = f"Manual forced direction override without strategy signal -> forced {FORCE_SIGNAL}"
             selected_signal_data = {}
             logger.info(f"[SAFE FORCE] No strategy signal, forced {FORCE_SIGNAL} allowed")
+
+    # =========================
+    # NEWS VOLATILITY FILTER
+    # =========================
+    if signal in ["BUY", "SELL"]:
+        news_blocked, news_reason = is_news_blackout_active()
+
+        if news_blocked:
+            logger.info(
+                f"[NEWS FILTER] Signal blocked | "
+                f"strategy={strategy_name} signal={signal} reason={news_reason}"
+            )
+
+            send_telegram_message(
+                f"🚫 Signal Blocked by News Filter\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Strategy: {strategy_name}\n"
+                f"Signal: {signal}\n\n"
+                f"Reason: {news_reason}"
+            )
+
+            signal = "NO_TRADE"
+            reason = news_reason
 
     # =========================
     # FINAL SIGNAL LOG
