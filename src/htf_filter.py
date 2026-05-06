@@ -8,15 +8,15 @@ from src.indicators import calculate_ema, calculate_atr
 def get_htf_context(timeframe=mt5.TIMEFRAME_M15, bars=120):
     rates = mt5.copy_rates_from_pos(SYMBOL, timeframe, 0, bars)
 
-    if rates is None or len(rates) < 50:
+    if rates is None or len(rates) < 60:
         return None
 
     df = pd.DataFrame(rates)
     df["ema_20"] = calculate_ema(df, 20)
     df["atr_14"] = calculate_atr(df, 14)
 
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
+    last = df.iloc[-2]
+    prev = df.iloc[-3]
 
     price = last["close"]
     ema = last["ema_20"]

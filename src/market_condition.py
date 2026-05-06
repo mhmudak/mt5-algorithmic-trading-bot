@@ -2,8 +2,11 @@ from src.logger import logger
 
 
 def detect_market_condition(df):
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
+    if len(df) < 5:
+        logger.info("[MARKET] Not enough data, defaulting to RANGING")
+        return "RANGING"
+    last = df.iloc[-2]
+    prev = df.iloc[-3]
 
     atr = last["atr_14"]
     prev_atr = prev["atr_14"]

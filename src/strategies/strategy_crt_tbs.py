@@ -13,11 +13,25 @@ def _sl_buffer(atr):
     )
 
 
+def _score_setup(base_score, confirm_body, atr, close_aligned):
+    score = base_score
+
+    if confirm_body > atr * 0.35:
+        score += 2
+
+    if confirm_body > atr * 0.50:
+        score += 2
+
+    if close_aligned:
+        score += 2
+
+    return min(score, 99)
+
+
 def generate_signal(df):
     if len(df) < 30:
         return None
 
-    # structure
     trap = df.iloc[-3]      # liquidity / trap candle
     confirm = df.iloc[-2]   # confirmation candle
 
@@ -31,6 +45,10 @@ def generate_signal(df):
     recent = df.iloc[-15:-3]
     range_high = recent["high"].max()
     range_low = recent["low"].min()
+    pattern_height = abs(range_high - range_low)
+
+    if pattern_height <= 0:
+        return None
 
     trap_body = abs(trap["close"] - trap["open"])
     trap_range = trap["high"] - trap["low"]
@@ -65,12 +83,29 @@ def generate_signal(df):
         and upper_rejection
         and bearish_confirmation
     ):
-        pattern_height = abs(range_high - range_low)
         sl_reference = round(trap["high"] + sl_buffer, 2)
+
+        # Prefer opposite side of the range as structural TP.
+        # If already below it, use measured move fallback.
+        if range_low < confirm["close"]:
+            tp_reference = range_low
+            target_model = "OPPOSITE_RANGE_LOW"
+        else:
+            tp_reference = confirm["close"] - pattern_height
+            target_model = "MEASURED_MOVE"
+
+        tp_reference = round(tp_reference, 2)
+
+        score = _score_setup(
+            base_score=93,
+            confirm_body=confirm_body,
+            atr=atr,
+            close_aligned=price < ema,
+        )
 
         return {
             "signal": "SELL",
-            "score": 93,
+            "score": score,
             "strategy": "CRT_TBS",
             "entry_model": "CRT_TBS_TRAP_REVERSAL",
             "pattern_height": pattern_height,
@@ -79,10 +114,15 @@ def generate_signal(df):
             "trap_high": trap["high"],
             "trap_low": trap["low"],
             "sl_reference": sl_reference,
+            "tp_reference": tp_reference,
+            "target_model": target_model,
+            "momentum": "bearish_confirmation_displacement",
+            "direction_context": "price_below_ema",
             "reason": (
                 f"CRT/TBS bearish -> trap above range {round(range_high, 2)} -> "
                 f"close back inside -> bearish break below {round(trap['low'], 2)} -> "
-                f"SL above trap high {sl_reference} -> price below EMA"
+                f"SL above trap high {sl_reference} -> "
+                f"TP {target_model} {tp_reference} -> price below EMA"
             ),
         }
 
@@ -107,12 +147,29 @@ def generate_signal(df):
         and lower_rejection
         and bullish_confirmation
     ):
-        pattern_height = abs(range_high - range_low)
         sl_reference = round(trap["low"] - sl_buffer, 2)
+
+        # Prefer opposite side of the range as structural TP.
+        # If already above it, use measured move fallback.
+        if range_high > confirm["close"]:
+            tp_reference = range_high
+            target_model = "OPPOSITE_RANGE_HIGH"
+        else:
+            tp_reference = confirm["close"] + pattern_height
+            target_model = "MEASURED_MOVE"
+
+        tp_reference = round(tp_reference, 2)
+
+        score = _score_setup(
+            base_score=93,
+            confirm_body=confirm_body,
+            atr=atr,
+            close_aligned=price > ema,
+        )
 
         return {
             "signal": "BUY",
-            "score": 93,
+            "score": score,
             "strategy": "CRT_TBS",
             "entry_model": "CRT_TBS_TRAP_REVERSAL",
             "pattern_height": pattern_height,
@@ -121,10 +178,15 @@ def generate_signal(df):
             "trap_high": trap["high"],
             "trap_low": trap["low"],
             "sl_reference": sl_reference,
+            "tp_reference": tp_reference,
+            "target_model": target_model,
+            "momentum": "bullish_confirmation_displacement",
+            "direction_context": "price_above_ema",
             "reason": (
                 f"CRT/TBS bullish -> trap below range {round(range_low, 2)} -> "
                 f"close back inside -> bullish break above {round(trap['high'], 2)} -> "
-                f"SL below trap low {sl_reference} -> price above EMA"
+                f"SL below trap low {sl_reference} -> "
+                f"TP {target_model} {tp_reference} -> price above EMA"
             ),
         }
 

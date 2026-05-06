@@ -16,12 +16,165 @@ from config.settings import (
 )
 
 
+STRATEGY_SL_REFERENCE_MODELS = {
+    "ORB",
+    "LIQUIDITY_CANDLE",
+    "LIQUIDITY_SWEEP",
+    "FRACTAL_SWEEP",
+    "CRT_TBS",
+    "LIQUIDITY_TRAP",
+    "ORDER_BLOCK",
+    "SMT",
+    "SMT_PRO",
+    "OB_FVG_COMBO",
+    "RELIEF_RALLY",
+    "FVG",
+    "HEAD_SHOULDERS",
+    "TRIANGLE_PENNANT",
+    "WAVETREND_PIVOT",
+    "FLAG",
+    "FLAG_REFINED",
+    "SNIPER_V2",
+    "STRICT",
+    "FAST",
+}
+
+
+def _valid_stop_loss(signal, entry_price, stop_loss):
+    if stop_loss is None:
+        return False
+
+    if signal == "BUY" and stop_loss >= entry_price:
+        return False
+
+    if signal == "SELL" and stop_loss <= entry_price:
+        return False
+
+    return True
+
+
+def _valid_take_profit(signal, entry_price, take_profit):
+    if take_profit is None:
+        return False
+
+    if signal == "BUY" and take_profit <= entry_price:
+        return False
+
+    if signal == "SELL" and take_profit >= entry_price:
+        return False
+
+    return True
+
+
+def _rr_target(signal, entry_price, stop_distance, rr):
+    if signal == "BUY":
+        return entry_price + (stop_distance * rr)
+
+    return entry_price - (stop_distance * rr)
+
+
+def _structure_stop(signal, recent_support, recent_resistance):
+    if signal == "BUY":
+        return recent_support - STOP_BUFFER - STOP_EXTRA_BUFFER_PRICE
+
+    return recent_resistance + STOP_BUFFER + STOP_EXTRA_BUFFER_PRICE
+
+
+def _fallback_atr_stop(signal, entry_price, atr):
+    if signal == "BUY":
+        return entry_price - atr
+
+    return entry_price + atr
+
+
+def _fallback_structure_take_profit(signal, entry_price, recent_support, recent_resistance, tp_buffer):
+    if signal == "BUY":
+        take_profit = recent_resistance - tp_buffer
+        if take_profit <= entry_price:
+            return None
+        return take_profit
+
+    take_profit = recent_support + tp_buffer
+    if take_profit >= entry_price:
+        return None
+    return take_profit
+
+
+def _pattern_height_take_profit(signal, entry_price, height):
+    if height is None or height <= 0:
+        return None
+
+    if signal == "BUY":
+        return entry_price + height
+
+    return entry_price - height
+
+
+def _strategy_fallback_take_profit(strategy, signal, entry_price, stop_distance, signal_data, recent_support, recent_resistance):
+    height = signal_data.get("pattern_height", 0) if signal_data else 0
+
+    if strategy == "LIQUIDITY_CANDLE":
+        return _rr_target(signal, entry_price, stop_distance, LIQUIDITY_CANDLE_R_MULTIPLIER)
+
+    if strategy == "FVG":
+        if height <= 0:
+            return None
+
+        if signal == "BUY":
+            return min(recent_resistance, entry_price + height)
+
+        return max(recent_support, entry_price - height)
+
+    if strategy == "LIQUIDITY_SWEEP":
+        return _rr_target(signal, entry_price, stop_distance, 1.5)
+
+    if strategy == "ORB":
+        entry_model = signal_data.get("entry_model", "BREAKOUT") if signal_data else "BREAKOUT"
+        rr = 1.8 if entry_model == "BREAKOUT" else 2.2
+        return _rr_target(signal, entry_price, stop_distance, rr)
+
+    if strategy == "WAVETREND_PIVOT":
+        pivot_target_level = signal_data.get("pivot_target_level") if signal_data else None
+        return pivot_target_level
+
+    if strategy in [
+        "HEAD_SHOULDERS",
+        "TRIANGLE_PENNANT",
+        "ORDER_BLOCK",
+        "SMT",
+        "SMT_PRO",
+        "CRT_TBS",
+        "OB_FVG_COMBO",
+        "LIQUIDITY_TRAP",
+        "RELIEF_RALLY",
+        "FRACTAL_SWEEP",
+    ]:
+        pattern_tp = _pattern_height_take_profit(signal, entry_price, height)
+
+        if pattern_tp is not None:
+            return pattern_tp
+
+        if strategy in ["HEAD_SHOULDERS", "RELIEF_RALLY"]:
+            return _rr_target(signal, entry_price, stop_distance, 1.5)
+
+        return None
+
+    return _rr_target(signal, entry_price, stop_distance, 1.5)
+
+
 def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
     if signal not in ["BUY", "SELL"]:
         return None
 
-    last = df.iloc[-1]
-    atr = last["atr_14"]
+    if len(df) < BREAKOUT_LOOKBACK + 2:
+        return None
+
+    # Use closed candle for ATR/context, and tick only for the actual entry price.
+    last_closed = df.iloc[-2]
+    atr = last_closed["atr_14"]
+
+    if atr <= 0:
+        return None
 
     entry_price = tick.ask if signal == "BUY" else tick.bid
 
@@ -34,136 +187,28 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
     # =========================
     # STOP LOSS
     # =========================
-    if strategy == "ORB" and signal_data:
-        orb_high = signal_data.get("orb_high")
-        orb_low = signal_data.get("orb_low")
-        entry_model = signal_data.get("entry_model", "BREAKOUT")
+    stop_loss = None
 
-        if orb_high is None or orb_low is None:
-            return None
-
-        orb_width = orb_high - orb_low
-        breakout_buffer = max(atr * 0.15, orb_width * 0.05, 1.5)
-        execution_buffer = max(atr * 0.10, 1.0)
-
-        if entry_model == "BREAKOUT":
-            if signal == "SELL":
-                stop_loss = orb_high + breakout_buffer
-            else:
-                stop_loss = orb_low - breakout_buffer
-        else:
-            # WAIT_RETEST / EXTRA / tighter execution mode
-            if signal == "SELL":
-                stop_loss = entry_price + execution_buffer
-            else:
-                stop_loss = entry_price - execution_buffer
-
-    elif strategy == "LIQUIDITY_CANDLE" and signal_data:
-        sl_reference = signal_data.get("sl_reference")
-        if sl_reference is None:
-            return None
-        stop_loss = sl_reference
-
-    elif strategy == "LIQUIDITY_SWEEP" and signal_data:
-        sweep_low = signal_data.get("sweep_low")
-        sweep_high = signal_data.get("sweep_high")
-
-        if signal == "BUY" and sweep_low is not None:
-            stop_loss = sweep_low - max(atr * 0.15, 1.0)
-        elif signal == "SELL" and sweep_high is not None:
-            stop_loss = sweep_high + max(atr * 0.15, 1.0)
-        else:
-            return None
-
-    elif strategy == "FRACTAL_SWEEP" and signal_data:
+    if strategy in STRATEGY_SL_REFERENCE_MODELS and signal_data:
         sl_reference = signal_data.get("sl_reference")
 
-        if sl_reference is None:
-            return None
-
-        if signal == "BUY" and sl_reference >= entry_price:
-            return None
-
-        if signal == "SELL" and sl_reference <= entry_price:
-            return None
-
-        stop_loss = sl_reference
-        
-    elif strategy == "CRT_TBS" and signal_data:
-        sl_reference = signal_data.get("sl_reference")
-
-        if sl_reference is None:
-            return None
-
-        if signal == "BUY" and sl_reference >= entry_price:
-            return None
-
-        if signal == "SELL" and sl_reference <= entry_price:
+        if not _valid_stop_loss(signal, entry_price, sl_reference):
             return None
 
         stop_loss = sl_reference
 
-    elif strategy == "RELIEF_RALLY" and signal_data:
-        sl_reference = signal_data.get("sl_reference")
-
-        if sl_reference is None:
-            return None
-
-        if signal == "BUY" and sl_reference >= entry_price:
-            return None
-
-        if signal == "SELL" and sl_reference <= entry_price:
-            return None
-
-        stop_loss = sl_reference
-
-    elif strategy == "FVG" and signal_data and signal_data.get("sl_reference") is not None:
-        stop_loss = signal_data["sl_reference"]
-
-    elif strategy == "HEAD_SHOULDERS" and signal_data:
-        neckline = signal_data.get("neckline")
-        if neckline is None:
-            return None
-
-        if signal == "SELL":
-            stop_loss = max(recent_resistance + STOP_EXTRA_BUFFER_PRICE, neckline + atr * 0.25)
-        else:
-            stop_loss = min(recent_support - STOP_EXTRA_BUFFER_PRICE, neckline - atr * 0.25)
-
-    elif strategy == "TRIANGLE_PENNANT" and signal_data:
-        triangle_high = signal_data.get("triangle_high")
-        triangle_low = signal_data.get("triangle_low")
-
-        if triangle_high is None or triangle_low is None:
-            return None
-
-        if signal == "BUY":
-            stop_loss = triangle_low - atr * 0.25
-        else:
-            stop_loss = triangle_high + atr * 0.25
-
-    elif strategy == "WAVETREND_PIVOT" and signal_data:
-        sl_reference = signal_data.get("sl_reference")
-        if sl_reference is None:
-            return None
-        stop_loss = sl_reference
-        
     elif USE_STRUCTURE_STOP:
-        if signal == "BUY":
-            stop_loss = recent_support - STOP_BUFFER - STOP_EXTRA_BUFFER_PRICE
-        else:
-            stop_loss = recent_resistance + STOP_BUFFER + STOP_EXTRA_BUFFER_PRICE
+        stop_loss = _structure_stop(signal, recent_support, recent_resistance)
 
     else:
-        if signal == "BUY":
-            stop_loss = entry_price - atr
-        else:
-            stop_loss = entry_price + atr
+        stop_loss = _fallback_atr_stop(signal, entry_price, atr)
+
+    if not _valid_stop_loss(signal, entry_price, stop_loss):
+        return None
 
     stop_distance = abs(entry_price - stop_loss)
     if stop_distance <= 0:
         return None
-
 
     # =========================
     # ADAPTIVE TP BUFFER
@@ -178,98 +223,36 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
     # =========================
     # TAKE PROFIT
     # =========================
-    if strategy == "LIQUIDITY_CANDLE" and signal_data:
-        if signal == "BUY":
-            take_profit = entry_price + (stop_distance * LIQUIDITY_CANDLE_R_MULTIPLIER)
-        else:
-            take_profit = entry_price - (stop_distance * LIQUIDITY_CANDLE_R_MULTIPLIER)
+    take_profit = None
 
-    elif strategy == "FVG" and signal_data:
-        height = signal_data.get("pattern_height", 0)
-        if height <= 0:
-            return None
+    tp_reference = signal_data.get("tp_reference") if signal_data else None
 
-        if signal == "BUY":
-            take_profit = min(recent_resistance, entry_price + height)
-        else:
-            take_profit = max(recent_support, entry_price - height)
-
-    elif strategy == "LIQUIDITY_SWEEP" and signal_data:
-        rr = 1.5
-
-        if signal == "BUY":
-            take_profit = entry_price + (stop_distance * rr)
-        else:
-            take_profit = entry_price - (stop_distance * rr)
-
-    elif strategy == "ORB" and signal_data:
-        entry_model = signal_data.get("entry_model", "BREAKOUT")
-
-        # based on your real ORB cases:
-        # breakout entries deserve safer RR
-        # retest entries can target higher RR
-        if entry_model == "BREAKOUT":
-            rr = 1.8
-        else:
-            rr = 2.2
-
-        if signal == "BUY":
-            take_profit = entry_price + (stop_distance * rr)
-        else:
-            take_profit = entry_price - (stop_distance * rr)
-
-    elif strategy == "WAVETREND_PIVOT" and signal_data:
-        pivot_target_level = signal_data.get("pivot_target_level")
-        if pivot_target_level is None:
-            return None
-        take_profit = pivot_target_level
-
-    elif strategy in [
-        "HEAD_SHOULDERS",
-        "TRIANGLE_PENNANT",
-        "ORDER_BLOCK",
-        "SMT",
-        "SMT_PRO",
-        "CRT_TBS",
-        "OB_FVG_COMBO",
-        "LIQUIDITY_TRAP",
-        "RELIEF_RALLY",
-        "FRACTAL_SWEEP",
-    ] and signal_data:
-        height = signal_data.get("pattern_height", 0)
-
-        if height and height > 0:
-            if signal == "BUY":
-                take_profit = entry_price + height
-            else:
-                take_profit = entry_price - height
-
-        elif strategy in ["HEAD_SHOULDERS", "RELIEF_RALLY"]:
-            rr = 1.5
-
-            if signal == "BUY":
-                take_profit = entry_price + (stop_distance * rr)
-            else:
-                take_profit = entry_price - (stop_distance * rr)
-
-        else:
-            return None
-
-    elif USE_STRUCTURE_TAKE_PROFIT:
-        if signal == "BUY":
-            take_profit = recent_resistance - tp_buffer
-            if take_profit <= entry_price:
-                return None
-        else:
-            take_profit = recent_support + tp_buffer
-            if take_profit >= entry_price:
-                return None
+    if _valid_take_profit(signal, entry_price, tp_reference):
+        take_profit = tp_reference
 
     else:
-        if signal == "BUY":
-            take_profit = entry_price + (stop_distance * 1.5)
-        else:
-            take_profit = entry_price - (stop_distance * 1.5)
+        take_profit = _strategy_fallback_take_profit(
+            strategy=strategy,
+            signal=signal,
+            entry_price=entry_price,
+            stop_distance=stop_distance,
+            signal_data=signal_data,
+            recent_support=recent_support,
+            recent_resistance=recent_resistance,
+        )
+
+    if not _valid_take_profit(signal, entry_price, take_profit):
+        if USE_STRUCTURE_TAKE_PROFIT:
+            take_profit = _fallback_structure_take_profit(
+                signal=signal,
+                entry_price=entry_price,
+                recent_support=recent_support,
+                recent_resistance=recent_resistance,
+                tp_buffer=tp_buffer,
+            )
+
+    if not _valid_take_profit(signal, entry_price, take_profit):
+        return None
 
     min_tp_distance = 0.3
     if abs(take_profit - entry_price) < min_tp_distance:
