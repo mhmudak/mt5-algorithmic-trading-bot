@@ -12,13 +12,18 @@ ENTRY_TIMEFRAME = mt5.TIMEFRAME_M1
 FCR_BARS = 80
 ENTRY_BARS = 120
 
-FCR_RANGE_LOOKBACK = 12
+# FCR candle quality
+FCR_MIN_RANGE_ATR = 0.80
+FCR_MIN_BODY_ATR = 0.35
 
+# M1 entry quality
 MIN_M1_BODY_ATR = 0.15
 MAX_EXTENSION_ATR = 1.20
 
+# FVG quality
 FVG_MIN_SIZE_ATR = 0.08
 
+# Risk
 SL_ATR_BUFFER = 0.15
 MIN_SL_BUFFER = 1.0
 MAX_SL_BUFFER = 4.0
@@ -45,7 +50,7 @@ def _sl_buffer(atr):
     return min(max(atr * SL_ATR_BUFFER, MIN_SL_BUFFER), MAX_SL_BUFFER)
 
 
-def _score_setup(base_score, body, atr, has_fvg, engulfing):
+def _score_setup(base_score, body, atr, has_fvg, engulfing, fcr_quality):
     score = base_score
 
     if body > atr * 0.25:
@@ -59,6 +64,9 @@ def _score_setup(base_score, body, atr, has_fvg, engulfing):
 
     if engulfing:
         score += 3
+
+    if fcr_quality:
+        score += 2
 
     return min(score, 99)
 
@@ -90,15 +98,17 @@ def generate_signal(df):
     FCR + M1 FVG precision model.
 
     M5:
-    - define recent 5m candle range high/low.
+    - use the last closed M5 candle as the FCR reference candle
+    - mark its high and low
 
     M1:
-    - break above/below M5 range
+    - break above/below the FCR high/low
     - create FVG / gap
-    - confirm with engulfing or strong reclaim
+    - confirm with engulfing / reclaim
     - SL beyond FVG / micro structure
     - TP = 3R
     """
+
     m5_df = _fetch_df(FCR_TIMEFRAME, FCR_BARS)
     m1_df = _fetch_df(ENTRY_TIMEFRAME, ENTRY_BARS)
 
@@ -106,20 +116,36 @@ def generate_signal(df):
         return None
 
     # Closed candles only
-    m5_closed = m5_df.iloc[:-1]
-    m1_closed = m1_df.iloc[:-1]
+    m5_closed = m5_df.iloc[:-1].copy()
+    m1_closed = m1_df.iloc[:-1].copy()
 
-    if len(m5_closed) < FCR_RANGE_LOOKBACK + 5 or len(m1_closed) < 10:
+    if len(m5_closed) < 10 or len(m1_closed) < 10:
         return None
 
-    fcr_data = m5_closed.iloc[-FCR_RANGE_LOOKBACK:]
-    fcr_high = fcr_data["high"].max()
-    fcr_low = fcr_data["low"].min()
+    # =========================================================
+    # M5 FCR candle
+    # =========================================================
+    fcr = m5_closed.iloc[-1]
+
+    fcr_high = fcr["high"]
+    fcr_low = fcr["low"]
     fcr_range = fcr_high - fcr_low
+    fcr_body = abs(fcr["close"] - fcr["open"])
+    fcr_atr = fcr["atr_14"]
 
-    if fcr_range <= 0:
+    if fcr_range <= 0 or fcr_atr <= 0:
         return None
 
+    # avoid weak FCR candle
+    if fcr_range < fcr_atr * FCR_MIN_RANGE_ATR:
+        return None
+
+    if fcr_body < fcr_atr * FCR_MIN_BODY_ATR:
+        return None
+
+    # =========================================================
+    # M1 candles after FCR
+    # =========================================================
     c1 = m1_closed.iloc[-4]
     c2 = m1_closed.iloc[-3]
     c3 = m1_closed.iloc[-2]
@@ -133,13 +159,18 @@ def generate_signal(df):
         return None
 
     body = abs(entry["close"] - entry["open"])
+    candle_range = entry["high"] - entry["low"]
+
+    if candle_range <= 0:
+        return None
+
     if body < atr * MIN_M1_BODY_ATR:
         return None
 
     sl_buffer = _sl_buffer(atr)
 
     # =========================
-    # BUY: M1 breaks M5 range high, FVG, engulfing/reclaim
+    # BUY: M1 breaks M5 FCR high, FVG, engulfing/reclaim
     # =========================
     broke_high = (
         c2["close"] > fcr_high
@@ -178,33 +209,36 @@ def generate_signal(df):
             atr=atr,
             has_fvg=True,
             engulfing=bullish_engulfing,
+            fcr_quality=True,
         )
 
         return {
             "signal": "BUY",
             "score": score,
             "strategy": "FCR_M1_FVG",
-            "entry_model": "M5_FCR_BREAK_M1_FVG_ENGULF",
+            "entry_model": "M5_FCR_HIGH_BREAK_M1_FVG_ENGULF",
             "pattern_height": stop_distance * TARGET_R_MULTIPLIER,
             "fcr_high": fcr_high,
             "fcr_low": fcr_low,
             "fcr_range": fcr_range,
+            "fcr_time": fcr.get("time"),
             "fvg_bottom": gap_bottom,
             "fvg_top": gap_top,
+            "fvg_size": gap_size,
             "sl_reference": sl_reference,
             "tp_reference": tp_reference,
             "target_model": "FIXED_3R_AFTER_M1_FVG",
             "momentum": "bullish_m1_fvg_engulfing",
-            "direction_context": "m5_range_high_break_m1_reclaim",
+            "direction_context": "m5_fcr_high_break_m1_reclaim",
             "reason": (
-                f"FCR M1 FVG BUY -> M5 range high {round(fcr_high, 2)} broken -> "
+                f"FCR M1 FVG BUY -> M5 FCR high {round(fcr_high, 2)} broken -> "
                 f"M1 bullish FVG {round(gap_bottom, 2)}-{round(gap_top, 2)} -> "
                 f"engulfing/reclaim confirmed -> SL {sl_reference} -> TP 3R {tp_reference}"
             ),
         }
 
     # =========================
-    # SELL: M1 breaks M5 range low, FVG, engulfing/reclaim
+    # SELL: M1 breaks M5 FCR low, FVG, engulfing/reclaim
     # =========================
     broke_low = (
         c2["close"] < fcr_low
@@ -243,26 +277,29 @@ def generate_signal(df):
             atr=atr,
             has_fvg=True,
             engulfing=bearish_engulfing,
+            fcr_quality=True,
         )
 
         return {
             "signal": "SELL",
             "score": score,
             "strategy": "FCR_M1_FVG",
-            "entry_model": "M5_FCR_BREAK_M1_FVG_ENGULF",
+            "entry_model": "M5_FCR_LOW_BREAK_M1_FVG_ENGULF",
             "pattern_height": stop_distance * TARGET_R_MULTIPLIER,
             "fcr_high": fcr_high,
             "fcr_low": fcr_low,
             "fcr_range": fcr_range,
+            "fcr_time": fcr.get("time"),
             "fvg_bottom": gap_bottom,
             "fvg_top": gap_top,
+            "fvg_size": gap_size,
             "sl_reference": sl_reference,
             "tp_reference": tp_reference,
             "target_model": "FIXED_3R_AFTER_M1_FVG",
             "momentum": "bearish_m1_fvg_engulfing",
-            "direction_context": "m5_range_low_break_m1_reclaim",
+            "direction_context": "m5_fcr_low_break_m1_reclaim",
             "reason": (
-                f"FCR M1 FVG SELL -> M5 range low {round(fcr_low, 2)} broken -> "
+                f"FCR M1 FVG SELL -> M5 FCR low {round(fcr_low, 2)} broken -> "
                 f"M1 bearish FVG {round(gap_bottom, 2)}-{round(gap_top, 2)} -> "
                 f"engulfing/reclaim confirmed -> SL {sl_reference} -> TP 3R {tp_reference}"
             ),

@@ -26,6 +26,7 @@ from src.mtf_confirmation import get_mtf_bias
 from src.htf_filter import get_htf_context, htf_allows_signal
 from src.liquidity_context import get_liquidity_context, liquidity_allows_signal
 from src.news_filter import is_news_blackout_active
+from src.reversal_checker import build_blocked_setup_reversal
 
 from src.execution_engine import ExecutionEngine
 execution_engine = ExecutionEngine()
@@ -52,6 +53,12 @@ from config.settings import (
     ENABLE_WAVETREND_PIVOT_M5,
     ENABLE_STRUCTURE_LIQUIDITY,
     ENABLE_STRUCTURE_LIQUIDITY_CONFIRMATION,
+    ENABLE_BLOCKED_SETUP_REVERSAL,
+    BLOCKED_REVERSAL_MIN_SCORE,
+    BLOCKED_REVERSAL_MIN_RR,
+    ENABLE_LVN_FVG_RECLAIM,
+    ENABLE_AMD_FVG,
+    ENABLE_FVG_CE_MITIGATION,
 )
 
 from src.structure_liquidity_context import (
@@ -90,6 +97,10 @@ STRATEGY_SPECIFIC_CONFIRMED = {
     "FCR_M1_FVG",
     "WAVETREND_PIVOT",
     "STRUCTURE_LIQUIDITY",
+    "BLOCKED_SETUP_REVERSAL",
+    "LVN_FVG_RECLAIM",
+    "AMD_FVG",
+    "FVG_CE_MITIGATION",
 }
 
 def fetch_market_data():
@@ -125,7 +136,9 @@ def is_rr_valid(trade_plan, min_rr=1.2):
 
 
 def get_min_rr(strategy_name):
-    if strategy_name == "ORB":
+    if strategy_name == "BLOCKED_SETUP_REVERSAL":
+        return 1.3
+    elif strategy_name == "ORB":
         return 1.5
 
     elif strategy_name in ["FVG", "ORDER_BLOCK", "OB_FVG_COMBO"]:
@@ -146,6 +159,26 @@ def get_min_rr(strategy_name):
     else:
         return 1.2
 
+def calculate_rr_value(trade_plan):
+    if not trade_plan:
+        return None
+
+    entry = trade_plan.get("entry_price")
+    sl = trade_plan.get("stop_loss")
+    tp = trade_plan.get("take_profit")
+    side = trade_plan.get("signal")
+
+    try:
+        if side == "BUY":
+            return round((tp - entry) / (entry - sl), 2)
+
+        if side == "SELL":
+            return round((entry - tp) / (sl - entry), 2)
+
+    except Exception:
+        return None
+
+    return None
 
 def process_cycle(last_processed_candle_time):
     global last_signal, reversal_count
@@ -241,6 +274,9 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_fcr_m1_fvg import generate_signal as fcr_m1_fvg_signal
     from src.strategies.strategy_wavetrend_pivot import generate_signal as wavetrend_pivot_signal
     from src.strategies.strategy_structure_liquidity import generate_signal as structure_liquidity_signal
+    from src.strategies.strategy_lvn_fvg_reclaim import generate_signal as lvn_fvg_reclaim_signal
+    from src.strategies.strategy_amd_fvg import generate_signal as amd_fvg_signal
+    from src.strategies.strategy_fvg_ce_mitigation import generate_signal as fvg_ce_mitigation_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -277,6 +313,8 @@ def process_cycle(last_processed_candle_time):
             ("OB_FVG_COMBO", ob_fvg_combo_signal),
             ("RELIEF_RALLY", relief_rally_signal),
             ("SESSION_ORB_RETEST", session_orb_retest_signal),
+            ("LVN_FVG_RECLAIM", lvn_fvg_reclaim_signal),
+            ("FVG_CE_MITIGATION", fvg_ce_mitigation_signal),
             ("ORB", orb_signal),
             ("FCR_M1_FVG", fcr_m1_fvg_signal),
             ("BREAKER_BLOCK", breaker_block_signal),
@@ -302,6 +340,7 @@ def process_cycle(last_processed_candle_time):
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
             ("STRUCTURE_LIQUIDITY", structure_liquidity_signal),
             ("CRT_TBS", crt_tbs_signal),
+            ("AMD_FVG", amd_fvg_signal),
             ("SMT_PRO", smt_pro_signal),
             ("SMT", smt_signal),
             ("LIQUIDITY_SWEEP", liquidity_sweep_signal),
@@ -324,6 +363,9 @@ def process_cycle(last_processed_candle_time):
             ("SMT_PRO", smt_pro_signal),
             ("SMT", smt_signal),
             ("SESSION_ORB_RETEST", session_orb_retest_signal),
+            ("LVN_FVG_RECLAIM", lvn_fvg_reclaim_signal),
+            ("AMD_FVG", amd_fvg_signal),
+            ("FVG_CE_MITIGATION", fvg_ce_mitigation_signal),
             ("ORB", orb_signal),
             ("FCR_M1_FVG", fcr_m1_fvg_signal),
             ("LIQUIDITY_SWEEP", liquidity_sweep_signal),
@@ -336,6 +378,30 @@ def process_cycle(last_processed_candle_time):
     # =========================
     # STRATEGY TOGGLES
     # =========================
+
+    if not ENABLE_FVG_CE_MITIGATION:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "FVG_CE_MITIGATION"
+        ]
+        logger.info("[STRATEGY TOGGLE] FVG_CE_MITIGATION disabled")
+
+    if not ENABLE_AMD_FVG:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "AMD_FVG"
+        ]
+        logger.info("[STRATEGY TOGGLE] AMD_FVG disabled")
+
+    if not ENABLE_LVN_FVG_RECLAIM:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "LVN_FVG_RECLAIM"
+        ]
+        logger.info("[STRATEGY TOGGLE] LVN_FVG_RECLAIM disabled")
 
     if not ENABLE_STRUCTURE_LIQUIDITY:
         strategy_map = [
@@ -996,14 +1062,14 @@ def process_cycle(last_processed_candle_time):
         # =========================
         if not best_setup.get("notified"):
             send_telegram_message(
-            f"""✅ Entry Confirmed
+            f"""✅ Setup Confirmed
             Symbol: {SYMBOL}
             Signal: {setup_data['signal']}
             Strategy: {setup_data['strategy']}
 
-            Strong confirmation candle detected
+            Confirmation candle detected
             Smart Money: {", ".join(smc_check['reasons'])}
-            Ready to execute 🚀
+            Waiting for risk approval 🚦
             """
             )
             best_setup["notified"] = True
@@ -1088,9 +1154,12 @@ def process_cycle(last_processed_candle_time):
 
     trade_allowed, guard_reason = check_trade_guard(signal, tick)
 
-    if signal in ["BUY", "SELL"] and trade_plan is not None:
+    low_rr_blocked = False
+
+    if signal in ["BUY", "SELL"] and trade_plan is not None and trade_allowed:
         if not is_rr_valid(trade_plan, min_rr=min_rr_required):
             trade_allowed = False
+            low_rr_blocked = True
             guard_reason = f"Low RR — calculated {rr_value}, required {min_rr_required}"
 
     if is_cooldown_active() and signal in ["BUY", "SELL"]:
@@ -1133,6 +1202,136 @@ def process_cycle(last_processed_candle_time):
             Reason: {guard_reason}
             """
             )
+
+        if (
+            low_rr_blocked
+            and ENABLE_BLOCKED_SETUP_REVERSAL
+            and signal in ["BUY", "SELL"]
+            and trade_plan is not None
+        ):
+            reversal_data = build_blocked_setup_reversal(
+                df=df,
+                blocked_signal=signal,
+                blocked_strategy=strategy_name,
+                blocked_trade_plan=trade_plan,
+                blocked_signal_data=selected_signal_data,
+            )
+
+            if reversal_data is None:
+                send_telegram_message(
+                    f"🔎 Reversal Check\n"
+                    f"Symbol: {SYMBOL}\n"
+                    f"Original Strategy: {strategy_name}\n"
+                    f"Original Signal: {signal}\n\n"
+                    f"Result: No valid reversal confirmation."
+                )
+
+            elif reversal_data.get("score", 0) < BLOCKED_REVERSAL_MIN_SCORE:
+                send_telegram_message(
+                    f"🚫 Reversal Rejected\n"
+                    f"Symbol: {SYMBOL}\n"
+                    f"Original Strategy: {strategy_name}\n"
+                    f"Original Signal: {signal}\n"
+                    f"Reversal Signal: {reversal_data.get('signal')}\n"
+                    f"Score: {reversal_data.get('score')}\n"
+                    f"Required: {BLOCKED_REVERSAL_MIN_SCORE}"
+                )
+
+            else:
+                reversal_signal = reversal_data["signal"]
+
+                reversal_trade_plan = calculate_trade_plan(
+                    df=df,
+                    signal=reversal_signal,
+                    tick=tick,
+                    account_balance=account_info.balance,
+                    signal_data=reversal_data,
+                )
+
+                if reversal_trade_plan is None:
+                    send_telegram_message(
+                        f"🚫 Reversal Trade Plan Failed\n"
+                        f"Symbol: {SYMBOL}\n"
+                        f"Original Strategy: {strategy_name}\n"
+                        f"Reversal Signal: {reversal_signal}\n\n"
+                        f"Reason: Could not calculate reversal SL/TP."
+                    )
+
+                else:
+                    reversal_trade_plan["score"] = reversal_data.get("score", 0)
+                    reversal_trade_plan["strategy"] = reversal_data.get("strategy")
+                    reversal_trade_plan["market_condition"] = market_condition
+                    reversal_trade_plan["reason"] = reversal_data.get("reason", "N/A")
+                    reversal_trade_plan["session"] = selected_signal_data.get("session", session_name)
+
+                    reversal_rr = calculate_rr_value(reversal_trade_plan)
+                    reversal_allowed, reversal_guard_reason = check_trade_guard(reversal_signal, tick)
+
+                    if not is_rr_valid(reversal_trade_plan, min_rr=BLOCKED_REVERSAL_MIN_RR):
+                        reversal_allowed = False
+                        reversal_guard_reason = (
+                            f"Low reversal RR — calculated {reversal_rr}, "
+                            f"required {BLOCKED_REVERSAL_MIN_RR}"
+                        )
+
+                    if is_cooldown_active():
+                        reversal_allowed = False
+                        reversal_guard_reason = "Cooldown after stop loss is active"
+
+                    if not reversal_allowed:
+                        send_telegram_message(
+                            f"🚫 Reversal Trade Blocked\n"
+                            f"Symbol: {SYMBOL}\n"
+                            f"Original Strategy: {strategy_name}\n"
+                            f"Reversal Signal: {reversal_signal}\n\n"
+                            f"Entry: {reversal_trade_plan['entry_price']}\n"
+                            f"SL: {reversal_trade_plan['stop_loss']}\n"
+                            f"TP: {reversal_trade_plan['take_profit']}\n"
+                            f"RR: {reversal_rr}\n\n"
+                            f"Reason: {reversal_guard_reason}"
+                        )
+
+                    else:
+                        from src.position_guard import has_same_direction_position
+
+                        reversal_opposite = "SELL" if reversal_signal == "BUY" else "BUY"
+
+                        if has_same_direction_position(SYMBOL, reversal_opposite):
+                            send_telegram_message(
+                                f"🚫 Reversal Execution Blocked\n"
+                                f"Symbol: {SYMBOL}\n"
+                                f"Reversal Signal: {reversal_signal}\n\n"
+                                f"Reason: Opposite position already exists."
+                            )
+                            return current_candle_time
+
+                        send_telegram_message(
+                            f"🔁 Reversal Setup Confirmed\n"
+                            f"Symbol: {SYMBOL}\n"
+                            f"Original Strategy: {strategy_name}\n"
+                            f"Original Signal: {signal}\n"
+                            f"Reversal Signal: {reversal_signal}\n"
+                            f"Reversal Strategy: {reversal_data.get('strategy')}\n\n"
+                            f"Entry: {reversal_trade_plan['entry_price']}\n"
+                            f"SL: {reversal_trade_plan['stop_loss']}\n"
+                            f"TP: {reversal_trade_plan['take_profit']}\n"
+                            f"RR: {reversal_rr}\n"
+                            f"Reason: {reversal_data.get('reason')}"
+                        )
+
+                        execution_result = execute_trade(
+                            reversal_signal,
+                            reversal_trade_plan,
+                            SYMBOL,
+                        )
+
+                        if not execution_result:
+                            send_telegram_message(
+                                f"❌ Reversal Execution Failed\n"
+                                f"Symbol: {SYMBOL}\n"
+                                f"Signal: {reversal_signal}\n"
+                                f"Reason: execute_trade() returned False."
+                            )
 
         return current_candle_time
 

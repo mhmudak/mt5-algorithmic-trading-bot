@@ -58,6 +58,7 @@ def session_score_adjustment(strategy_name: str, session_name: str):
         "LIQUIDITY_CANDLE",
         "VWAP_RECLAIM",
         "STRUCTURE_LIQUIDITY",
+        "AMD_FVG",
     }
 
     if strategy_name in reversal_strategies:
@@ -84,6 +85,8 @@ def session_score_adjustment(strategy_name: str, session_name: str):
         "HTF_TREND_PULLBACK",
         "MTF_OB_ENTRY",
         "HEAD_SHOULDERS",
+        "LVN_FVG_RECLAIM",
+        "FVG_CE_MITIGATION",
     }
 
     if strategy_name in structural_strategies:
