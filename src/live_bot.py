@@ -54,6 +54,7 @@ reversal_count = 0
 
 STRATEGY_SPECIFIC_CONFIRMED = {
     "HTF_TREND_PULLBACK",
+    "SESSION_ORB_RETEST",
     "ORB",
     "FVG",
     "ORDER_BLOCK",
@@ -217,6 +218,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_fractal_sweep import generate_signal as fractal_sweep_signal
     from src.strategy_performance import get_disabled_strategies
     from src.strategies.strategy_htf_trend_pullback import generate_signal as htf_trend_pullback_signal
+    from src.strategies.strategy_session_orb_retest import generate_signal as session_orb_retest_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -239,6 +241,7 @@ def process_cycle(last_processed_candle_time):
             ("HTF_TREND_PULLBACK", htf_trend_pullback_signal),
             ("OB_FVG_COMBO", ob_fvg_combo_signal),
             ("RELIEF_RALLY", relief_rally_signal),
+            ("SESSION_ORB_RETEST", session_orb_retest_signal),
             ("ORB", orb_signal),
             ("ORDER_BLOCK", order_block_signal),
             ("FVG", fvg_signal),
@@ -275,6 +278,7 @@ def process_cycle(last_processed_candle_time):
             ("CRT_TBS", crt_tbs_signal),
             ("SMT_PRO", smt_pro_signal),
             ("SMT", smt_signal),
+            ("SESSION_ORB_RETEST", session_orb_retest_signal),
             ("ORB", orb_signal),
             ("LIQUIDITY_SWEEP", liquidity_sweep_signal),
             ("LIQUIDITY_CANDLE", liquidity_candle_signal),
