@@ -51,6 +51,12 @@ from config.settings import (
     ENABLE_FCR_M1_FVG,
     ENABLE_WAVETREND_PIVOT_M5,
     ENABLE_STRUCTURE_LIQUIDITY,
+    ENABLE_STRUCTURE_LIQUIDITY_CONFIRMATION,
+)
+
+from src.structure_liquidity_context import (
+    analyze_structure_liquidity,
+    apply_structure_liquidity_confirmation,
 )
 
 last_signal = None
@@ -246,6 +252,19 @@ def process_cycle(last_processed_candle_time):
 
     strategy_map = []
 
+    structure_liquidity_context = None
+
+    if ENABLE_STRUCTURE_LIQUIDITY_CONFIRMATION:
+        structure_liquidity_context = analyze_structure_liquidity(df)
+
+        if structure_liquidity_context:
+            logger.info(
+                f"[STRUCTURE LIQUIDITY CONTEXT] "
+                f"bias={structure_liquidity_context.get('bias')} "
+                f"score={structure_liquidity_context.get('score')} "
+                f"reasons={structure_liquidity_context.get('reasons')}"
+            )
+
 
     from src.mtf_confirmation import get_mtf_bias
 
@@ -376,6 +395,24 @@ def process_cycle(last_processed_candle_time):
                 result["score"] += score_boost
                 result["smc"] = smc_reasons
 
+                if ENABLE_STRUCTURE_LIQUIDITY_CONFIRMATION:
+                    sl_boost, sl_reasons = apply_structure_liquidity_confirmation(
+                        result,
+                        structure_liquidity_context,
+                    )
+
+                    result["score"] += sl_boost
+
+                    if sl_reasons:
+                        result.setdefault("structure_liquidity_reasons", [])
+                        result["structure_liquidity_reasons"].extend(sl_reasons)
+
+                        logger.info(
+                            f"[STRUCTURE LIQUIDITY CONFIRMATION] "
+                            f"strategy={name} signal={result.get('signal')} "
+                            f"boost={sl_boost} reasons={sl_reasons}"
+                        )
+
                 if ENABLE_SMC_ENGINE and result["score"] < SMC_MIN_FINAL_SCORE:
                     logger.info(
                         f"[SMC FILTER] Rejected {name} "
@@ -468,6 +505,12 @@ def process_cycle(last_processed_candle_time):
 
         if selected_signal_data.get("session_reasons"):
             reason += f" | SESSION: {','.join(selected_signal_data['session_reasons'])}"
+
+        if selected_signal_data.get("structure_liquidity_reasons"):
+            reason += (
+                f" | STRUCTURE/LIQUIDITY: "
+                f"{','.join(selected_signal_data['structure_liquidity_reasons'])}"
+            )
 
         original_signal = signal
         original_strategy_name = strategy_name
