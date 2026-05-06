@@ -56,6 +56,7 @@ STRATEGY_SPECIFIC_CONFIRMED = {
     "HTF_TREND_PULLBACK",
     "SESSION_ORB_RETEST",
     "VWAP_RECLAIM",
+    "BREAKER_BLOCK",
     "ORB",
     "FVG",
     "ORDER_BLOCK",
@@ -221,6 +222,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_htf_trend_pullback import generate_signal as htf_trend_pullback_signal
     from src.strategies.strategy_session_orb_retest import generate_signal as session_orb_retest_signal
     from src.strategies.strategy_vwap_reclaim import generate_signal as vwap_reclaim_signal
+    from src.strategies.strategy_breaker_block import generate_signal as breaker_block_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -245,6 +247,7 @@ def process_cycle(last_processed_candle_time):
             ("RELIEF_RALLY", relief_rally_signal),
             ("SESSION_ORB_RETEST", session_orb_retest_signal),
             ("ORB", orb_signal),
+            ("BREAKER_BLOCK", breaker_block_signal),
             ("ORDER_BLOCK", order_block_signal),
             ("FVG", fvg_signal),
             ("TRIANGLE_PENNANT", triangle_pennant_signal),
@@ -268,6 +271,7 @@ def process_cycle(last_processed_candle_time):
             ("SMT", smt_signal),
             ("LIQUIDITY_SWEEP", liquidity_sweep_signal),
             ("LIQUIDITY_CANDLE", liquidity_candle_signal),
+            ("BREAKER_BLOCK", breaker_block_signal),
             ("ORDER_BLOCK", order_block_signal),
             ("HEAD_SHOULDERS", head_shoulders_signal),
             ("FAST", fast_signal),
