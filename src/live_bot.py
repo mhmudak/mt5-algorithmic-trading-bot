@@ -48,6 +48,7 @@ from config.settings import (
     ENABLE_REVERSAL_ALERTS,
     REVERSAL_MIN_SCORE,
     TRADING_MODE,
+    ENABLE_FCR_M1_FVG,
 )
 
 last_signal = None
@@ -77,6 +78,8 @@ STRATEGY_SPECIFIC_CONFIRMED = {
     "SNIPER_V2",
     "STRICT",
     "FAST",
+    "MTF_OB_ENTRY",
+    "FCR_M1_FVG",
 }
 
 def fetch_market_data():
@@ -224,6 +227,8 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_session_orb_retest import generate_signal as session_orb_retest_signal
     from src.strategies.strategy_vwap_reclaim import generate_signal as vwap_reclaim_signal
     from src.strategies.strategy_breaker_block import generate_signal as breaker_block_signal
+    from src.strategies.strategy_mtf_order_block_entry import generate_signal as mtf_ob_entry_signal
+    from src.strategies.strategy_fcr_m1_fvg import generate_signal as fcr_m1_fvg_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -248,7 +253,9 @@ def process_cycle(last_processed_candle_time):
             ("RELIEF_RALLY", relief_rally_signal),
             ("SESSION_ORB_RETEST", session_orb_retest_signal),
             ("ORB", orb_signal),
+            ("FCR_M1_FVG", fcr_m1_fvg_signal),
             ("BREAKER_BLOCK", breaker_block_signal),
+            ("MTF_OB_ENTRY", mtf_ob_entry_signal),
             ("ORDER_BLOCK", order_block_signal),
             ("FVG", fvg_signal),
             ("TRIANGLE_PENNANT", triangle_pennant_signal),
@@ -289,12 +296,24 @@ def process_cycle(last_processed_candle_time):
             ("SMT", smt_signal),
             ("SESSION_ORB_RETEST", session_orb_retest_signal),
             ("ORB", orb_signal),
+            ("FCR_M1_FVG", fcr_m1_fvg_signal),
             ("LIQUIDITY_SWEEP", liquidity_sweep_signal),
             ("LIQUIDITY_CANDLE", liquidity_candle_signal),
             ("ORDER_BLOCK", order_block_signal),
             ("STRICT", strict_signal),
             ("FVG", fvg_signal),
         ]
+
+    # =========================
+    # STRATEGY TOGGLES
+    # =========================
+    if not ENABLE_FCR_M1_FVG:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "FCR_M1_FVG"
+        ]
+        logger.info("[STRATEGY TOGGLE] FCR_M1_FVG disabled")
 
     for name, strat in strategy_map:
 
