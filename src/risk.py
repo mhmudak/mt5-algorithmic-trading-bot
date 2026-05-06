@@ -88,6 +88,20 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
             return None
 
         stop_loss = sl_reference
+        
+    elif strategy == "CRT_TBS" and signal_data:
+        sl_reference = signal_data.get("sl_reference")
+
+        if sl_reference is None:
+            return None
+
+        if signal == "BUY" and sl_reference >= entry_price:
+            return None
+
+        if signal == "SELL" and sl_reference <= entry_price:
+            return None
+
+        stop_loss = sl_reference
 
     elif strategy == "RELIEF_RALLY" and signal_data:
         sl_reference = signal_data.get("sl_reference")
@@ -133,7 +147,7 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
         if sl_reference is None:
             return None
         stop_loss = sl_reference
-
+        
     elif USE_STRUCTURE_STOP:
         if signal == "BUY":
             stop_loss = recent_support - STOP_BUFFER - STOP_EXTRA_BUFFER_PRICE

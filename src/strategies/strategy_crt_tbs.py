@@ -1,6 +1,18 @@
 from config.settings import ATR_MIN, ATR_MAX
 
 
+CRT_TBS_SL_ATR_MULTIPLIER = 0.20
+CRT_TBS_MIN_SL_BUFFER = 2.0
+CRT_TBS_MAX_SL_BUFFER = 5.0
+
+
+def _sl_buffer(atr):
+    return min(
+        max(atr * CRT_TBS_SL_ATR_MULTIPLIER, CRT_TBS_MIN_SL_BUFFER),
+        CRT_TBS_MAX_SL_BUFFER,
+    )
+
+
 def generate_signal(df):
     if len(df) < 30:
         return None
@@ -30,6 +42,8 @@ def generate_signal(df):
     upper_wick = trap["high"] - max(trap["open"], trap["close"])
     lower_wick = min(trap["open"], trap["close"]) - trap["low"]
 
+    sl_buffer = _sl_buffer(atr)
+
     # =========================================================
     # Bearish CRT / TBS
     # trap above range -> rejection -> bearish confirmation
@@ -52,20 +66,23 @@ def generate_signal(df):
         and bearish_confirmation
     ):
         pattern_height = abs(range_high - range_low)
+        sl_reference = round(trap["high"] + sl_buffer, 2)
 
         return {
             "signal": "SELL",
             "score": 93,
             "strategy": "CRT_TBS",
+            "entry_model": "CRT_TBS_TRAP_REVERSAL",
             "pattern_height": pattern_height,
             "range_high": range_high,
             "range_low": range_low,
             "trap_high": trap["high"],
             "trap_low": trap["low"],
+            "sl_reference": sl_reference,
             "reason": (
-                f"CRT/TBS bearish -> trap above range {round(range_high,2)} -> "
-                f"close back inside -> bearish break below {round(trap['low'],2)} -> "
-                f"price below EMA"
+                f"CRT/TBS bearish -> trap above range {round(range_high, 2)} -> "
+                f"close back inside -> bearish break below {round(trap['low'], 2)} -> "
+                f"SL above trap high {sl_reference} -> price below EMA"
             ),
         }
 
@@ -91,20 +108,23 @@ def generate_signal(df):
         and bullish_confirmation
     ):
         pattern_height = abs(range_high - range_low)
+        sl_reference = round(trap["low"] - sl_buffer, 2)
 
         return {
             "signal": "BUY",
             "score": 93,
             "strategy": "CRT_TBS",
+            "entry_model": "CRT_TBS_TRAP_REVERSAL",
             "pattern_height": pattern_height,
             "range_high": range_high,
             "range_low": range_low,
             "trap_high": trap["high"],
             "trap_low": trap["low"],
+            "sl_reference": sl_reference,
             "reason": (
-                f"CRT/TBS bullish -> trap below range {round(range_low,2)} -> "
-                f"close back inside -> bullish break above {round(trap['high'],2)} -> "
-                f"price above EMA"
+                f"CRT/TBS bullish -> trap below range {round(range_low, 2)} -> "
+                f"close back inside -> bullish break above {round(trap['high'], 2)} -> "
+                f"SL below trap low {sl_reference} -> price above EMA"
             ),
         }
 

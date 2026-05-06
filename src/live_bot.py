@@ -420,9 +420,23 @@ def process_cycle(last_processed_candle_time):
         mtf_bias = get_mtf_bias()
         logger.info(f"[MTF] bias={mtf_bias} signal={signal}")
 
-        if mtf_bias is not None and mtf_bias != signal:
+        mtf_conflict = mtf_bias is not None and mtf_bias != signal
+
+        mtf_override_strategies = [
+            "CRT_TBS",
+            "LIQUIDITY_TRAP",
+            "FRACTAL_SWEEP",
+        ]
+
+        allow_mtf_override = (
+            strategy_name in mtf_override_strategies
+            and score >= 98
+        )
+
+        if mtf_conflict and not allow_mtf_override:
             logger.info(
-                f"[MTF] Signal rejected by higher timeframe | signal={signal} mtf_bias={mtf_bias}"
+                f"[MTF] Signal rejected by higher timeframe | "
+                f"strategy={strategy_name} signal={signal} mtf_bias={mtf_bias}"
             )
 
             send_telegram_message(
@@ -430,11 +444,31 @@ def process_cycle(last_processed_candle_time):
                 f"Symbol: {SYMBOL}\n"
                 f"Strategy: {strategy_name}\n"
                 f"Signal: {signal}\n"
+                f"Score: {score}\n"
                 f"MTF Bias: {mtf_bias}"
             )
 
             signal = "NO_TRADE"
             reason = f"Rejected by MTF confirmation -> higher timeframe bias is {mtf_bias}"
+
+        elif mtf_conflict and allow_mtf_override:
+            logger.info(
+                f"[MTF OVERRIDE] Allowed counter-bias setup | "
+                f"strategy={strategy_name} score={score} "
+                f"signal={signal} mtf_bias={mtf_bias}"
+            )
+
+            send_telegram_message(
+                f"⚠️ MTF Override Allowed\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Strategy: {strategy_name}\n"
+                f"Signal: {signal}\n"
+                f"Score: {score}\n"
+                f"MTF Bias: {mtf_bias}\n\n"
+                f"Reason: High-score trap/reversal setup allowed against MTF."
+            )
+
+            reason += f" | MTF override: counter-bias {mtf_bias}"
 
     # =========================
     # HTF FILTER
@@ -582,28 +616,16 @@ def process_cycle(last_processed_candle_time):
             logger.info(f"[SAFE FORCE] No strategy signal, forced {FORCE_SIGNAL} allowed")
 
     # =========================
-    # FINAL SIGNAL NOTIFICATION
+    # FINAL SIGNAL LOG
     # =========================
     if signal in ["BUY", "SELL"]:
-        from src.notifier import build_trade_message
-
-        preview_data = {
-            "stage": "FILTERED SIGNAL",
-            "signal": signal,
-            "strategy": strategy_name,
-            "entry_model": selected_signal_data.get("entry_model", "N/A"),
-            "entry": tick.ask if signal == "BUY" else tick.bid,
-            "sl": selected_signal_data.get("sl_reference") or "N/A",
-            "tp": selected_signal_data.get("pivot_target_level") or "N/A",
-            "score": score,
-            "session": selected_signal_data.get("session", session_name),
-            "pivot_support_level": selected_signal_data.get("pivot_support_level"),
-            "pivot_resistance_level": selected_signal_data.get("pivot_resistance_level"),
-            "pivot_target_level": selected_signal_data.get("pivot_target_level"),
-            "reason": reason,
-        }
-
-        send_telegram_message(build_trade_message(preview_data))
+        logger.info(
+            f"[FILTERED SIGNAL] "
+            f"strategy={strategy_name} "
+            f"signal={signal} "
+            f"score={score} "
+            f"reason={reason}"
+        )
 
     # =========================
     # CONTEXT LOG
@@ -675,7 +697,32 @@ def process_cycle(last_processed_candle_time):
         return current_candle_time
 
     else:
-        best_setup = ready_setups[0]
+        current_ready_setups = []
+
+        if selected_signal_data.get("signal") in ["BUY", "SELL"]:
+            current_ready_setups = [
+                setup for setup in ready_setups
+                if setup["data"].get("strategy") == selected_signal_data.get("strategy")
+                and setup["data"].get("signal") == selected_signal_data.get("signal")
+                and setup["data"].get("entry_model", "MARKET")
+                == selected_signal_data.get("entry_model", "MARKET")
+            ]
+
+        if current_ready_setups:
+            best_setup = current_ready_setups[0]
+            logger.info(
+                f"[EXECUTION] Using current filtered setup | "
+                f"strategy={best_setup['data'].get('strategy')} "
+                f"signal={best_setup['data'].get('signal')}"
+            )
+        else:
+            best_setup = ready_setups[0]
+            logger.info(
+                f"[EXECUTION] Using previously registered ready setup | "
+                f"strategy={best_setup['data'].get('strategy')} "
+                f"signal={best_setup['data'].get('signal')}"
+            )
+
         setup_data = best_setup["data"]
         setup_strategy = setup_data.get("strategy")
         setup_signal = setup_data.get("signal")
@@ -717,12 +764,15 @@ def process_cycle(last_processed_candle_time):
                 f"❌ Smart money confirmation failed → reasons={smc_check['reasons']}"
             )
 
+            smc_reasons = smc_check.get("reasons", [])
+            smc_reason_text = ", ".join(smc_reasons) if smc_reasons else "No sweep, displacement, or inducement break detected"
+
             send_telegram_message(
                 f"🚫 Smart Money Confirmation Failed\n"
                 f"Symbol: {SYMBOL}\n"
                 f"Strategy: {setup_strategy}\n"
                 f"Signal: {setup_signal}\n\n"
-                f"Reasons: {', '.join(smc_check['reasons'])}"
+                f"Reason: {smc_reason_text}"
             )
 
             return current_candle_time
@@ -881,10 +931,35 @@ def process_cycle(last_processed_candle_time):
             return current_candle_time
 
         logger.info("🔥 Executing trade...")
+
+        send_telegram_message(
+            f"🔥 Executing Trade\n"
+            f"Symbol: {SYMBOL}\n"
+            f"Signal: {signal}\n"
+            f"Strategy: {strategy_name}\n\n"
+            f"Entry: {trade_plan['entry_price']}\n"
+            f"SL: {trade_plan['stop_loss']}\n"
+            f"TP: {trade_plan['take_profit']}\n"
+            f"Lot: {trade_plan['lot']}"
+        )
+
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
 
         if execution_result:
             execution_engine.mark_executed(best_setup)
+        else:
+            logger.error(
+                f"[EXECUTION FAILED] "
+                f"strategy={strategy_name} signal={signal} trade_plan={trade_plan}"
+            )
+
+            send_telegram_message(
+                f"❌ Execution Failed\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Signal: {signal}\n"
+                f"Strategy: {strategy_name}\n\n"
+                f"Reason: execute_trade() returned False. Check MT5/order_executor logs."
+            )
 
     return current_candle_time
 

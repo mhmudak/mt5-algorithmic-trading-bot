@@ -55,10 +55,12 @@ TP: {tp}
 
 
 def build_trade_message(data: dict) -> str:
+    def has_value(value):
+        return value is not None and value != "N/A"
+
     signal = data.get("signal")
     strategy = data.get("strategy")
     entry_model = data.get("entry_model", "N/A")
-
     stage = data.get("stage", "SIGNAL DETECTED")
 
     entry = data.get("entry")
@@ -83,11 +85,9 @@ def build_trade_message(data: dict) -> str:
             and isinstance(tp, (int, float))
         ):
             if signal == "BUY" and (entry - sl) != 0:
-                rr_val = (tp - entry) / (entry - sl)
-                rr = round(rr_val, 2)
+                rr = round((tp - entry) / (entry - sl), 2)
             elif signal == "SELL" and (sl - entry) != 0:
-                rr_val = (entry - tp) / (sl - entry)
-                rr = round(rr_val, 2)
+                rr = round((entry - tp) / (sl - entry), 2)
     except Exception:
         rr = "N/A"
 
@@ -95,21 +95,32 @@ def build_trade_message(data: dict) -> str:
 📡 {stage}
 
 🔹 Strategy: {strategy}
-🔹 Type: {entry_model}
 🔹 Signal: {signal}
 🔹 Score: {score}
 🔹 Session: {session}
-
-📍 Entry: {entry}
-🛑 SL: {sl}
-🎯 TP: {tp}
-📊 RR: {rr}
 """
+
+    if has_value(entry_model):
+        message += f"🔹 Type: {entry_model}\n"
+
+    if has_value(entry):
+        message += f"\n📍 Entry: {entry}"
+
+    if has_value(sl):
+        message += f"\n🛑 SL: {sl}"
+
+    if has_value(tp):
+        message += f"\n🎯 TP: {tp}"
+
+    if has_value(rr):
+        message += f"\n📊 RR: {rr}"
 
     if pivot_support is not None:
         message += f"\n🟢 Support: {round(pivot_support, 2)}"
+
     if pivot_resistance is not None:
         message += f"\n🔴 Resistance: {round(pivot_resistance, 2)}"
+
     if pivot_target is not None:
         message += f"\n🎯 Target Level: {round(pivot_target, 2)}"
 
