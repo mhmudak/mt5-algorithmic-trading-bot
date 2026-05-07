@@ -64,6 +64,12 @@ from config.settings import (
     ENABLE_LIQUIDITY_POOL_OB,
     ENABLE_EXTRA_RR_DISCOUNT,
     EXTRA_RR_MULTIPLIER,
+    MAX_CANDIDATES_PER_CANDLE,
+    ENABLE_CANDIDATE_FALLBACK,
+    ENABLE_SIGNAL_CONFLUENCE_GROUPING,
+    CONFLUENCE_SCORE_BOOST_PER_STRATEGY,
+    MAX_CONFLUENCE_SCORE_BOOST,
+    TELEGRAM_VERBOSE_SIGNALS,
 )
 
 from src.structure_liquidity_context import (
@@ -189,6 +195,236 @@ def calculate_rr_value(trade_plan):
 def build_setup_id(strategy_name, signal, tick_time):
     prefix = (strategy_name or "UNK")[:3].upper()
     return f"{prefix}-{signal}-{int(tick_time)}"
+
+def select_confirmed_ready_setup(ready_setups, df, selected_signal_data):
+    from src.confirmation_engine import confirm_entry
+    from src.smart_money_layer import smart_money_confirm
+
+    current_ready = []
+    other_ready = []
+
+    for setup in ready_setups:
+        setup_data = setup["data"]
+
+        is_current = (
+            setup_data.get("strategy") == selected_signal_data.get("strategy")
+            and setup_data.get("signal") == selected_signal_data.get("signal")
+            and setup_data.get("entry_model", "MARKET")
+            == selected_signal_data.get("entry_model", "MARKET")
+        )
+
+        if is_current:
+            current_ready.append(setup)
+        else:
+            other_ready.append(setup)
+
+    other_ready = sorted(
+        other_ready,
+        key=lambda setup: setup["data"].get("score", 0),
+        reverse=True,
+    )
+
+    ordered_setups = current_ready + other_ready
+    rejected_reasons = []
+
+    for setup in ordered_setups:
+        setup_data = setup["data"]
+        setup_strategy = setup_data.get("strategy")
+        setup_signal = setup_data.get("signal")
+
+        if setup_strategy in STRATEGY_SPECIFIC_CONFIRMED:
+            confirmed = True
+        else:
+            try:
+                confirmed = confirm_entry(df, setup_signal)
+            except Exception as e:
+                logger.error(f"[CONFIRMATION ERROR] {e}")
+                confirmed = False
+
+        if not confirmed:
+            rejected_reasons.append(
+                f"{setup_strategy}:{setup_signal}:confirmation_failed"
+            )
+            continue
+
+        smc_check = smart_money_confirm(df, setup_signal)
+
+        if not smc_check["confirmed"]:
+            rejected_reasons.append(
+                f"{setup_strategy}:{setup_signal}:smc_failed"
+            )
+            continue
+
+        return setup, smc_check, rejected_reasons
+
+    return None, None, rejected_reasons
+
+def apply_candidate_confluence(candidate, top_candidates):
+    if not ENABLE_SIGNAL_CONFLUENCE_GROUPING:
+        return candidate
+
+    signal = candidate.get("signal")
+
+    same_direction_candidates = [
+        item for item in top_candidates
+        if item.get("signal") == signal
+    ]
+
+    confluence_strategies = list(
+        dict.fromkeys(
+            item.get("strategy", "UNKNOWN")
+            for item in same_direction_candidates
+        )
+    )
+
+    if len(confluence_strategies) <= 1:
+        return candidate
+
+    confluence_boost = min(
+        (len(confluence_strategies) - 1) * CONFLUENCE_SCORE_BOOST_PER_STRATEGY,
+        MAX_CONFLUENCE_SCORE_BOOST,
+    )
+
+    candidate["score"] = min(candidate.get("score", 0) + confluence_boost, 100)
+    candidate["confluence_strategies"] = confluence_strategies
+
+    reason = candidate.get("reason", "N/A")
+    if "CONFLUENCE:" not in reason:
+        candidate["reason"] = (
+            f"{reason} | CONFLUENCE: {','.join(confluence_strategies)}"
+        )
+
+    logger.info(
+        f"[CONFLUENCE] signal={signal} "
+        f"strategies={confluence_strategies} "
+        f"boost={confluence_boost} "
+        f"final_score={candidate['score']}"
+    )
+
+    return candidate
+
+
+def validate_candidate_pre_execution(
+    candidate,
+    df,
+    tick,
+    market_condition,
+    close_price,
+    atr,
+):
+    from src.adaptive_thresholds import get_adaptive_min_score
+
+    candidate = candidate.copy()
+
+    signal = candidate.get("signal")
+    strategy_name = candidate.get("strategy", "UNKNOWN")
+    score = candidate.get("score", 0)
+
+    if signal not in ["BUY", "SELL"]:
+        return False, candidate, "invalid_signal"
+
+    # =========================
+    # TRADING MODE FILTER
+    # =========================
+    if TRADING_MODE == "BUY_ONLY" and signal != "BUY":
+        return False, candidate, "trading_mode_buy_only"
+
+    if TRADING_MODE == "SELL_ONLY" and signal != "SELL":
+        return False, candidate, "trading_mode_sell_only"
+
+    # =========================
+    # ORB ANTI-CHASE FILTER
+    # =========================
+    if strategy_name == "ORB":
+        orb_low = candidate.get("orb_low")
+        orb_high = candidate.get("orb_high")
+
+        current_price = tick.ask if signal == "BUY" else tick.bid
+
+        if signal == "SELL" and orb_low is not None:
+            if abs(current_price - orb_low) > atr * 0.6:
+                return False, candidate, "orb_too_extended_below_breakout"
+
+        if signal == "BUY" and orb_high is not None:
+            if abs(current_price - orb_high) > atr * 0.6:
+                return False, candidate, "orb_too_extended_above_breakout"
+
+    # =========================
+    # SCORE FILTER
+    # =========================
+    min_required_score = get_adaptive_min_score(strategy_name, market_condition)
+
+    if score < min_required_score:
+        return (
+            False,
+            candidate,
+            f"score_too_low {score}/{min_required_score}",
+        )
+
+    # =========================
+    # MTF CONFIRMATION
+    # =========================
+    from config.settings import ENABLE_MTF_CONFIRMATION
+
+    if ENABLE_MTF_CONFIRMATION:
+        mtf_bias = get_mtf_bias()
+        logger.info(f"[MTF] candidate={strategy_name} bias={mtf_bias} signal={signal}")
+
+        mtf_conflict = mtf_bias is not None and mtf_bias != signal
+
+        mtf_override_strategies = [
+            "CRT_TBS",
+            "LIQUIDITY_TRAP",
+            "FRACTAL_SWEEP",
+        ]
+
+        allow_mtf_override = (
+            strategy_name in mtf_override_strategies
+            and score >= 98
+        )
+
+        if mtf_conflict and not allow_mtf_override:
+            return False, candidate, f"mtf_conflict bias={mtf_bias}"
+
+        if mtf_conflict and allow_mtf_override:
+            reason = candidate.get("reason", "N/A")
+            candidate["reason"] = f"{reason} | MTF override: counter-bias {mtf_bias}"
+            candidate.setdefault("mtf_reasons", [])
+            candidate["mtf_reasons"].append(f"mtf_override_{mtf_bias}")
+
+    # =========================
+    # HTF FILTER
+    # =========================
+    htf_context = get_htf_context()
+
+    if not htf_allows_signal(signal, htf_context, allow_neutral=True):
+        return (
+            False,
+            candidate,
+            f"htf_rejected bias={htf_context.get('bias') if htf_context else None}",
+        )
+
+    # =========================
+    # HTF LIQUIDITY CONTEXT FILTER
+    # =========================
+    liquidity_context = get_liquidity_context()
+
+    if not liquidity_allows_signal(signal, liquidity_context, allow_neutral=True):
+        return (
+            False,
+            candidate,
+            f"htf_liquidity_rejected reason={liquidity_context.get('reason')}",
+        )
+
+    # =========================
+    # NEWS FILTER
+    # =========================
+    news_blocked, news_reason = is_news_blackout_active()
+
+    if news_blocked:
+        return False, candidate, f"news_blocked {news_reason}"
+
+    return True, candidate, "passed"
 
 def process_cycle(last_processed_candle_time):
     global last_signal, reversal_count
@@ -543,13 +779,15 @@ def process_cycle(last_processed_candle_time):
                     result.setdefault("session_reasons", [])
                     result["session_reasons"].extend(session_reasons)
 
+                result["score"] = max(0, min(result["score"], 100))
+
                 signals.append(result)
 
         except Exception as e:
             logger.error(f"[STRATEGY ERROR] {name}: {e}")
 
     # =========================
-    # SIGNAL SELECTION (SMART)
+    # SIGNAL SELECTION WITH CANDIDATE FALLBACK
     # =========================
     original_signal = "NO_TRADE"
     original_strategy_name = None
@@ -563,230 +801,158 @@ def process_cycle(last_processed_candle_time):
         strategy_name = None
         reason = None
         selected_signal_data = {}
+
     else:
-        best = max(signals, key=lambda x: x.get("score", 0))
-
-        signal = best["signal"]
-        score = best.get("score", 0)
-        strategy_name = best.get("strategy", "UNKNOWN")
-        reason = best.get("reason", "N/A")
-        selected_signal_data = best.copy()
-
-        setup_id = build_setup_id(strategy_name, signal, tick.time)
-        selected_signal_data["setup_id"] = setup_id
-
-        # =========================
-        # 📡 DETECTED SIGNAL (RAW)
-        # =========================
-        if signal in ["BUY", "SELL"]:
-            from src.notifier import build_trade_message
-
-            detected_data = {
-                "stage": f"SETUP DETECTED #{selected_signal_data.get('setup_id')}",
-                "signal": signal,
-                "strategy": strategy_name,
-                "entry_model": selected_signal_data.get("entry_model", "RAW"),
-                "entry": close_price,
-                "sl": selected_signal_data.get("sl_reference") or "N/A",
-                "tp": (
-                    selected_signal_data.get("tp_reference")
-                    or selected_signal_data.get("pivot_target_level")
-                    or "N/A"
-                ),
-                "score": score,
-                "session": session_name,
-                "reason": reason,
-            }
-
-            send_telegram_message(build_trade_message(detected_data))
-
-        # =========================
-        # ORB ANTI-CHASE FIX
-        # =========================
-        if strategy_name == "ORB" and signal in ["BUY", "SELL"]:
-            orb_low = selected_signal_data.get("orb_low")
-            orb_high = selected_signal_data.get("orb_high")
-
-            current_price = tick.ask if signal == "BUY" else tick.bid
-
-            if signal == "SELL" and orb_low is not None:
-                if abs(current_price - orb_low) > atr * 0.6:
-                    logger.info("❌ ORB skipped (too extended below breakout)")
-                    signal = "NO_TRADE"
-
-            elif signal == "BUY" and orb_high is not None:
-                if abs(current_price - orb_high) > atr * 0.6:
-                    logger.info("❌ ORB skipped (too extended above breakout)")
-                    signal = "NO_TRADE"
-
-        if selected_signal_data.get("smc"):
-            reason += f" | SMC: {','.join(selected_signal_data['smc'])}"
-
-        if selected_signal_data.get("session_reasons"):
-            reason += f" | SESSION: {','.join(selected_signal_data['session_reasons'])}"
-
-        if selected_signal_data.get("structure_liquidity_reasons"):
-            reason += (
-                f" | STRUCTURE/LIQUIDITY: "
-                f"{','.join(selected_signal_data['structure_liquidity_reasons'])}"
-            )
-
-        if selected_signal_data.get("macro_reasons"):
-            reason += (
-                f" | MACRO: "
-                f"{','.join(selected_signal_data['macro_reasons'])}"
-            )
-
-        original_signal = signal
-        original_strategy_name = strategy_name
-        original_reason = reason
-        original_score = score
-
-    # =========================
-    # BASIC SCORE FILTER (ANTI-FAKE)
-    # =========================
-    # if signal in ["BUY", "SELL"] and score < REVERSAL_MIN_SCORE:
-    #     logger.info("Signal rejected (low score filter)")
-    #     signal = "NO_TRADE"
-
-
-    from src.adaptive_thresholds import get_adaptive_min_score
-
-    if signal in ["BUY", "SELL"]:
-        min_required_score = get_adaptive_min_score(strategy_name, market_condition)
-
-
-        if score < min_required_score:
-            logger.info(
-                f"Signal rejected (score too low) | "
-                f"strategy={strategy_name} score={score} required={min_required_score}"
-            )
-
-            send_telegram_message(
-                f"🚫 Signal Rejected by Score\n"
-                f"Symbol: {SYMBOL}\n"
-                f"Strategy: {strategy_name}\n"
-                f"Signal: {signal}\n"
-                f"Score: {score}\n"
-                f"Required: {min_required_score}"
-            )
-
-            signal = "NO_TRADE"
-
-    # =========================
-    # MTF CONFIRMATION
-    # =========================
-    from config.settings import ENABLE_MTF_CONFIRMATION
-
-    if ENABLE_MTF_CONFIRMATION and signal in ["BUY", "SELL"]:
-        mtf_bias = get_mtf_bias()
-        logger.info(f"[MTF] bias={mtf_bias} signal={signal}")
-
-        mtf_conflict = mtf_bias is not None and mtf_bias != signal
-
-        mtf_override_strategies = [
-            "CRT_TBS",
-            "LIQUIDITY_TRAP",
-            "FRACTAL_SWEEP",
-        ]
-
-        allow_mtf_override = (
-            strategy_name in mtf_override_strategies
-            and score >= 98
+        sorted_signals = sorted(
+            signals,
+            key=lambda item: item.get("score", 0),
+            reverse=True,
         )
 
-        if mtf_conflict and not allow_mtf_override:
+        top_candidates = sorted_signals[:MAX_CANDIDATES_PER_CANDLE]
+
+        for index, candidate in enumerate(top_candidates, start=1):
+            candidate["candidate_rank"] = index
+
+        selected_candidate = None
+        rejected_candidates = []
+
+        candidates_to_check = top_candidates if ENABLE_CANDIDATE_FALLBACK else [top_candidates[0]]
+
+        for candidate in candidates_to_check:
+            candidate = apply_candidate_confluence(candidate.copy(), top_candidates)
+
+            is_valid, validated_candidate, rejection_reason = validate_candidate_pre_execution(
+                candidate=candidate,
+                df=df,
+                tick=tick,
+                market_condition=market_condition,
+                close_price=close_price,
+                atr=atr,
+            )
+
+            if is_valid:
+                selected_candidate = validated_candidate
+                break
+
+            rejected_candidates.append(
+                {
+                    "strategy": candidate.get("strategy"),
+                    "signal": candidate.get("signal"),
+                    "score": candidate.get("score"),
+                    "reason": rejection_reason,
+                }
+            )
+
             logger.info(
-                f"[MTF] Signal rejected by higher timeframe | "
-                f"strategy={strategy_name} signal={signal} mtf_bias={mtf_bias}"
+                f"[CANDIDATE REJECTED] "
+                f"strategy={candidate.get('strategy')} "
+                f"signal={candidate.get('signal')} "
+                f"score={candidate.get('score')} "
+                f"reason={rejection_reason}"
             )
 
-            send_telegram_message(
-                f"🚫 Signal Rejected by MTF\n"
-                f"Symbol: {SYMBOL}\n"
-                f"Strategy: {strategy_name}\n"
-                f"Signal: {signal}\n"
-                f"Score: {score}\n"
-                f"MTF Bias: {mtf_bias}"
-            )
-
+        if selected_candidate is None:
             signal = "NO_TRADE"
-            reason = f"Rejected by MTF confirmation -> higher timeframe bias is {mtf_bias}"
+            score = 0
+            strategy_name = None
+            reason = "All top candidates rejected"
+            selected_signal_data = {}
 
-        elif mtf_conflict and allow_mtf_override:
-            logger.info(
-                f"[MTF OVERRIDE] Allowed counter-bias setup | "
-                f"strategy={strategy_name} score={score} "
-                f"signal={signal} mtf_bias={mtf_bias}"
-            )
+            if TELEGRAM_VERBOSE_SIGNALS and rejected_candidates:
+                rejected_text = "\n".join(
+                    [
+                        f"- {item['strategy']} {item['signal']} "
+                        f"score={item['score']} reason={item['reason']}"
+                        for item in rejected_candidates
+                    ]
+                )
 
-            send_telegram_message(
-                f"⚠️ MTF Override Allowed\n"
-                f"Symbol: {SYMBOL}\n"
-                f"Strategy: {strategy_name}\n"
-                f"Signal: {signal}\n"
-                f"Score: {score}\n"
-                f"MTF Bias: {mtf_bias}\n\n"
-                f"Reason: High-score trap/reversal setup allowed against MTF."
-            )
+                send_telegram_message(
+                    f"🚫 Top Candidates Rejected\n"
+                    f"Symbol: {SYMBOL}\n\n"
+                    f"{rejected_text}"
+                )
 
-            reason += f" | MTF override: counter-bias {mtf_bias}"
+        else:
+            signal = selected_candidate["signal"]
+            score = selected_candidate.get("score", 0)
+            strategy_name = selected_candidate.get("strategy", "UNKNOWN")
+            reason = selected_candidate.get("reason", "N/A")
+            selected_signal_data = selected_candidate.copy()
 
-    # =========================
-    # HTF FILTER
-    # =========================
-    if signal in ["BUY", "SELL"]:
-        htf_context = get_htf_context()
+            selected_signal_data["top_candidates"] = [
+                {
+                    "strategy": candidate.get("strategy"),
+                    "signal": candidate.get("signal"),
+                    "score": candidate.get("score"),
+                    "entry_model": candidate.get("entry_model"),
+                }
+                for candidate in top_candidates
+            ]
 
-        if not htf_allows_signal(signal, htf_context, allow_neutral=True):
-            logger.info(
-                f"[HTF] Signal rejected | signal={signal} "
-                f"htf_bias={htf_context.get('bias')} "
-                f"price={htf_context.get('price')} "
-                f"ema={htf_context.get('ema')}"
-            )
-            send_telegram_message(
-                f"🚫 Signal Rejected by HTF\n"
-                f"Symbol: {SYMBOL}\n"
-                f"Strategy: {strategy_name}\n"
-                f"Signal: {signal}\n"
-                f"HTF Bias: {htf_context.get('bias')}\n"
-                f"HTF Price: {htf_context.get('price')}\n"
-                f"HTF EMA: {htf_context.get('ema')}"
-            )
-            signal = "NO_TRADE"
-            reason = (
-                f"Rejected by HTF filter -> "
-                f"HTF bias={htf_context.get('bias')}, "
-                f"HTF price={htf_context.get('price')}, "
-                f"HTF EMA={htf_context.get('ema')}"
+            selected_signal_data["confluence_strategies"] = selected_candidate.get(
+                "confluence_strategies",
+                [],
             )
 
-    # =========================
-    # HTF LIQUIDITY CONTEXT FILTER
-    # =========================
-    if signal in ["BUY", "SELL"]:
-        liquidity_context = get_liquidity_context()
+            setup_id = build_setup_id(strategy_name, signal, tick.time)
+            selected_signal_data["setup_id"] = setup_id
 
-        if not liquidity_allows_signal(signal, liquidity_context, allow_neutral=True):
-            logger.info(
-                f"[HTF LIQUIDITY] Rejected | signal={signal} "
-                f"bias={liquidity_context.get('bias')} "
-                f"reason={liquidity_context.get('reason')}"
-            )
-            send_telegram_message(
-                f"🚫 Signal Rejected by HTF Liquidity\n"
-                f"Symbol: {SYMBOL}\n"
-                f"Strategy: {strategy_name}\n"
-                f"Signal: {signal}\n"
-                f"Bias: {liquidity_context.get('bias')}\n"
-                f"Reason: {liquidity_context.get('reason')}"
-            )
-            signal = "NO_TRADE"
-            reason = (
-                f"Rejected by HTF liquidity context -> "
-                f"{liquidity_context.get('reason')}"
-            )
+            # =========================
+            # 📡 DETECTED SIGNAL
+            # =========================
+            if signal in ["BUY", "SELL"]:
+                from src.notifier import build_trade_message
+
+                detected_data = {
+                    "stage": f"SETUP DETECTED #{selected_signal_data.get('setup_id')}",
+                    "signal": signal,
+                    "strategy": strategy_name,
+                    "entry_model": selected_signal_data.get("entry_model", "RAW"),
+                    "entry": close_price,
+                    "sl": selected_signal_data.get("sl_reference") or "N/A",
+                    "tp": (
+                        selected_signal_data.get("tp_reference")
+                        or selected_signal_data.get("pivot_target_level")
+                        or "N/A"
+                    ),
+                    "score": score,
+                    "session": session_name,
+                    "reason": reason,
+                }
+
+                send_telegram_message(build_trade_message(detected_data))
+
+            if selected_signal_data.get("smc"):
+                reason += f" | SMC: {','.join(selected_signal_data['smc'])}"
+
+            if selected_signal_data.get("session_reasons"):
+                reason += f" | SESSION: {','.join(selected_signal_data['session_reasons'])}"
+
+            if selected_signal_data.get("structure_liquidity_reasons"):
+                reason += (
+                    f" | STRUCTURE/LIQUIDITY: "
+                    f"{','.join(selected_signal_data['structure_liquidity_reasons'])}"
+                )
+
+            if selected_signal_data.get("macro_reasons"):
+                reason += (
+                    f" | MACRO: "
+                    f"{','.join(selected_signal_data['macro_reasons'])}"
+                )
+
+            if selected_signal_data.get("confluence_strategies"):
+                if "CONFLUENCE:" not in reason:
+                    reason += (
+                        f" | CONFLUENCE: "
+                        f"{','.join(selected_signal_data['confluence_strategies'])}"
+                    )
+
+            original_signal = signal
+            original_strategy_name = strategy_name
+            original_reason = reason
+            original_score = score
 
     # =========================
     # REVERSAL DETECTION (FIXED)
@@ -982,36 +1148,37 @@ def process_cycle(last_processed_candle_time):
         return current_candle_time
 
     else:
-        current_ready_setups = []
+        best_setup, smc_check, rejected_ready_reasons = select_confirmed_ready_setup(
+            ready_setups=ready_setups,
+            df=df,
+            selected_signal_data=selected_signal_data,
+        )
 
-        if selected_signal_data.get("signal") in ["BUY", "SELL"]:
-            current_ready_setups = [
-                setup for setup in ready_setups
-                if setup["data"].get("strategy") == selected_signal_data.get("strategy")
-                and setup["data"].get("signal") == selected_signal_data.get("signal")
-                and setup["data"].get("entry_model", "MARKET")
-                == selected_signal_data.get("entry_model", "MARKET")
-            ]
+        if best_setup is None:
+            logger.info(
+                f"[READY SETUP FALLBACK] No ready setup passed final confirmation | "
+                f"rejected={rejected_ready_reasons}"
+            )
 
-        if current_ready_setups:
-            best_setup = current_ready_setups[0]
-            logger.info(
-                f"[EXECUTION] Using current filtered setup | "
-                f"strategy={best_setup['data'].get('strategy')} "
-                f"signal={best_setup['data'].get('signal')}"
+            send_telegram_message(
+                f"🚫 Ready Setups Rejected\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Rejected: {', '.join(rejected_ready_reasons) or 'N/A'}"
             )
-        else:
-            best_setup = ready_setups[0]
-            logger.info(
-                f"[EXECUTION] Using previously registered ready setup | "
-                f"strategy={best_setup['data'].get('strategy')} "
-                f"signal={best_setup['data'].get('signal')}"
-            )
+
+            return current_candle_time
 
         setup_data = best_setup["data"]
         setup_strategy = setup_data.get("strategy")
         setup_signal = setup_data.get("signal")
         setup_score = setup_data.get("score", score)
+
+        logger.info(
+            f"[EXECUTION] Using confirmed ready setup | "
+            f"strategy={setup_strategy} "
+            f"signal={setup_signal} "
+            f"score={setup_score}"
+        )
 
         # =========================
         # FINAL CONTEXT REVALIDATION
@@ -1067,59 +1234,9 @@ def process_cycle(last_processed_candle_time):
             return current_candle_time
 
         # =========================
-        # 🔥 FINAL CONFIRMATION FILTER
-        # =========================
-        from src.confirmation_engine import confirm_entry
-        from src.smart_money_layer import smart_money_confirm
-
-        strategy_specific_confirmed = setup_strategy in STRATEGY_SPECIFIC_CONFIRMED
-
-        if strategy_specific_confirmed:
-            confirmed = True
-            logger.info(
-                f"[CONFIRMATION] Generic confirmation skipped | "
-                f"strategy={setup_strategy} already confirmed by execution engine"
-            )
-        else:
-            try:
-                confirmed = confirm_entry(df, setup_data["signal"])
-            except Exception as e:
-                logger.error(f"[CONFIRMATION ERROR] {e}")
-                confirmed = False
-
-        if not confirmed:
-            logger.info(
-                f"❌ Confirmation failed → waiting better candle | "
-                f"strategy={strategy_name} "
-                f"signal={setup_data.get('signal')} "
-                f"entry_model={setup_data.get('entry_model')}"
-            )
-            return current_candle_time
-
-        smc_check = smart_money_confirm(df, setup_data["signal"])
-
-        if not smc_check["confirmed"]:
-            logger.info(
-                f"❌ Smart money confirmation failed → reasons={smc_check['reasons']}"
-            )
-
-            smc_reasons = smc_check.get("reasons", [])
-            smc_reason_text = ", ".join(smc_reasons) if smc_reasons else "No sweep, displacement, or inducement break detected"
-
-            send_telegram_message(
-                f"🚫 Smart Money Confirmation Failed\n"
-                f"Symbol: {SYMBOL}\n"
-                f"Strategy: {setup_strategy}\n"
-                f"Signal: {setup_signal}\n\n"
-                f"Reason: {smc_reason_text}"
-            )
-
-            return current_candle_time
-
-        # =========================
         # ✅ CONFIRMED TRADE
         # =========================
-        from config.settings import TELEGRAM_VERBOSE_SIGNALS
+
 
         if not best_setup.get("notified"):
             if TELEGRAM_VERBOSE_SIGNALS and not best_setup.get("notified"):
