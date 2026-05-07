@@ -23,6 +23,11 @@ from config.settings import (
     ENABLE_WORST_EXTRA_LOCK,
     WORST_EXTRA_LOCK_TRIGGER_PRICE,
     WORST_EXTRA_LOCK_PROFIT_PRICE,
+    ENABLE_MAIN_RUNNER_MODE,
+    MAIN_RUNNER_START_STAGE,
+    MAIN_RUNNER_REMAINING_PCT,
+    MAIN_RUNNER_REMOVE_TP,
+    MAIN_RUNNER_EMERGENCY_TP_PRICE,
 )
 
 
@@ -179,6 +184,47 @@ def manage_extra_entry(position, trade, tick):
                 f"Closed Volume: {current_volume}"
             )
 
+def calculate_runner_tp(position, direction):
+    if not ENABLE_MAIN_RUNNER_MODE:
+        return position.tp
+
+    if MAIN_RUNNER_REMOVE_TP:
+        return 0.0
+
+    if direction == "BUY":
+        return round(position.price_open + MAIN_RUNNER_EMERGENCY_TP_PRICE, 2)
+
+    return round(position.price_open - MAIN_RUNNER_EMERGENCY_TP_PRICE, 2)
+
+def activate_main_runner_mode(position, trade, direction, lock_profit_price, reason):
+    if not ENABLE_MAIN_RUNNER_MODE:
+        return False
+
+    entry_price = position.price_open
+
+    if direction == "SELL":
+        new_sl = entry_price - lock_profit_price
+    else:
+        new_sl = entry_price + lock_profit_price
+
+    runner_tp = calculate_runner_tp(position, direction)
+
+    if modify_sl(position, new_sl, runner_tp, reason):
+        trade["runner_mode_active"] = True
+        trade["runner_tp_removed"] = MAIN_RUNNER_REMOVE_TP
+        trade["runner_started_at"] = reason
+
+        send_telegram_message(
+            f"Main Runner Mode Activated\n"
+            f"Position: {position.ticket}\n"
+            f"Direction: {direction}\n"
+            f"Locked Profit: {lock_profit_price}\n"
+            f"TP: {'Removed' if runner_tp == 0.0 else runner_tp}\n"
+            f"Reason: {reason}"
+        )
+        return True
+
+    return False
 
 def manage_main_trade(position, trade, tick):
     if not ENABLE_MAIN_STAGE_MANAGEMENT:
@@ -259,13 +305,22 @@ def manage_main_trade(position, trade, tick):
 
                 updated_position = get_position_by_ticket(position.symbol, position.ticket)
                 if updated_position is not None:
-                    apply_price_lock(
-                        position=updated_position,
-                        direction=direction,
-                        trigger_price=MAIN_STAGE_2_TRIGGER_PRICE,
-                        lock_profit_price=MAIN_STAGE_2_LOCK_PRICE,
-                        reason="Main stage 2 lock",
-                    )
+                    if ENABLE_MAIN_RUNNER_MODE and MAIN_RUNNER_START_STAGE <= 2:
+                        activate_main_runner_mode(
+                            position=updated_position,
+                            trade=trade,
+                            direction=direction,
+                            lock_profit_price=MAIN_STAGE_2_LOCK_PRICE,
+                            reason="Main stage 2 runner start",
+                        )
+                    else:
+                        apply_price_lock(
+                            position=updated_position,
+                            direction=direction,
+                            trigger_price=MAIN_STAGE_2_TRIGGER_PRICE,
+                            lock_profit_price=MAIN_STAGE_2_LOCK_PRICE,
+                            reason="Main stage 2 lock",
+                        )
 
                 send_telegram_message(
                     f"Main Trade Stage 2\n"
@@ -300,13 +355,22 @@ def manage_main_trade(position, trade, tick):
 
                 updated_position = get_position_by_ticket(position.symbol, position.ticket)
                 if updated_position is not None:
-                    apply_price_lock(
-                        position=updated_position,
-                        direction=direction,
-                        trigger_price=MAIN_STAGE_3_TRIGGER_PRICE,
-                        lock_profit_price=MAIN_STAGE_3_LOCK_PRICE,
-                        reason="Main stage 3 lock",
-                    )
+                    if ENABLE_MAIN_RUNNER_MODE and MAIN_RUNNER_START_STAGE <= 3:
+                        activate_main_runner_mode(
+                            position=updated_position,
+                            trade=trade,
+                            direction=direction,
+                            lock_profit_price=MAIN_STAGE_3_LOCK_PRICE,
+                            reason="Main stage 3 runner protection",
+                        )
+                    else:
+                        apply_price_lock(
+                            position=updated_position,
+                            direction=direction,
+                            trigger_price=MAIN_STAGE_3_TRIGGER_PRICE,
+                            lock_profit_price=MAIN_STAGE_3_LOCK_PRICE,
+                            reason="Main stage 3 lock",
+                        )
 
                 send_telegram_message(
                     f"Main Trade Stage 3\n"

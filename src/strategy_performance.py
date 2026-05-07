@@ -5,16 +5,25 @@ from datetime import datetime
 from src.logger import logger
 
 
-TRADES_FILE = Path("data/trades.json")
-PERFORMANCE_FILE = Path("data/strategy_performance.json")
+from src.account_context import get_account_file
+
+
+def get_trades_file():
+    return get_account_file("trades.json")
+
+
+def get_performance_file():
+    return get_account_file("strategy_performance.json")
 
 
 def load_trades():
-    if not TRADES_FILE.exists():
+    trades_file = get_trades_file()
+
+    if not trades_file.exists():
         return {}
 
     try:
-        with open(TRADES_FILE, "r", encoding="utf-8") as f:
+        with open(trades_file, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         logger.error(f"[PERF] Failed to load trades: {e}")
@@ -22,11 +31,13 @@ def load_trades():
 
 
 def load_performance():
-    if not PERFORMANCE_FILE.exists():
+    performance_file = get_performance_file()
+
+    if not performance_file.exists():
         return {}
 
     try:
-        with open(PERFORMANCE_FILE, "r", encoding="utf-8") as f:
+        with open(performance_file, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         logger.error(f"[PERF] Failed to load performance: {e}")
@@ -34,9 +45,11 @@ def load_performance():
 
 
 def save_performance(data):
+    performance_file = get_performance_file()
+
     try:
-        PERFORMANCE_FILE.parent.mkdir(exist_ok=True)
-        with open(PERFORMANCE_FILE, "w", encoding="utf-8") as f:
+        performance_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(performance_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
     except Exception as e:
         logger.error(f"[PERF] Failed to save performance: {e}")

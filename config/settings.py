@@ -5,9 +5,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # =========================
+# Telegram Signal Messages
+# =========================
+TELEGRAM_VERBOSE_SIGNALS = False
+
+# =========================
 # Market / Data Settings
 # =========================
-SYMBOL = "XAUUSD"
+SYMBOL = "XAUUSD.m"
 TIMEFRAME = mt5.TIMEFRAME_M15
 BARS_TO_FETCH = 100
 
@@ -83,7 +88,7 @@ COOLDOWN_AFTER_SL_MINUTES = 5
 # Same Direction Entries
 # =========================
 ALLOW_SAME_DIRECTION_ENTRIES = True
-MAX_SAME_DIRECTION_TRADES = 25  # main + extras = total max open same-side trades
+MAX_SAME_DIRECTION_TRADES = 3  # main + extras = total max open same-side trades
 
 # =========================
 # Runtime / Safety
@@ -113,11 +118,20 @@ MAIN_EARLY_LOCK_PRICE = 2.5
 
 MAIN_STAGE_2_TRIGGER_PRICE = 15.0
 MAIN_STAGE_2_CLOSE_PCT = 0.25
-MAIN_STAGE_2_LOCK_PRICE = 12.5
+MAIN_STAGE_2_LOCK_PRICE = 12.0
 
 MAIN_STAGE_3_TRIGGER_PRICE = 24.5
 MAIN_STAGE_3_CLOSE_PCT = 0.25
 MAIN_STAGE_3_LOCK_PRICE = 16.0
+
+# =========================
+# Main Runner Management
+# =========================
+ENABLE_MAIN_RUNNER_MODE = True
+MAIN_RUNNER_REMAINING_PCT = 0.25
+MAIN_RUNNER_START_STAGE = 2
+MAIN_RUNNER_REMOVE_TP = True
+MAIN_RUNNER_EMERGENCY_TP_PRICE = 47.0
 
 # =========================
 # Extra Entries Management (PRICE UNITS)
@@ -130,11 +144,37 @@ EXTRA_ENTRY_LOCK_PRICE = 2.0
 EXTRA_ENTRY_TAKE_PROFIT_PRICE = 5.5
 
 # =========================
+# Extra Entry RR Discount
+# =========================
+ENABLE_EXTRA_RR_DISCOUNT = True
+EXTRA_RR_MULTIPLIER = 0.75
+
+# =========================
 # Worst Extra Profit Lock (PRICE UNITS)
 # =========================
 ENABLE_WORST_EXTRA_LOCK = True
 WORST_EXTRA_LOCK_TRIGGER_PRICE = 2.0
 WORST_EXTRA_LOCK_PROFIT_PRICE = 1.0
+
+# Only allow extras if main is protected/profitable
+REQUIRE_MAIN_PROTECTED_FOR_EXTRA = True
+MIN_MAIN_PROFIT_FOR_EXTRA_PRICE = 2.0
+
+# =========================
+# Dynamic Main / Extra Role Management
+# =========================
+ENABLE_DYNAMIC_MAIN_PROMOTION = True
+
+PROMOTE_EXTRA_TO_MAIN_IF_BETTER_ENTRY = True
+MAIN_PROMOTION_MIN_ENTRY_IMPROVEMENT_PRICE = 2.0
+
+REQUIRE_PROMOTED_MAIN_BETTER_RR = True
+MIN_PROMOTED_MAIN_SCORE = 90
+
+ENABLE_EXTRA_RR_DISCOUNT = True
+EXTRA_RR_MULTIPLIER = 0.75
+
+EXTRA_FIXED_TP_PRICE = 5.5
 
 # =========================
 # Manual Trades Aggressive Trailing
@@ -272,6 +312,7 @@ ENABLE_MARKET_ADAPTATION = True
 
 MARKET_THRESHOLD_MODIFIERS = {
     "TRENDING": -3,
+    "PULLBACK_TREND": 0,
     "RANGING": +3,
     "VOLATILE": +5,
 }
@@ -280,7 +321,7 @@ MARKET_THRESHOLD_MODIFIERS = {
 # External SMT Confirmation
 # =========================
 ENABLE_EXTERNAL_SMT = True
-SMT_CONFIRMATION_SYMBOL = "XAGUSD"
+SMT_CONFIRMATION_SYMBOL = "XAGUSD.m"
 SMT_LOOKBACK_BARS = 20
 
 # =========================
@@ -297,7 +338,7 @@ EXTERNAL_MACRO_CONFIRMATIONS = [
         "weight": 2,
     },
     {
-        "symbol": "USDJPY",
+        "symbol": "USDJPY.m",
         "mode": "INVERSE",
         "weight": 1,
     },
@@ -312,7 +353,7 @@ SMC_MIN_FINAL_SCORE = 88
 # =========================
 # Strategy Toggles
 # =========================
-ENABLE_FCR_M1_FVG = True
+ENABLE_FCR_M1_FVG = False
 
 # =========================
 # Session Engine
@@ -332,7 +373,7 @@ SESSION_NEWYORK_END = 21
 # =========================
 # WaveTrend Pivot M5 Strategy
 # =========================
-ENABLE_WAVETREND_PIVOT_M5 = True
+ENABLE_WAVETREND_PIVOT_M5 = False
 WAVETREND_PIVOT_TIMEFRAME = mt5.TIMEFRAME_M5
 WAVETREND_PIVOT_BARS = 180
 

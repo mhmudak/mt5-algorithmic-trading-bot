@@ -11,19 +11,23 @@ from config.settings import (
     COOLDOWN_AFTER_SL_MINUTES,
 )
 
+from src.account_context import get_account_file
 
-TRACKER_FILE = Path("data/trades.json")
+def get_tracker_file():
+    return get_account_file("trades.json")
 TRACKED_LEVELS = [3, 5, 8, 12, 18, 28]
 
 cooldown_until = None
 
 
 def load_trades():
-    if not TRACKER_FILE.exists():
+    tracker_file = get_tracker_file()
+
+    if not tracker_file.exists():
         return {}
 
     try:
-        with open(TRACKER_FILE, "r", encoding="utf-8") as f:
+        with open(tracker_file, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         logger.error(f"[TRACKER] Failed to load trades: {e}")
@@ -31,9 +35,11 @@ def load_trades():
 
 
 def save_trades(trades):
+    tracker_file = get_tracker_file()
+
     try:
-        TRACKER_FILE.parent.mkdir(exist_ok=True)
-        with open(TRACKER_FILE, "w", encoding="utf-8") as f:
+        tracker_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(tracker_file, "w", encoding="utf-8") as f:
             json.dump(trades, f, indent=2, ensure_ascii=False)
     except Exception as e:
         logger.error(f"[TRACKER] Failed to save trades: {e}")
@@ -106,6 +112,9 @@ def _build_trade_record(
         "stage_1_done": False,
         "stage_2_done": False,
         "stage_3_done": False,
+        "runner_mode_active": False,
+        "runner_tp_removed": False,
+        "runner_started_at": None,
         "imported_manually": imported_manually,
         "setup_score": float(setup_score),
         "strategy": strategy_name,

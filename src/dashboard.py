@@ -1,20 +1,26 @@
 import json
-from pathlib import Path
 from datetime import datetime
 
 from src.logger import logger
+from src.account_context import get_account_file
 
 
-TRADES_FILE = Path("data/trades.json")
-DASHBOARD_FILE = Path("data/dashboard.json")
+def get_trades_file():
+    return get_account_file("trades.json")
+
+
+def get_dashboard_file():
+    return get_account_file("dashboard.json")
 
 
 def load_trades():
-    if not TRADES_FILE.exists():
+    trades_file = get_trades_file()
+
+    if not trades_file.exists():
         return {}
 
     try:
-        with open(TRADES_FILE, "r", encoding="utf-8") as f:
+        with open(trades_file, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         logger.error(f"[DASHBOARD] Failed to load trades: {e}")
@@ -22,9 +28,11 @@ def load_trades():
 
 
 def save_dashboard(data):
+    dashboard_file = get_dashboard_file()
+
     try:
-        DASHBOARD_FILE.parent.mkdir(exist_ok=True)
-        with open(DASHBOARD_FILE, "w", encoding="utf-8") as f:
+        dashboard_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(dashboard_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
     except Exception as e:
         logger.error(f"[DASHBOARD] Failed to save dashboard: {e}")
@@ -76,15 +84,19 @@ def finalize_bucket(bucket):
 
     if "total_max_profit_price" in bucket:
         bucket["total_max_profit_price"] = round(bucket["total_max_profit_price"], 2)
-        bucket["avg_max_profit_price"] = round(
-            bucket["total_max_profit_price"] / total, 2
-        ) if total > 0 else 0.0
-        
+        bucket["avg_max_profit_price"] = (
+            round(bucket["total_max_profit_price"] / total, 2)
+            if total > 0
+            else 0.0
+        )
+
     if "total_tp_buffer" in bucket:
         bucket["total_tp_buffer"] = round(bucket["total_tp_buffer"], 2)
-        bucket["avg_tp_buffer"] = round(
-            bucket["total_tp_buffer"] / total, 2
-        ) if total > 0 else 0.0    
+        bucket["avg_tp_buffer"] = (
+            round(bucket["total_tp_buffer"] / total, 2)
+            if total > 0
+            else 0.0
+        )
 
 
 def rebuild_dashboard():
@@ -125,7 +137,12 @@ def rebuild_dashboard():
         condition_bucket = dashboard["market_conditions"][market_condition]
         reason_bucket = dashboard["reasons"][reason]
 
-        for bucket in [dashboard["summary"], strategy_bucket, condition_bucket, reason_bucket]:
+        for bucket in [
+            dashboard["summary"],
+            strategy_bucket,
+            condition_bucket,
+            reason_bucket,
+        ]:
             if final_result == "WIN":
                 bucket["wins"] += 1
             elif final_result == "LOSS":
@@ -142,7 +159,8 @@ def rebuild_dashboard():
     summary_total = dashboard["summary"]["total_closed_trades"]
     if summary_total > 0:
         dashboard["summary"]["winrate"] = round(
-            (dashboard["summary"]["wins"] / summary_total) * 100, 2
+            (dashboard["summary"]["wins"] / summary_total) * 100,
+            2,
         )
 
     for bucket in dashboard["strategies"].values():

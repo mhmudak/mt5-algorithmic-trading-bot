@@ -23,10 +23,10 @@ from src.pivots import calculate_daily_pivots
 from src.logger import logger
 
 
-MIN_ATR_FOR_M5_SCALP = 1.2
+MIN_ATR_FOR_M5_SCALP = 0.8
 MIN_BODY_ATR_RATIO = 0.20
-MAX_MIDDLE_ZONE_ATR = 0.60
-MAX_LATE_ENTRY_ATR = 0.45
+MAX_MIDDLE_ZONE_ATR = 0.85
+MAX_LATE_ENTRY_ATR = 0.65
 
 SL_ATR_BUFFER = 0.15
 MIN_SL_BUFFER = 0.8
