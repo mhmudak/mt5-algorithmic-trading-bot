@@ -71,6 +71,11 @@ from config.settings import (
     CONFLUENCE_SCORE_BOOST_PER_STRATEGY,
     MAX_CONFLUENCE_SCORE_BOOST,
     TELEGRAM_VERBOSE_SIGNALS,
+    ENABLE_FAILED_BREAKOUT_REVERSAL,
+    ENABLE_WAIT_FOR_BETTER_ENTRY,
+    BETTER_ENTRY_EXPIRY_MINUTES,
+    BETTER_ENTRY_STRATEGIES,
+    ENABLE_FAILED_FVG_REVERSAL,
 )
 
 from src.structure_liquidity_context import (
@@ -114,6 +119,8 @@ STRATEGY_SPECIFIC_CONFIRMED = {
     "AMD_FVG",
     "FVG_CE_MITIGATION",
     "LIQUIDITY_POOL_OB",
+    "FAILED_BREAKOUT_REVERSAL",
+    "FAILED_FVG_REVERSAL",
 }
 
 def fetch_market_data():
@@ -457,6 +464,101 @@ def validate_candidate_pre_execution(
 
     return True, candidate, "passed"
 
+def process_wait_better_entry_setups(df, tick, account_info, market_condition, session_name):
+    wait_setups = execution_engine.get_wait_better_entry_setups()
+
+    if not wait_setups:
+        return False
+
+    wait_setups = sorted(
+        wait_setups,
+        key=lambda setup: setup["data"].get("score", 0),
+        reverse=True,
+    )
+
+    for setup in wait_setups:
+        setup_data = setup["data"]
+        signal = setup_data.get("signal")
+        strategy_name = setup_data.get("strategy")
+        required_rr = setup.get("better_entry_min_rr", get_min_rr(strategy_name))
+
+        if signal not in ["BUY", "SELL"]:
+            continue
+
+        trade_plan = calculate_trade_plan(
+            df=df,
+            signal=signal,
+            tick=tick,
+            account_balance=account_info.balance,
+            signal_data=setup_data,
+        )
+
+        if trade_plan is None:
+            logger.info(
+                f"[BETTER ENTRY] Trade plan still invalid | "
+                f"strategy={strategy_name} signal={signal}"
+            )
+            continue
+
+        trade_plan["score"] = setup_data.get("score", 0)
+        trade_plan["strategy"] = strategy_name
+        trade_plan["market_condition"] = market_condition
+        trade_plan["reason"] = setup_data.get("reason", "N/A")
+        trade_plan["session"] = setup_data.get("session", session_name)
+        trade_plan["setup_id"] = setup_data.get("setup_id", "N/A")
+
+        rr_value = calculate_rr_value(trade_plan)
+
+        if rr_value is None or rr_value < required_rr:
+            logger.info(
+                f"[BETTER ENTRY] RR still too low | "
+                f"strategy={strategy_name} rr={rr_value} required={required_rr}"
+            )
+            continue
+
+        trade_allowed, guard_reason = check_trade_guard(signal, tick)
+
+        if not trade_allowed:
+            logger.info(
+                f"[BETTER ENTRY] Guard blocked | "
+                f"strategy={strategy_name} reason={guard_reason}"
+            )
+            continue
+
+        from src.position_guard import has_same_direction_position
+
+        opposite = "SELL" if signal == "BUY" else "BUY"
+
+        if has_same_direction_position(SYMBOL, opposite):
+            logger.info("[BETTER ENTRY] Opposite position exists → skipping")
+            continue
+
+        send_telegram_message(
+            f"✅ Better Entry Ready #{setup_data.get('setup_id', 'N/A')}\n"
+            f"Symbol: {SYMBOL}\n"
+            f"Strategy: {strategy_name}\n"
+            f"Signal: {signal}\n\n"
+            f"Entry: {trade_plan['entry_price']}\n"
+            f"SL: {trade_plan['stop_loss']}\n"
+            f"TP: {trade_plan['take_profit']}\n"
+            f"RR: {rr_value} / Required: {required_rr}"
+        )
+
+        execution_result = execute_trade(signal, trade_plan, SYMBOL)
+
+        if execution_result:
+            execution_engine.mark_executed(setup)
+            return True
+
+        send_telegram_message(
+            f"❌ Better Entry Execution Failed\n"
+            f"Symbol: {SYMBOL}\n"
+            f"Strategy: {strategy_name}\n"
+            f"Signal: {signal}"
+        )
+
+    return False
+
 def process_cycle(last_processed_candle_time):
     global last_signal, reversal_count
 
@@ -498,6 +600,20 @@ def process_cycle(last_processed_candle_time):
     manage_positions(SYMBOL)
     update_trade_lifecycle(SYMBOL)
     rebuild_dashboard()
+
+    # =========================
+    # WAIT FOR BETTER ENTRY CHECK
+    # Runs every loop, not only on a new M15 candle.
+    # =========================
+    if ENABLE_WAIT_FOR_BETTER_ENTRY:
+        if process_wait_better_entry_setups(
+            df=df,
+            tick=tick,
+            account_info=account_info,
+            market_condition="PENDING",
+            session_name="PENDING",
+        ):
+            return current_candle_time
 
     # =========================
     # NEW CANDLE CHECK
@@ -555,6 +671,8 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_amd_fvg import generate_signal as amd_fvg_signal
     from src.strategies.strategy_fvg_ce_mitigation import generate_signal as fvg_ce_mitigation_signal
     from src.strategies.strategy_liquidity_pool_ob import generate_signal as liquidity_pool_ob_signal
+    from src.strategies.strategy_failed_breakout_reversal import generate_signal as failed_breakout_reversal_signal
+    from src.strategies.strategy_failed_fvg_reversal import generate_signal as failed_fvg_reversal_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -579,9 +697,6 @@ def process_cycle(last_processed_candle_time):
                 f"reasons={structure_liquidity_context.get('reasons')}"
             )
 
-
-    from src.mtf_confirmation import get_mtf_bias
-
     # =========================
     # AI STRATEGY SELECTION
     # =========================
@@ -594,6 +709,7 @@ def process_cycle(last_processed_candle_time):
             ("LVN_FVG_RECLAIM", lvn_fvg_reclaim_signal),
             ("FVG_CE_MITIGATION", fvg_ce_mitigation_signal),
             ("ORB", orb_signal),
+            ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
             ("FCR_M1_FVG", fcr_m1_fvg_signal),
             ("BREAKER_BLOCK", breaker_block_signal),
             ("MTF_OB_ENTRY", mtf_ob_entry_signal),
@@ -632,6 +748,8 @@ def process_cycle(last_processed_candle_time):
             ("WAVETREND_PIVOT", wavetrend_pivot_signal),
             ("FRACTAL_SWEEP", fractal_sweep_signal),
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
+            ("FAILED_FVG_REVERSAL", failed_fvg_reversal_signal),
+            ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
             ("STRUCTURE_LIQUIDITY", structure_liquidity_signal),
             ("CRT_TBS", crt_tbs_signal),
             ("LIQUIDITY_POOL_OB", liquidity_pool_ob_signal),
@@ -653,6 +771,8 @@ def process_cycle(last_processed_candle_time):
             ("WAVETREND_PIVOT", wavetrend_pivot_signal),
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
             ("FRACTAL_SWEEP", fractal_sweep_signal),
+            ("FAILED_FVG_REVERSAL", failed_fvg_reversal_signal),
+            ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
             ("STRUCTURE_LIQUIDITY", structure_liquidity_signal),
             ("CRT_TBS", crt_tbs_signal),
             ("SMT_PRO", smt_pro_signal),
@@ -674,6 +794,22 @@ def process_cycle(last_processed_candle_time):
     # =========================
     # STRATEGY TOGGLES
     # =========================
+
+    if not ENABLE_FAILED_FVG_REVERSAL:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "FAILED_FVG_REVERSAL"
+        ]
+        logger.info("[STRATEGY TOGGLE] FAILED_FVG_REVERSAL disabled")
+
+    if not ENABLE_FAILED_BREAKOUT_REVERSAL:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "FAILED_BREAKOUT_REVERSAL"
+        ]
+        logger.info("[STRATEGY TOGGLE] FAILED_BREAKOUT_REVERSAL disabled")
 
     if not ENABLE_LIQUIDITY_POOL_OB:
         strategy_map = [
@@ -1424,6 +1560,35 @@ def process_cycle(last_processed_candle_time):
             sl = trade_plan.get("stop_loss")
             tp = trade_plan.get("take_profit")
             rr_value = calculate_rr_value(trade_plan)
+
+            # =========================
+            # WAIT FOR BETTER ENTRY
+            # =========================
+            if (
+                low_rr_blocked
+                and rr_value is not None
+                and ENABLE_WAIT_FOR_BETTER_ENTRY
+                and strategy_name in BETTER_ENTRY_STRATEGIES
+                and "best_setup" in locals()
+            ):
+                execution_engine.mark_wait_better_entry(
+                    setup=best_setup,
+                    min_rr_required=min_rr_required,
+                    current_rr=rr_value,
+                    expiry_minutes=BETTER_ENTRY_EXPIRY_MINUTES,
+                )
+
+                send_telegram_message(
+                    f"⏳ Setup #{setup_id} Waiting for Better Entry\n"
+                    f"Symbol: {SYMBOL}\n"
+                    f"Strategy: {strategy_name}\n"
+                    f"Signal: {signal}\n\n"
+                    f"Current RR: {rr_value}\n"
+                    f"Required RR: {min_rr_required}\n"
+                    f"Expiry: {BETTER_ENTRY_EXPIRY_MINUTES} minutes"
+                )
+
+                return current_candle_time
 
             # =========================
             # BLOCKED SETUP REVERSAL CHECK
