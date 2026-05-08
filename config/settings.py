@@ -55,6 +55,19 @@ NEWS_BLACKOUT_WINDOWS = [
 ]
 
 # =========================
+# Trading Time Blackout
+# =========================
+ENABLE_TRADING_TIME_BLACKOUT = True
+
+TRADING_BLACKOUT_WINDOWS = [
+    {
+        "name": "Low liquidity / high slippage window",
+        "start": "03:00",
+        "end": "04:00",
+    },
+]
+
+# =========================
 # Execution / Risk Settings
 # =========================
 POSITION_MODE = "fixed"   # "fixed" or "risk"
@@ -77,6 +90,12 @@ MAX_TRADES_PER_DAY = 500
 MAX_SPREAD = 0.5
 MAX_SLIPPAGE = 0.3
 COOLDOWN_MINUTES = 1
+
+# =========================
+# Execution Price Drift Guard
+# =========================
+ENABLE_PRICE_DRIFT_GUARD = True
+MAX_ENTRY_PRICE_DRIFT = 0.30
 
 # =========================
 # Cooldown After SL Hit
@@ -170,9 +189,6 @@ MAIN_PROMOTION_MIN_ENTRY_IMPROVEMENT_PRICE = 2.0
 
 REQUIRE_PROMOTED_MAIN_BETTER_RR = True
 MIN_PROMOTED_MAIN_SCORE = 90
-
-ENABLE_EXTRA_RR_DISCOUNT = True
-EXTRA_RR_MULTIPLIER = 0.75
 
 EXTRA_FIXED_TP_PRICE = 5.5
 
@@ -268,27 +284,35 @@ ADAPTIVE_WINRATE_HIGH = 60.0
 ADAPTIVE_WINRATE_LOW = 40.0
 ADAPTIVE_SCORE_STEP = 3
 
-FAST_BASE_MIN_SCORE = 55
-SNIPER_V2_BASE_MIN_SCORE = 75
-FLAG_BASE_MIN_SCORE = 78
-FLAG_REFINED_BASE_MIN_SCORE = 84
-LIQUIDITY_SWEEP_BASE_MIN_SCORE = 86
+FAST_BASE_MIN_SCORE = 85
+SNIPER_V2_BASE_MIN_SCORE = 88
+FLAG_BASE_MIN_SCORE = 88
+FLAG_REFINED_BASE_MIN_SCORE = 90
+LIQUIDITY_SWEEP_BASE_MIN_SCORE = 90
 FVG_BASE_MIN_SCORE = 90
 LIQUIDITY_CANDLE_BASE_MIN_SCORE = 90
-TRIANGLE_PENNANT_BASE_MIN_SCORE = 88
-ORDER_BLOCK_BASE_MIN_SCORE = 89
+TRIANGLE_PENNANT_BASE_MIN_SCORE = 90
+ORDER_BLOCK_BASE_MIN_SCORE = 90
 STRICT_BASE_MIN_SCORE = 90
 HEAD_SHOULDERS_BASE_MIN_SCORE = 90
 ORB_BASE_MIN_SCORE = 90
 FRACTAL_SWEEP_BASE_MIN_SCORE = 90
 VWAP_RECLAIM_BASE_MIN_SCORE = 90
+
 SMT_BASE_MIN_SCORE = 91
 RELIEF_RALLY_BASE_MIN_SCORE = 92
 HTF_TREND_PULLBACK_BASE_MIN_SCORE = 92
 SESSION_ORB_RETEST_BASE_MIN_SCORE = 92
+STRUCTURE_LIQUIDITY_BASE_MIN_SCORE = 92
+LVN_FVG_RECLAIM_BASE_MIN_SCORE = 92
+AMD_FVG_BASE_MIN_SCORE = 92
+FVG_CE_MITIGATION_BASE_MIN_SCORE = 92
+
 CRT_TBS_BASE_MIN_SCORE = 93
 BREAKER_BLOCK_BASE_MIN_SCORE = 93
 FCR_M1_FVG_BASE_MIN_SCORE = 93
+LIQUIDITY_POOL_OB_BASE_MIN_SCORE = 93
+
 LIQUIDITY_TRAP_BASE_MIN_SCORE = 94
 MTF_OB_ENTRY_BASE_MIN_SCORE = 94
 SMT_PRO_BASE_MIN_SCORE = 95
@@ -311,10 +335,10 @@ MTF_BARS_TO_FETCH = 120
 ENABLE_MARKET_ADAPTATION = True
 
 MARKET_THRESHOLD_MODIFIERS = {
-    "TRENDING": -3,
+    "TRENDING": -2,
     "PULLBACK_TREND": 0,
-    "RANGING": +3,
-    "VOLATILE": +5,
+    "RANGING": +2,
+    "VOLATILE": +3,
 }
 
 # =========================
@@ -332,11 +356,11 @@ ENABLE_EXTERNAL_MACRO_CONFIRMATION = True
 # Use your broker's exact symbols.
 # If a symbol does not exist on your broker, the engine will skip it safely.
 EXTERNAL_MACRO_CONFIRMATIONS = [
-    {
-        "symbol": "DXY",
-        "mode": "INVERSE",
-        "weight": 2,
-    },
+    # {
+    #     "symbol": "DXY",
+    #     "mode": "INVERSE",
+    #     "weight": 2,
+    # },
     {
         "symbol": "USDJPY.m",
         "mode": "INVERSE",
@@ -420,3 +444,24 @@ FVG_CE_MITIGATION_BASE_MIN_SCORE = 92
 # LIQUIDITY POOL OB
 ENABLE_LIQUIDITY_POOL_OB = True
 LIQUIDITY_POOL_OB_BASE_MIN_SCORE = 93
+
+# =========================
+# Candidate / Confluence Selection
+# =========================
+ENABLE_SIGNAL_CONFLUENCE_GROUPING = True
+CONFLUENCE_SCORE_BOOST_PER_STRATEGY = 2
+MAX_CONFLUENCE_SCORE_BOOST = 6
+
+# =========================
+# Candidate Selection / Fallback
+# =========================
+ENABLE_CANDIDATE_FALLBACK = True
+MAX_CANDIDATES_PER_CANDLE = 3
+
+# =========================
+# Multi-Strategy Extra Entries
+# =========================
+ENABLE_MULTI_STRATEGY_EXTRAS = True
+MAX_NEW_TRADES_PER_CANDLE = 2
+MIN_EXTRA_CANDIDATE_SCORE = 94
+ALLOW_ONLY_SAME_DIRECTION_EXTRAS = True

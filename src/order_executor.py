@@ -1,6 +1,11 @@
 import MetaTrader5 as mt5
 
-from config.settings import EXECUTION_MODE, MAX_SLIPPAGE
+from config.settings import (
+    EXECUTION_MODE,
+    MAX_SLIPPAGE,
+    ENABLE_PRICE_DRIFT_GUARD,
+    MAX_ENTRY_PRICE_DRIFT,
+)
 from src.notifier import send_telegram_message
 from src.trade_tracker import register_executed_trade
 
@@ -65,6 +70,23 @@ def execute_trade(signal, trade_plan, symbol):
 
     request_price = tick.ask if signal == "BUY" else tick.bid
     expected_price = trade_plan["entry_price"]
+
+    entry_price_drift = abs(request_price - expected_price)
+
+    if ENABLE_PRICE_DRIFT_GUARD and entry_price_drift > MAX_ENTRY_PRICE_DRIFT:
+        error_message = (
+            f"🚫 Execution Blocked by Price Drift\n"
+            f"Symbol: {symbol}\n"
+            f"Signal: {signal}\n"
+            f"Expected Entry: {expected_price}\n"
+            f"Current Price: {round(request_price, 2)}\n"
+            f"Drift: {round(entry_price_drift, 2)}\n"
+            f"Max Allowed: {MAX_ENTRY_PRICE_DRIFT}"
+        )
+
+        print(error_message)
+        send_telegram_message(error_message)
+        return False
 
     base_request = {
         "action": mt5.TRADE_ACTION_DEAL,

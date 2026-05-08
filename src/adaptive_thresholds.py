@@ -118,4 +118,4 @@ def get_adaptive_min_score(strategy_name: str, market_condition: str) -> int:
             f"modifier={modifier}"
         )
 
-    return max(0, final_score)
+    return max(0, min(final_score, 100))

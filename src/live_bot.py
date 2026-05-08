@@ -26,6 +26,7 @@ from src.mtf_confirmation import get_mtf_bias
 from src.htf_filter import get_htf_context, htf_allows_signal
 from src.liquidity_context import get_liquidity_context, liquidity_allows_signal
 from src.news_filter import is_news_blackout_active
+from src.time_filter import is_trading_blackout_active
 from src.reversal_checker import build_blocked_setup_reversal
 from src.external_macro_confirmation import apply_external_macro_confirmation
 from src.position_guard import count_same_direction_positions
@@ -148,28 +149,58 @@ def is_rr_valid(trade_plan, min_rr=1.2):
 
 
 def get_min_rr(strategy_name):
-    if strategy_name == "BLOCKED_SETUP_REVERSAL":
-        return 1.3
-    elif strategy_name == "ORB":
+    rr_150 = {
+        "ORB",
+    }
+
+    rr_140 = {
+        "FVG",
+        "ORDER_BLOCK",
+        "OB_FVG_COMBO",
+        "SNIPER_V2",
+        "STRICT",
+        "HEAD_SHOULDERS",
+        "TRIANGLE_PENNANT",
+    }
+
+    rr_130 = {
+        "BLOCKED_SETUP_REVERSAL",
+        "WAVETREND_PIVOT",
+    }
+
+    rr_125 = {
+        "SMT",
+        "SMT_PRO",
+        "LIQUIDITY_TRAP",
+        "CRT_TBS",
+        "FRACTAL_SWEEP",
+        "FLAG",
+        "FLAG_REFINED",
+        "LIQUIDITY_SWEEP",
+        "LIQUIDITY_CANDLE",
+        "RELIEF_RALLY",
+    }
+
+    rr_110 = {
+        "FVG_CE_MITIGATION",
+    }
+
+    if strategy_name in rr_150:
         return 1.5
 
-    elif strategy_name in ["FVG", "ORDER_BLOCK", "OB_FVG_COMBO"]:
+    if strategy_name in rr_140:
         return 1.4
 
-    elif strategy_name in ["SMT", "SMT_PRO", "LIQUIDITY_TRAP", "CRT_TBS", "FRACTAL_SWEEP"]:
-        return 1.25
-
-    elif strategy_name in ["SNIPER_V2", "STRICT", "HEAD_SHOULDERS", "TRIANGLE_PENNANT"]:
-        return 1.4
-
-    elif strategy_name in ["FLAG", "FLAG_REFINED", "LIQUIDITY_SWEEP", "LIQUIDITY_CANDLE", "RELIEF_RALLY"]:
-        return 1.25
-
-    elif strategy_name == "WAVETREND_PIVOT":
+    if strategy_name in rr_130:
         return 1.3
 
-    else:
-        return 1.2
+    if strategy_name in rr_125:
+        return 1.25
+
+    if strategy_name in rr_110:
+        return 1.10
+
+    return 1.2
 
 def calculate_rr_value(trade_plan):
     if not trade_plan:
@@ -1065,6 +1096,29 @@ def process_cycle(last_processed_candle_time):
 
             signal = "NO_TRADE"
             reason = news_reason
+
+    # =========================
+    # TRADING TIME BLACKOUT FILTER
+    # =========================
+    if signal in ["BUY", "SELL"]:
+        time_blocked, time_reason = is_trading_blackout_active()
+
+        if time_blocked:
+            logger.info(
+                f"[TIME FILTER] Signal blocked | "
+                f"strategy={strategy_name} signal={signal} reason={time_reason}"
+            )
+
+            send_telegram_message(
+                f"🚫 Signal Blocked by Time Filter\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Strategy: {strategy_name}\n"
+                f"Signal: {signal}\n\n"
+                f"Reason: {time_reason}"
+            )
+
+            signal = "NO_TRADE"
+            reason = time_reason
 
     # =========================
     # FINAL SIGNAL LOG
