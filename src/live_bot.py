@@ -34,6 +34,11 @@ from src.position_guard import count_same_direction_positions
 from src.execution_engine import ExecutionEngine
 execution_engine = ExecutionEngine()
 
+from src.supply_demand_context import (
+    analyze_supply_demand_context,
+    apply_supply_demand_confirmation,
+)
+
 from config.settings import (
     SYMBOL,
     TIMEFRAME,
@@ -77,6 +82,8 @@ from config.settings import (
     BETTER_ENTRY_STRATEGIES,
     ENABLE_FAILED_FVG_REVERSAL,
     ENABLE_HTF_FIB_CONFLUENCE,
+    ENABLE_SUPPLY_DEMAND_CONTEXT,
+    ENABLE_SUPPLY_DEMAND_RETEST,
 )
 
 from src.structure_liquidity_context import (
@@ -123,6 +130,7 @@ STRATEGY_SPECIFIC_CONFIRMED = {
     "FAILED_BREAKOUT_REVERSAL",
     "FAILED_FVG_REVERSAL",
     "HTF_FIB_CONFLUENCE",
+    "SUPPLY_DEMAND_RETEST",
 }
 
 def fetch_market_data():
@@ -682,6 +690,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_failed_breakout_reversal import generate_signal as failed_breakout_reversal_signal
     from src.strategies.strategy_failed_fvg_reversal import generate_signal as failed_fvg_reversal_signal
     from src.strategies.strategy_htf_fib_confluence import generate_signal as htf_fib_confluence_signal
+    from src.strategies.strategy_supply_demand_retest import generate_signal as supply_demand_retest_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -704,6 +713,18 @@ def process_cycle(last_processed_candle_time):
                 f"bias={structure_liquidity_context.get('bias')} "
                 f"score={structure_liquidity_context.get('score')} "
                 f"reasons={structure_liquidity_context.get('reasons')}"
+            )
+
+    supply_demand_context = None
+
+    if ENABLE_SUPPLY_DEMAND_CONTEXT:
+        supply_demand_context = analyze_supply_demand_context(df)
+
+        if supply_demand_context:
+            logger.info(
+                f"[SUPPLY DEMAND CONTEXT] "
+                f"bias={supply_demand_context.get('bias')} "
+                f"reasons={supply_demand_context.get('reasons')}"
             )
 
     # =========================
@@ -746,6 +767,7 @@ def process_cycle(last_processed_candle_time):
             ("OB_FVG_COMBO", ob_fvg_combo_signal),
             ("RELIEF_RALLY", relief_rally_signal),
             ("HTF_FIB_CONFLUENCE", htf_fib_confluence_signal),
+            ("SUPPLY_DEMAND_RETEST", supply_demand_retest_signal),
             ("WAVETREND_PIVOT", wavetrend_pivot_signal),
             ("STRUCTURE_LIQUIDITY", structure_liquidity_signal),
             ("LIQUIDITY_CANDLE", liquidity_candle_signal),
@@ -761,6 +783,7 @@ def process_cycle(last_processed_candle_time):
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
             ("FAILED_FVG_REVERSAL", failed_fvg_reversal_signal),
             ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
+            ("SUPPLY_DEMAND_RETEST", supply_demand_retest_signal),
             ("STRUCTURE_LIQUIDITY", structure_liquidity_signal),
             ("CRT_TBS", crt_tbs_signal),
             ("LIQUIDITY_POOL_OB", liquidity_pool_ob_signal),
@@ -784,6 +807,7 @@ def process_cycle(last_processed_candle_time):
             ("FRACTAL_SWEEP", fractal_sweep_signal),
             ("FAILED_FVG_REVERSAL", failed_fvg_reversal_signal),
             ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
+            ("SUPPLY_DEMAND_RETEST", supply_demand_retest_signal),
             ("STRUCTURE_LIQUIDITY", structure_liquidity_signal),
             ("CRT_TBS", crt_tbs_signal),
             ("SMT_PRO", smt_pro_signal),
@@ -805,6 +829,14 @@ def process_cycle(last_processed_candle_time):
     # =========================
     # STRATEGY TOGGLES
     # =========================
+
+    if not ENABLE_SUPPLY_DEMAND_RETEST:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "SUPPLY_DEMAND_RETEST"
+        ]
+        logger.info("[STRATEGY TOGGLE] SUPPLY_DEMAND_RETEST disabled")
 
     if not ENABLE_HTF_FIB_CONFLUENCE:
         strategy_map = [
@@ -952,6 +984,24 @@ def process_cycle(last_processed_candle_time):
                             f"boost={sl_boost} reasons={sl_reasons}"
                         )
 
+                if ENABLE_SUPPLY_DEMAND_CONTEXT:
+                    sd_boost, sd_reasons = apply_supply_demand_confirmation(
+                        result,
+                        supply_demand_context,
+                    )
+
+                    result["score"] += sd_boost
+
+                    if sd_reasons:
+                        result.setdefault("supply_demand_reasons", [])
+                        result["supply_demand_reasons"].extend(sd_reasons)
+
+                        logger.info(
+                            f"[SUPPLY DEMAND CONFIRMATION] "
+                            f"strategy={name} signal={result.get('signal')} "
+                            f"boost={sd_boost} reasons={sd_reasons}"
+                        )
+
                 if ENABLE_SMC_ENGINE and result["score"] < SMC_MIN_FINAL_SCORE:
                     logger.info(
                         f"[SMC FILTER] Rejected {name} "
@@ -1085,6 +1135,37 @@ def process_cycle(last_processed_candle_time):
             setup_id = build_setup_id(strategy_name, signal, tick.time)
             selected_signal_data["setup_id"] = setup_id
 
+            if selected_signal_data.get("smc"):
+                reason += f" | SMC: {','.join(selected_signal_data['smc'])}"
+
+            if selected_signal_data.get("session_reasons"):
+                reason += f" | SESSION: {','.join(selected_signal_data['session_reasons'])}"
+
+            if selected_signal_data.get("structure_liquidity_reasons"):
+                reason += (
+                    f" | STRUCTURE/LIQUIDITY: "
+                    f"{','.join(selected_signal_data['structure_liquidity_reasons'])}"
+                )
+
+            if selected_signal_data.get("supply_demand_reasons"):
+                reason += (
+                    f" | SUPPLY/DEMAND: "
+                    f"{','.join(selected_signal_data['supply_demand_reasons'])}"
+                )
+
+            if selected_signal_data.get("macro_reasons"):
+                reason += (
+                    f" | MACRO: "
+                    f"{','.join(selected_signal_data['macro_reasons'])}"
+                )
+
+            if selected_signal_data.get("confluence_strategies"):
+                if "CONFLUENCE:" not in reason:
+                    reason += (
+                        f" | CONFLUENCE: "
+                        f"{','.join(selected_signal_data['confluence_strategies'])}"
+                    )
+
             # =========================
             # 📡 DETECTED SIGNAL
             # =========================
@@ -1109,31 +1190,6 @@ def process_cycle(last_processed_candle_time):
                 }
 
                 send_telegram_message(build_trade_message(detected_data))
-
-            if selected_signal_data.get("smc"):
-                reason += f" | SMC: {','.join(selected_signal_data['smc'])}"
-
-            if selected_signal_data.get("session_reasons"):
-                reason += f" | SESSION: {','.join(selected_signal_data['session_reasons'])}"
-
-            if selected_signal_data.get("structure_liquidity_reasons"):
-                reason += (
-                    f" | STRUCTURE/LIQUIDITY: "
-                    f"{','.join(selected_signal_data['structure_liquidity_reasons'])}"
-                )
-
-            if selected_signal_data.get("macro_reasons"):
-                reason += (
-                    f" | MACRO: "
-                    f"{','.join(selected_signal_data['macro_reasons'])}"
-                )
-
-            if selected_signal_data.get("confluence_strategies"):
-                if "CONFLUENCE:" not in reason:
-                    reason += (
-                        f" | CONFLUENCE: "
-                        f"{','.join(selected_signal_data['confluence_strategies'])}"
-                    )
 
             original_signal = signal
             original_strategy_name = strategy_name
@@ -1438,6 +1494,61 @@ def process_cycle(last_processed_candle_time):
                 f"Strategy: {setup_strategy}\n"
                 f"Signal: {setup_signal}\n"
                 f"HTF Bias: {final_htf_context.get('bias') if final_htf_context else None}"
+            )
+
+            return current_candle_time
+
+        final_liquidity_context = get_liquidity_context()
+
+        if not liquidity_allows_signal(setup_signal, final_liquidity_context, allow_neutral=True):
+            logger.info(
+                f"[FINAL HTF LIQUIDITY] Ready setup rejected | "
+                f"strategy={setup_strategy} signal={setup_signal} "
+                f"reason={final_liquidity_context.get('reason') if final_liquidity_context else None}"
+            )
+
+            send_telegram_message(
+                f"🚫 Ready Setup Rejected by Final HTF Liquidity\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Strategy: {setup_strategy}\n"
+                f"Signal: {setup_signal}\n"
+                f"Reason: {final_liquidity_context.get('reason') if final_liquidity_context else None}"
+            )
+
+            return current_candle_time
+
+        news_blocked, news_reason = is_news_blackout_active()
+
+        if news_blocked:
+            logger.info(
+                f"[FINAL NEWS FILTER] Ready setup rejected | "
+                f"strategy={setup_strategy} signal={setup_signal} reason={news_reason}"
+            )
+
+            send_telegram_message(
+                f"🚫 Ready Setup Rejected by News Filter\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Strategy: {setup_strategy}\n"
+                f"Signal: {setup_signal}\n"
+                f"Reason: {news_reason}"
+            )
+
+            return current_candle_time
+
+        time_blocked, time_reason = is_trading_blackout_active()
+
+        if time_blocked:
+            logger.info(
+                f"[FINAL TIME FILTER] Ready setup rejected | "
+                f"strategy={setup_strategy} signal={setup_signal} reason={time_reason}"
+            )
+
+            send_telegram_message(
+                f"🚫 Ready Setup Rejected by Time Filter\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Strategy: {setup_strategy}\n"
+                f"Signal: {setup_signal}\n"
+                f"Reason: {time_reason}"
             )
 
             return current_candle_time
@@ -1748,6 +1859,19 @@ def process_cycle(last_processed_candle_time):
 
         if has_same_direction_position(SYMBOL, opposite):
             logger.info("Opposite position exists → skipping execution")
+
+            send_telegram_message(
+                f"🚫 Execution Skipped\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Signal: {signal}\n"
+                f"Strategy: {strategy_name}\n\n"
+                f"Reason: Opposite {opposite} position already exists."
+            )
+
+            if "best_setup" in locals():
+                best_setup["state"] = "SKIPPED"
+                best_setup["wait_reason"] = "Skipped because opposite position exists"
+
             return current_candle_time
 
         logger.info("🔥 Executing trade...")

@@ -117,6 +117,7 @@ class ExecutionEngine:
                 "EXPIRED",
                 "WAIT_BETTER_ENTRY",
                 "EXECUTION_FAILED",
+                "SKIPPED",
             ]:
                 continue
 
