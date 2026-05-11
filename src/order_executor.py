@@ -71,16 +71,19 @@ def execute_trade(signal, trade_plan, symbol):
     request_price = tick.ask if signal == "BUY" else tick.bid
     expected_price = trade_plan["entry_price"]
 
-    entry_price_drift = abs(request_price - expected_price)
+    if signal == "BUY":
+        adverse_drift = request_price - expected_price
+    else:
+        adverse_drift = expected_price - request_price
 
-    if ENABLE_PRICE_DRIFT_GUARD and entry_price_drift > MAX_ENTRY_PRICE_DRIFT:
+    if ENABLE_PRICE_DRIFT_GUARD and adverse_drift > MAX_ENTRY_PRICE_DRIFT:
         error_message = (
             f"🚫 Execution Blocked by Price Drift\n"
             f"Symbol: {symbol}\n"
             f"Signal: {signal}\n"
             f"Expected Entry: {expected_price}\n"
             f"Current Price: {round(request_price, 2)}\n"
-            f"Drift: {round(entry_price_drift, 2)}\n"
+            f"Adverse Drift: {round(adverse_drift, 2)}\n"
             f"Max Allowed: {MAX_ENTRY_PRICE_DRIFT}"
         )
 

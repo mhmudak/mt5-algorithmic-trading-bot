@@ -13,6 +13,12 @@ BREAKER_SL_ATR_MULTIPLIER = 0.20
 BREAKER_MIN_SL_BUFFER = 2.0
 BREAKER_MAX_SL_BUFFER = 5.0
 
+# Dynamic max risk cap:
+# not blind fixed 18; it adapts to ATR but stays bounded.
+BREAKER_MIN_MAX_RISK = 12.0
+BREAKER_MAX_MAX_RISK = 18.0
+BREAKER_MAX_RISK_ATR_MULTIPLIER = 1.5
+
 BREAKER_TARGET_ATR_MIN = 1.5
 BREAKER_TARGET_ATR_MAX = 3.0
 
@@ -24,6 +30,13 @@ def _sl_buffer(atr):
     )
 
 
+def _max_allowed_risk(atr):
+    return max(
+        BREAKER_MIN_MAX_RISK,
+        min(BREAKER_MAX_MAX_RISK, atr * BREAKER_MAX_RISK_ATR_MULTIPLIER),
+    )
+
+
 def _target_distance(atr, zone_height, structure_range):
     return min(
         max(zone_height * 2, structure_range * 0.50, atr * BREAKER_TARGET_ATR_MIN),
@@ -31,7 +44,39 @@ def _target_distance(atr, zone_height, structure_range):
     )
 
 
-def _score_setup(base_score, displacement_body, reaction_body, atr, clean_retest, close_aligned):
+def _choose_buy_sl(entry_price, zone_low, retest_low, sl_buffer, max_risk):
+    full_structure_sl = round(zone_low - sl_buffer, 2)
+    retest_structure_sl = round(retest_low - sl_buffer, 2)
+
+    full_risk = entry_price - full_structure_sl
+    retest_risk = entry_price - retest_structure_sl
+
+    if full_structure_sl < entry_price and full_risk <= max_risk:
+        return full_structure_sl, "FULL_BREAKER_STRUCTURE_SL", full_risk
+
+    if retest_structure_sl < entry_price and retest_risk <= max_risk:
+        return retest_structure_sl, "RETEST_CANDLE_STRUCTURE_SL", retest_risk
+
+    return None, "SL_TOO_WIDE_SKIP", None
+
+
+def _choose_sell_sl(entry_price, zone_high, retest_high, sl_buffer, max_risk):
+    full_structure_sl = round(zone_high + sl_buffer, 2)
+    retest_structure_sl = round(retest_high + sl_buffer, 2)
+
+    full_risk = full_structure_sl - entry_price
+    retest_risk = retest_structure_sl - entry_price
+
+    if full_structure_sl > entry_price and full_risk <= max_risk:
+        return full_structure_sl, "FULL_BREAKER_STRUCTURE_SL", full_risk
+
+    if retest_structure_sl > entry_price and retest_risk <= max_risk:
+        return retest_structure_sl, "RETEST_CANDLE_STRUCTURE_SL", retest_risk
+
+    return None, "SL_TOO_WIDE_SKIP", None
+
+
+def _score_setup(base_score, displacement_body, reaction_body, atr, clean_retest, close_aligned, sl_model):
     score = base_score
 
     if displacement_body > atr * 0.50:
@@ -48,6 +93,10 @@ def _score_setup(base_score, displacement_body, reaction_body, atr, clean_retest
 
     if close_aligned:
         score += 2
+
+    # Full structure SL is more robust than tight retest SL.
+    if sl_model == "FULL_BREAKER_STRUCTURE_SL":
+        score += 1
 
     return min(score, 99)
 
@@ -99,14 +148,12 @@ def generate_signal(df):
 
     retest_buffer = max(atr * BREAKER_RETEST_ATR_BUFFER, BREAKER_MIN_RETEST_BUFFER)
     sl_buffer = _sl_buffer(atr)
+    max_risk = _max_allowed_risk(atr)
     target_distance = _target_distance(atr, zone_height, structure_range)
-
-    upper_wick = entry["high"] - max(entry["open"], entry["close"])
-    lower_wick = min(entry["open"], entry["close"]) - entry["low"]
 
     # =========================
     # BUY breaker block
-    # Former resistance / supply zone breaks upward, then acts as support
+    # Former resistance/supply zone breaks upward, then acts as support
     # =========================
     bullish_break = (
         break_candle["close"] > zone_high
@@ -126,18 +173,29 @@ def generate_signal(df):
     )
 
     if bullish_break and retest_zone_from_above and bullish_reclaim:
-        sl_reference = round(min(entry["low"], retest_candle["low"], zone_low) - sl_buffer, 2)
+        entry_price = entry["close"]
 
-        if recent_high > entry["close"]:
+        sl_reference, sl_model, sl_risk = _choose_buy_sl(
+            entry_price=entry_price,
+            zone_low=zone_low,
+            retest_low=min(entry["low"], retest_candle["low"]),
+            sl_buffer=sl_buffer,
+            max_risk=max_risk,
+        )
+
+        if sl_reference is None:
+            return None
+
+        if recent_high > entry_price:
             tp_reference = recent_high
             target_model = "RECENT_STRUCTURE_HIGH"
         else:
-            tp_reference = entry["close"] + target_distance
+            tp_reference = entry_price + target_distance
             target_model = "BREAKER_MEASURED_EXTENSION"
 
         tp_reference = round(tp_reference, 2)
 
-        if sl_reference >= entry["close"] or tp_reference <= entry["close"]:
+        if tp_reference <= entry_price:
             return None
 
         score = _score_setup(
@@ -147,6 +205,7 @@ def generate_signal(df):
             atr=atr,
             clean_retest=retest_zone_from_above,
             close_aligned=price > ema,
+            sl_model=sl_model,
         )
 
         return {
@@ -160,20 +219,24 @@ def generate_signal(df):
             "recent_high": recent_high,
             "recent_low": recent_low,
             "sl_reference": sl_reference,
+            "sl_model": sl_model,
+            "sl_risk": round(sl_risk, 2),
+            "max_allowed_risk": round(max_risk, 2),
             "tp_reference": tp_reference,
             "target_model": target_model,
             "momentum": "bullish_breaker_retest_reclaim",
             "direction_context": "price_above_ema",
             "reason": (
                 f"Bullish breaker block -> zone {round(zone_low, 2)}-{round(zone_high, 2)} "
-                f"broken upward then retested -> SL below breaker {sl_reference} -> "
+                f"broken upward then retested -> "
+                f"SL {sl_model} {sl_reference} risk={round(sl_risk, 2)} max={round(max_risk, 2)} -> "
                 f"TP {target_model} {tp_reference} -> price above EMA"
             ),
         }
 
     # =========================
     # SELL breaker block
-    # Former support / demand zone breaks downward, then acts as resistance
+    # Former support/demand zone breaks downward, then acts as resistance
     # =========================
     bearish_break = (
         break_candle["close"] < zone_low
@@ -193,18 +256,29 @@ def generate_signal(df):
     )
 
     if bearish_break and retest_zone_from_below and bearish_reject:
-        sl_reference = round(max(entry["high"], retest_candle["high"], zone_high) + sl_buffer, 2)
+        entry_price = entry["close"]
 
-        if recent_low < entry["close"]:
+        sl_reference, sl_model, sl_risk = _choose_sell_sl(
+            entry_price=entry_price,
+            zone_high=zone_high,
+            retest_high=max(entry["high"], retest_candle["high"]),
+            sl_buffer=sl_buffer,
+            max_risk=max_risk,
+        )
+
+        if sl_reference is None:
+            return None
+
+        if recent_low < entry_price:
             tp_reference = recent_low
             target_model = "RECENT_STRUCTURE_LOW"
         else:
-            tp_reference = entry["close"] - target_distance
+            tp_reference = entry_price - target_distance
             target_model = "BREAKER_MEASURED_EXTENSION"
 
         tp_reference = round(tp_reference, 2)
 
-        if sl_reference <= entry["close"] or tp_reference >= entry["close"]:
+        if tp_reference >= entry_price:
             return None
 
         score = _score_setup(
@@ -214,6 +288,7 @@ def generate_signal(df):
             atr=atr,
             clean_retest=retest_zone_from_below,
             close_aligned=price < ema,
+            sl_model=sl_model,
         )
 
         return {
@@ -227,13 +302,17 @@ def generate_signal(df):
             "recent_high": recent_high,
             "recent_low": recent_low,
             "sl_reference": sl_reference,
+            "sl_model": sl_model,
+            "sl_risk": round(sl_risk, 2),
+            "max_allowed_risk": round(max_risk, 2),
             "tp_reference": tp_reference,
             "target_model": target_model,
             "momentum": "bearish_breaker_retest_rejection",
             "direction_context": "price_below_ema",
             "reason": (
                 f"Bearish breaker block -> zone {round(zone_low, 2)}-{round(zone_high, 2)} "
-                f"broken downward then retested -> SL above breaker {sl_reference} -> "
+                f"broken downward then retested -> "
+                f"SL {sl_model} {sl_reference} risk={round(sl_risk, 2)} max={round(max_risk, 2)} -> "
                 f"TP {target_model} {tp_reference} -> price below EMA"
             ),
         }

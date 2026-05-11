@@ -116,6 +116,7 @@ class ExecutionEngine:
                 "INVALIDATED",
                 "EXPIRED",
                 "WAIT_BETTER_ENTRY",
+                "EXECUTION_FAILED",
             ]:
                 continue
 

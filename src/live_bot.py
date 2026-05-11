@@ -193,21 +193,21 @@ def get_min_rr(strategy_name):
     }
 
     if strategy_name in rr_150:
-        return 1.5
+        return 1.2
 
     if strategy_name in rr_140:
-        return 1.4
+        return 1.1
 
     if strategy_name in rr_130:
-        return 1.3
+        return 1.0
 
     if strategy_name in rr_125:
-        return 1.25
+        return 0.95
 
     if strategy_name in rr_110:
-        return 1.10
+        return 0.80
 
-    return 1.2
+    return 0.90
 
 def calculate_rr_value(trade_plan):
     if not trade_plan:
@@ -550,12 +550,18 @@ def process_wait_better_entry_setups(df, tick, account_info, market_condition, s
             execution_engine.mark_executed(setup)
             return True
 
+        setup["state"] = "EXECUTION_FAILED"
+        setup["wait_reason"] = "Better entry execution failed"
+
         send_telegram_message(
             f"❌ Better Entry Execution Failed\n"
             f"Symbol: {SYMBOL}\n"
             f"Strategy: {strategy_name}\n"
-            f"Signal: {signal}"
+            f"Signal: {signal}\n\n"
+            f"Setup marked as failed to prevent repeated retries."
         )
+
+        return False
 
     return False
 
