@@ -90,6 +90,7 @@ def session_score_adjustment(strategy_name: str, session_name: str):
         "HEAD_SHOULDERS",
         "LVN_FVG_RECLAIM",
         "FVG_CE_MITIGATION",
+        "HTF_FIB_CONFLUENCE",
     }
 
     if strategy_name in structural_strategies:

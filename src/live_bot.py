@@ -76,6 +76,7 @@ from config.settings import (
     BETTER_ENTRY_EXPIRY_MINUTES,
     BETTER_ENTRY_STRATEGIES,
     ENABLE_FAILED_FVG_REVERSAL,
+    ENABLE_HTF_FIB_CONFLUENCE,
 )
 
 from src.structure_liquidity_context import (
@@ -121,6 +122,7 @@ STRATEGY_SPECIFIC_CONFIRMED = {
     "LIQUIDITY_POOL_OB",
     "FAILED_BREAKOUT_REVERSAL",
     "FAILED_FVG_REVERSAL",
+    "HTF_FIB_CONFLUENCE",
 }
 
 def fetch_market_data():
@@ -679,6 +681,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_liquidity_pool_ob import generate_signal as liquidity_pool_ob_signal
     from src.strategies.strategy_failed_breakout_reversal import generate_signal as failed_breakout_reversal_signal
     from src.strategies.strategy_failed_fvg_reversal import generate_signal as failed_fvg_reversal_signal
+    from src.strategies.strategy_htf_fib_confluence import generate_signal as htf_fib_confluence_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -711,6 +714,7 @@ def process_cycle(last_processed_candle_time):
             ("HTF_TREND_PULLBACK", htf_trend_pullback_signal),
             ("OB_FVG_COMBO", ob_fvg_combo_signal),
             ("RELIEF_RALLY", relief_rally_signal),
+            ("HTF_FIB_CONFLUENCE", htf_fib_confluence_signal),
             ("SESSION_ORB_RETEST", session_orb_retest_signal),
             ("LVN_FVG_RECLAIM", lvn_fvg_reclaim_signal),
             ("FVG_CE_MITIGATION", fvg_ce_mitigation_signal),
@@ -741,6 +745,7 @@ def process_cycle(last_processed_candle_time):
             ("FVG", fvg_signal),
             ("OB_FVG_COMBO", ob_fvg_combo_signal),
             ("RELIEF_RALLY", relief_rally_signal),
+            ("HTF_FIB_CONFLUENCE", htf_fib_confluence_signal),
             ("WAVETREND_PIVOT", wavetrend_pivot_signal),
             ("STRUCTURE_LIQUIDITY", structure_liquidity_signal),
             ("LIQUIDITY_CANDLE", liquidity_candle_signal),
@@ -800,6 +805,14 @@ def process_cycle(last_processed_candle_time):
     # =========================
     # STRATEGY TOGGLES
     # =========================
+
+    if not ENABLE_HTF_FIB_CONFLUENCE:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "HTF_FIB_CONFLUENCE"
+        ]
+        logger.info("[STRATEGY TOGGLE] HTF_FIB_CONFLUENCE disabled")
 
     if not ENABLE_FAILED_FVG_REVERSAL:
         strategy_map = [
