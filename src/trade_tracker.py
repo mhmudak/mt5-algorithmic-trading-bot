@@ -1,11 +1,11 @@
 import json
-from pathlib import Path
 from datetime import datetime, timedelta
 
 import MetaTrader5 as mt5
 
 from src.logger import logger
 from src.notifier import send_telegram_message
+from src.setup_audit import log_setup_event
 from config.settings import (
     ENABLE_COOLDOWN_AFTER_SL,
     COOLDOWN_AFTER_SL_MINUTES,
@@ -76,6 +76,8 @@ def _build_trade_record(
     position_id,
     main_position_id,
     trade_role,
+    setup_id="N/A",
+    entry_model=None,
     symbol,
     signal,
     entry_price,
@@ -89,13 +91,16 @@ def _build_trade_record(
     setup_score=0,
     strategy_name="UNKNOWN",
     market_condition="UNKNOWN",
+    session=None,
     reason="N/A",
-    tp_buffer=0.0
+    tp_buffer=0.0,
 ):
     return {
         "position_id": str(position_id),
         "main_position_id": str(main_position_id),
         "trade_role": trade_role,
+        "setup_id": setup_id,
+        "entry_model": entry_model,
         "symbol": symbol,
         "signal": signal,
         "entry_price": float(entry_price),
@@ -119,13 +124,13 @@ def _build_trade_record(
         "setup_score": float(setup_score),
         "strategy": strategy_name,
         "market_condition": market_condition,
+        "session": session,
         "reason": reason,
         "tp_buffer": float(tp_buffer),
         "max_profit_price": 0.0,
         "reached_levels": {str(level): False for level in TRACKED_LEVELS},
         "final_result": None,
         "close_reason": None,
-        "strategy": strategy_name,
     }
 
 
@@ -159,6 +164,8 @@ def register_executed_trade(symbol, signal, trade_plan, result):
         position_id=position_id,
         main_position_id=main_position_id,
         trade_role=trade_role,
+        setup_id=trade_plan.get("setup_id", "N/A"),
+        entry_model=trade_plan.get("entry_model"),
         symbol=symbol,
         signal=signal,
         entry_price=trade_plan["entry_price"],
@@ -172,6 +179,7 @@ def register_executed_trade(symbol, signal, trade_plan, result):
         setup_score=trade_plan.get("score", 0),
         strategy_name=trade_plan.get("strategy", "UNKNOWN"),
         market_condition=trade_plan.get("market_condition", "UNKNOWN"),
+        session=trade_plan.get("session"),
         reason=trade_plan.get("reason", "N/A"),
         tp_buffer=trade_plan.get("tp_buffer", 0.0),
     )
@@ -183,6 +191,7 @@ def register_executed_trade(symbol, signal, trade_plan, result):
     send_telegram_message(
         f"Trade Opened\n"
         f"Position: {position_id}\n"
+        f"Setup ID: {trade_plan.get('setup_id', 'N/A')}\n"
         f"Role: {trade_role}\n"
         f"Main Position: {main_position_id}\n"
         f"Symbol: {symbol}\n"
@@ -220,39 +229,62 @@ def update_trade_statistics(position, trade, tick):
     trade["reached_levels"] = reached_levels
 
 
-def detect_close_reason(position_id: str):
+def detect_close_details(position_id: str):
     now = datetime.now()
     start = now - timedelta(days=7)
 
     deals = mt5.history_deals_get(start, now)
     if deals is None:
-        return None
+        return {
+            "close_reason": None,
+            "realized_profit": 0.0,
+        }
 
     try:
         position_id_int = int(position_id)
     except ValueError:
-        return None
+        return {
+            "close_reason": None,
+            "realized_profit": 0.0,
+        }
 
-    matching_deals = []
-    for deal in deals:
-        deal_position_id = getattr(deal, "position_id", None)
-        if deal_position_id == position_id_int:
-            matching_deals.append(deal)
+    matching_deals = [
+        deal for deal in deals
+        if getattr(deal, "position_id", None) == position_id_int
+    ]
 
     if not matching_deals:
-        return None
+        return {
+            "close_reason": None,
+            "realized_profit": 0.0,
+        }
 
-    latest_deal = max(matching_deals, key=lambda d: getattr(d, "time", 0))
+    closing_deals = [
+        deal for deal in matching_deals
+        if getattr(deal, "entry", None) == mt5.DEAL_ENTRY_OUT
+    ]
+
+    if not closing_deals:
+        closing_deals = matching_deals
+
+    latest_deal = max(closing_deals, key=lambda d: getattr(d, "time", 0))
+
     reason = getattr(latest_deal, "reason", None)
+    realized_profit = sum(float(getattr(deal, "profit", 0.0)) for deal in closing_deals)
 
     if reason == mt5.DEAL_REASON_SL:
-        return "SL"
-    if reason == mt5.DEAL_REASON_TP:
-        return "TP"
-    if reason == mt5.DEAL_REASON_SO:
-        return "STOP_OUT"
+        close_reason = "SL"
+    elif reason == mt5.DEAL_REASON_TP:
+        close_reason = "TP"
+    elif reason == mt5.DEAL_REASON_SO:
+        close_reason = "STOP_OUT"
+    else:
+        close_reason = "OTHER"
 
-    return "OTHER"
+    return {
+        "close_reason": close_reason,
+        "realized_profit": round(realized_profit, 2),
+    }
 
 
 def update_trade_lifecycle(symbol: str):
@@ -288,10 +320,19 @@ def update_trade_lifecycle(symbol: str):
                 trade["remaining_volume"] = 0.0
                 trade["status"] = "CLOSED"
                 trade["close_time"] = datetime.now().isoformat()
-                trade["final_result"] = "WIN" if float(trade.get("max_profit_price", 0.0)) > 0 else "LOSS"
 
-                close_reason = detect_close_reason(position_id)
+                close_details = detect_close_details(position_id)
+                close_reason = close_details["close_reason"]
+                realized_profit = close_details["realized_profit"]
+
                 trade["close_reason"] = close_reason
+                trade["realized_profit"] = realized_profit
+                if realized_profit > 0:
+                    trade["final_result"] = "WIN"
+                elif realized_profit < 0:
+                    trade["final_result"] = "LOSS"
+                else:
+                    trade["final_result"] = "BREAKEVEN"
                 changed = True
 
                 logger.info(f"[TRACKER] Trade fully closed {position_id} | reason={close_reason}")
@@ -315,6 +356,30 @@ def update_trade_lifecycle(symbol: str):
                     f"TP Buffer: {trade.get('tp_buffer', 0.0)}\n"
                     f"Max Profit Price: {trade.get('max_profit_price', 0.0)}\n"
                     f"Close Reason: {close_reason}"
+                )
+
+                log_setup_event(
+                    setup_id=trade.get("setup_id", f"MANUAL-{position_id}"),
+                    event="TRADE_CLOSED",
+                    strategy=trade.get("strategy", "UNKNOWN"),
+                    signal=trade.get("signal"),
+                    entry_model=trade.get("entry_model"),
+                    score=trade.get("setup_score", 0),
+                    session=trade.get("session"),
+                    market_condition=trade.get("market_condition"),
+                    entry=trade.get("entry_price"),
+                    sl=trade.get("stop_loss"),
+                    tp=trade.get("take_profit"),
+                    reason=trade.get("reason"),
+                    extra={
+                        "position_id": position_id,
+                        "role": trade.get("trade_role"),
+                        "close_reason": close_reason,
+                        "final_result": trade.get("final_result"),
+                        "realized_profit": realized_profit,
+                        "max_profit_price": trade.get("max_profit_price", 0.0),
+                        "closed_volume": trade.get("closed_volume", 0.0),
+                    },
                 )
             continue
 
@@ -376,6 +441,8 @@ def sync_open_positions(symbol: str):
             position_id=position_id,
             main_position_id=position_id,
             trade_role="MAIN",
+            setup_id=f"MANUAL-{position_id}",
+            entry_model="MANUAL",
             symbol=position.symbol,
             signal=signal,
             entry_price=position.price_open,
@@ -389,6 +456,7 @@ def sync_open_positions(symbol: str):
             setup_score=0,
             strategy_name="MANUAL",
             market_condition="MANUAL",
+            session="MANUAL",
             reason="Imported manual/open position",
             tp_buffer=0.0,
         )
