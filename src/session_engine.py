@@ -62,6 +62,7 @@ def session_score_adjustment(strategy_name: str, session_name: str):
         "LIQUIDITY_POOL_OB",
         "FAILED_BREAKOUT_REVERSAL",
         "FAILED_FVG_REVERSAL",
+        "EXTREME_SWEEP_RECLAIM",
     }
 
     if strategy_name in reversal_strategies:

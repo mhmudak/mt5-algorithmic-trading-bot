@@ -228,8 +228,36 @@ def update_trade_statistics(position, trade, tick):
 
     trade["reached_levels"] = reached_levels
 
+def infer_close_reason_from_trade(trade, close_price, realized_profit):
+    if trade is None:
+        if realized_profit > 0:
+            return "PROFIT_CLOSE"
 
-def detect_close_details(position_id: str):
+        if realized_profit < 0:
+            return "LOSS_CLOSE"
+
+        return "OTHER"
+
+    stop_loss = float(trade.get("stop_loss", 0.0) or 0.0)
+    take_profit = float(trade.get("take_profit", 0.0) or 0.0)
+
+    tolerance = 0.50
+
+    if stop_loss > 0 and abs(close_price - stop_loss) <= tolerance:
+        return "SL_LIKELY"
+
+    if take_profit > 0 and abs(close_price - take_profit) <= tolerance:
+        return "TP_LIKELY"
+
+    if realized_profit > 0:
+        return "PROFIT_CLOSE"
+
+    if realized_profit < 0:
+        return "LOSS_CLOSE"
+
+    return "BREAKEVEN"
+
+def detect_close_details(position_id: str, trade=None):
     now = datetime.now()
     start = now - timedelta(days=7)
 
@@ -238,6 +266,7 @@ def detect_close_details(position_id: str):
         return {
             "close_reason": None,
             "realized_profit": 0.0,
+            "close_price": 0.0,
         }
 
     try:
@@ -246,6 +275,7 @@ def detect_close_details(position_id: str):
         return {
             "close_reason": None,
             "realized_profit": 0.0,
+            "close_price": 0.0,
         }
 
     matching_deals = [
@@ -257,6 +287,7 @@ def detect_close_details(position_id: str):
         return {
             "close_reason": None,
             "realized_profit": 0.0,
+            "close_price": 0.0,
         }
 
     closing_deals = [
@@ -270,7 +301,11 @@ def detect_close_details(position_id: str):
     latest_deal = max(closing_deals, key=lambda d: getattr(d, "time", 0))
 
     reason = getattr(latest_deal, "reason", None)
-    realized_profit = sum(float(getattr(deal, "profit", 0.0)) for deal in closing_deals)
+    close_price = float(getattr(latest_deal, "price", 0.0))
+    realized_profit = sum(
+        float(getattr(deal, "profit", 0.0))
+        for deal in closing_deals
+    )
 
     if reason == mt5.DEAL_REASON_SL:
         close_reason = "SL"
@@ -279,11 +314,16 @@ def detect_close_details(position_id: str):
     elif reason == mt5.DEAL_REASON_SO:
         close_reason = "STOP_OUT"
     else:
-        close_reason = "OTHER"
+        close_reason = infer_close_reason_from_trade(
+            trade=trade,
+            close_price=close_price,
+            realized_profit=realized_profit,
+        )
 
     return {
         "close_reason": close_reason,
         "realized_profit": round(realized_profit, 2),
+        "close_price": round(close_price, 2),
     }
 
 
@@ -321,9 +361,10 @@ def update_trade_lifecycle(symbol: str):
                 trade["status"] = "CLOSED"
                 trade["close_time"] = datetime.now().isoformat()
 
-                close_details = detect_close_details(position_id)
+                close_details = detect_close_details(position_id, trade=trade)
                 close_reason = close_details["close_reason"]
                 realized_profit = close_details["realized_profit"]
+                close_price = close_details["close_price"]
 
                 trade["close_reason"] = close_reason
                 trade["realized_profit"] = realized_profit
@@ -337,7 +378,7 @@ def update_trade_lifecycle(symbol: str):
 
                 logger.info(f"[TRACKER] Trade fully closed {position_id} | reason={close_reason}")
 
-                if close_reason == "SL":
+                if close_reason in ["SL", "SL_LIKELY"]:
                     activate_cooldown()
 
                 send_telegram_message(
@@ -377,6 +418,7 @@ def update_trade_lifecycle(symbol: str):
                         "close_reason": close_reason,
                         "final_result": trade.get("final_result"),
                         "realized_profit": realized_profit,
+                        "close_price": close_price,
                         "max_profit_price": trade.get("max_profit_price", 0.0),
                         "closed_volume": trade.get("closed_volume", 0.0),
                     },

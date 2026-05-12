@@ -85,6 +85,9 @@ from config.settings import (
     ENABLE_HTF_FIB_CONFLUENCE,
     ENABLE_SUPPLY_DEMAND_CONTEXT,
     ENABLE_SUPPLY_DEMAND_RETEST,
+    ENABLE_EXTREME_SWEEP_RECLAIM,
+    BETTER_ENTRY_FAST_EXPIRY_MINUTES,
+    BETTER_ENTRY_FAST_EXPIRY_STRATEGIES,
 )
 
 from src.structure_liquidity_context import (
@@ -132,6 +135,7 @@ STRATEGY_SPECIFIC_CONFIRMED = {
     "FAILED_FVG_REVERSAL",
     "HTF_FIB_CONFLUENCE",
     "SUPPLY_DEMAND_RETEST",
+    "EXTREME_SWEEP_RECLAIM",
 }
 
 def fetch_market_data():
@@ -166,12 +170,21 @@ def is_rr_valid(trade_plan, min_rr=1.2):
         return False
 
 
-def get_min_rr(strategy_name, entry_model=None):
+def get_min_rr(strategy_name, entry_model=None, sl_model=None):
+    if strategy_name == "BREAKER_BLOCK":
+        if sl_model == "RETEST_CANDLE_STRUCTURE_SL":
+            return 1.25
+
+        if sl_model == "FULL_BREAKER_STRUCTURE_SL":
+            return 1.10
+
+        return 1.20
+
     if strategy_name == "ORB":
         if entry_model == "FAST_CONTINUATION":
             return 2.0
 
-        return 1.5
+        return 1.2
 
     rr_140 = {
         "FVG",
@@ -217,7 +230,7 @@ def get_min_rr(strategy_name, entry_model=None):
     if strategy_name in rr_110:
         return 0.80
 
-    return 0.90
+    return 0.9
 
 def calculate_rr_value(trade_plan):
     if not trade_plan:
@@ -492,7 +505,14 @@ def process_wait_better_entry_setups(df, tick, account_info, market_condition, s
         setup_data = setup["data"]
         signal = setup_data.get("signal")
         strategy_name = setup_data.get("strategy")
-        required_rr = setup.get("better_entry_min_rr", get_min_rr(strategy_name))
+        required_rr = setup.get(
+            "better_entry_min_rr",
+            get_min_rr(
+                strategy_name,
+                setup_data.get("entry_model"),
+                setup_data.get("sl_model"),
+            ),
+        )
 
         if signal not in ["BUY", "SELL"]:
             continue
@@ -693,6 +713,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_failed_fvg_reversal import generate_signal as failed_fvg_reversal_signal
     from src.strategies.strategy_htf_fib_confluence import generate_signal as htf_fib_confluence_signal
     from src.strategies.strategy_supply_demand_retest import generate_signal as supply_demand_retest_signal
+    from src.strategies.strategy_extreme_sweep_reclaim import generate_signal as extreme_sweep_reclaim_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -786,6 +807,7 @@ def process_cycle(last_processed_candle_time):
             ("FAILED_FVG_REVERSAL", failed_fvg_reversal_signal),
             ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
             ("SUPPLY_DEMAND_RETEST", supply_demand_retest_signal),
+            ("EXTREME_SWEEP_RECLAIM", extreme_sweep_reclaim_signal),
             ("STRUCTURE_LIQUIDITY", structure_liquidity_signal),
             ("CRT_TBS", crt_tbs_signal),
             ("LIQUIDITY_POOL_OB", liquidity_pool_ob_signal),
@@ -810,6 +832,7 @@ def process_cycle(last_processed_candle_time):
             ("FAILED_FVG_REVERSAL", failed_fvg_reversal_signal),
             ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
             ("SUPPLY_DEMAND_RETEST", supply_demand_retest_signal),
+            ("EXTREME_SWEEP_RECLAIM", extreme_sweep_reclaim_signal),
             ("STRUCTURE_LIQUIDITY", structure_liquidity_signal),
             ("CRT_TBS", crt_tbs_signal),
             ("SMT_PRO", smt_pro_signal),
@@ -831,6 +854,14 @@ def process_cycle(last_processed_candle_time):
     # =========================
     # STRATEGY TOGGLES
     # =========================
+
+    if not ENABLE_EXTREME_SWEEP_RECLAIM:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "EXTREME_SWEEP_RECLAIM"
+        ]
+        logger.info("[STRATEGY TOGGLE] EXTREME_SWEEP_RECLAIM disabled")
 
     if not ENABLE_SUPPLY_DEMAND_RETEST:
         strategy_map = [
@@ -1673,6 +1704,7 @@ def process_cycle(last_processed_candle_time):
         min_rr_required = get_min_rr(
             strategy_name,
             selected_signal_data.get("entry_model"),
+            selected_signal_data.get("sl_model"),
         )
 
         log_setup_event(
@@ -1759,11 +1791,17 @@ def process_cycle(last_processed_candle_time):
                 and strategy_name in BETTER_ENTRY_STRATEGIES
                 and "best_setup" in locals()
             ):
+                better_entry_expiry = (
+                    BETTER_ENTRY_FAST_EXPIRY_MINUTES
+                    if strategy_name in BETTER_ENTRY_FAST_EXPIRY_STRATEGIES
+                    else BETTER_ENTRY_EXPIRY_MINUTES
+                )
+
                 execution_engine.mark_wait_better_entry(
                     setup=best_setup,
                     min_rr_required=min_rr_required,
                     current_rr=rr_value,
-                    expiry_minutes=BETTER_ENTRY_EXPIRY_MINUTES,
+                    expiry_minutes=better_entry_expiry,
                 )
 
                 send_telegram_message(
@@ -1773,7 +1811,7 @@ def process_cycle(last_processed_candle_time):
                     f"Signal: {signal}\n\n"
                     f"Current RR: {rr_value}\n"
                     f"Required RR: {min_rr_required}\n"
-                    f"Expiry: {BETTER_ENTRY_EXPIRY_MINUTES} minutes"
+                    f"Expiry: {better_entry_expiry} minutes"
                 )
 
                 return current_candle_time
