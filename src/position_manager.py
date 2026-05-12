@@ -62,7 +62,10 @@ def manage_positions(symbol: str):
             continue
 
         if trade.get("imported_manually", False):
-            logger.info(f"[MANAGER] Position {position_id} is manual-imported, skipping normal manager")
+            logger.info(
+                f"[MANAGER] Position {position_id} is manual-imported, updating statistics only"
+            )
+            update_trade_statistics(position, trade, tick)
             continue
 
         tracked_positions.append((position, trade))

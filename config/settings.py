@@ -5,6 +5,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # =========================
+# Google Sheets Logging
+# =========================
+ENABLE_GOOGLE_SHEETS_LOGGING = True
+GOOGLE_SHEETS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbxkbNRMwx3uTquhpaKdypk2T3uPxEkR3zbwsXAJEXa6Yq_kdlAt_ETJueAxfLOUsD7nZw/exec"
+GOOGLE_SHEETS_WEBHOOK_SECRET = "MyBot2k26MhMud"
+
+# =========================
 # Telegram Signal Messages
 # =========================
 TELEGRAM_VERBOSE_SIGNALS = False
@@ -71,7 +78,7 @@ TRADING_BLACKOUT_WINDOWS = [
 # Execution / Risk Settings
 # =========================
 POSITION_MODE = "fixed"   # "fixed" or "risk"
-FIXED_LOT = 0.04
+FIXED_LOT = 0.05
 RISK_PER_TRADE_PCT = 0.25
 
 # =========================
@@ -483,6 +490,7 @@ BETTER_ENTRY_STRATEGIES = [
     "FVG",
     "OB_FVG_COMBO",
     "HTF_TREND_PULLBACK",
+    "RELIEF_RALLY",
 ]
 
 

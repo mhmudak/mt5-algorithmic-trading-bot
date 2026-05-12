@@ -3,7 +3,10 @@ from config.settings import ATR_MIN, ATR_MAX
 ORB_WINDOW = 15
 
 ORB_MIN_BODY_ATR = 0.30
+ORB_FAST_BODY_ATR = 0.38
+
 ORB_CLOSE_STRENGTH = 0.65
+ORB_FAST_CLOSE_STRENGTH = 0.72
 
 ORB_SL_ATR_MULTIPLIER = 0.25
 ORB_MIN_SL_BUFFER = 1.5
@@ -40,13 +43,27 @@ def _score_setup(base_score, body, atr, close_strength, ema_aligned, entry_model
     if close_strength >= 0.75:
         score += 2
 
+    if close_strength >= 0.85:
+        score += 2
+
     if ema_aligned:
         score += 2
 
     if entry_model == "WAIT_RETEST":
         score += 2
 
+    if entry_model == "FAST_CONTINUATION":
+        score += 3
+
     return min(score, 99)
+
+
+def _is_fast_continuation(body, atr, close_strength, breakout_distance, max_immediate):
+    return (
+        breakout_distance <= max_immediate
+        and body >= atr * ORB_FAST_BODY_ATR
+        and close_strength >= ORB_FAST_CLOSE_STRENGTH
+    )
 
 
 def generate_signal(df):
@@ -95,11 +112,7 @@ def generate_signal(df):
     if price > orb_high and price > ema:
         breakout_distance = price - orb_high
 
-        if breakout_distance <= max_immediate:
-            entry_model = "BREAKOUT"
-        elif breakout_distance <= max_retest:
-            entry_model = "WAIT_RETEST"
-        else:
+        if breakout_distance > max_retest:
             return None
 
         bullish_momentum = (
@@ -110,8 +123,19 @@ def generate_signal(df):
         if not bullish_momentum:
             return None
 
-        # Tight invalidation near the breakout level.
-        # If price fully returns inside the ORB, the breakout thesis is weakened.
+        if _is_fast_continuation(
+            body=body,
+            atr=atr,
+            close_strength=close_from_low,
+            breakout_distance=breakout_distance,
+            max_immediate=max_immediate,
+        ):
+            entry_model = "FAST_CONTINUATION"
+        elif breakout_distance <= max_immediate:
+            entry_model = "BREAKOUT"
+        else:
+            entry_model = "WAIT_RETEST"
+
         sl_reference = round(orb_high - sl_buffer, 2)
         tp_reference = round(orb_high + target_distance, 2)
 
@@ -158,11 +182,7 @@ def generate_signal(df):
     if price < orb_low and price < ema:
         breakout_distance = orb_low - price
 
-        if breakout_distance <= max_immediate:
-            entry_model = "BREAKOUT"
-        elif breakout_distance <= max_retest:
-            entry_model = "WAIT_RETEST"
-        else:
+        if breakout_distance > max_retest:
             return None
 
         bearish_momentum = (
@@ -173,8 +193,19 @@ def generate_signal(df):
         if not bearish_momentum:
             return None
 
-        # Tight invalidation near the breakout level.
-        # If price fully returns inside the ORB, the breakout thesis is weakened.
+        if _is_fast_continuation(
+            body=body,
+            atr=atr,
+            close_strength=close_from_high,
+            breakout_distance=breakout_distance,
+            max_immediate=max_immediate,
+        ):
+            entry_model = "FAST_CONTINUATION"
+        elif breakout_distance <= max_immediate:
+            entry_model = "BREAKOUT"
+        else:
+            entry_model = "WAIT_RETEST"
+
         sl_reference = round(orb_low + sl_buffer, 2)
         tp_reference = round(orb_low - target_distance, 2)
 

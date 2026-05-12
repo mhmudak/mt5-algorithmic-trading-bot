@@ -190,7 +190,17 @@ class ExecutionEngine:
                 # ORB SELL
                 # -------------------------
                 if signal == "SELL":
+
+                    # FAST_CONTINUATION:
+                    # Strategy already confirmed a strong immediate breakout.
+                    # No need to wait for another breakout-hold candle.
+                    if entry_model == "FAST_CONTINUATION":
+                        self._mark_ready(setup, executable)
+                        continue
+
                     if entry_model == "BREAKOUT":
+                        # Invalidation:
+                        # ORB SELL is invalid if price closes back above breakdown level.
                         if last_closed["close"] > orb_low:
                             self._mark_invalidated(
                                 setup,
@@ -207,6 +217,8 @@ class ExecutionEngine:
                             )
 
                     else:
+                        # WAIT_RETEST logic
+                        # Invalidation if price fully recovers above the opposite side of the ORB.
                         if last_closed["close"] > orb_high:
                             self._mark_invalidated(
                                 setup,
@@ -229,7 +241,17 @@ class ExecutionEngine:
                 # ORB BUY
                 # -------------------------
                 elif signal == "BUY":
+
+                    # FAST_CONTINUATION:
+                    # Strategy already confirmed a strong immediate breakout.
+                    # No need to wait for another breakout-hold candle.
+                    if entry_model == "FAST_CONTINUATION":
+                        self._mark_ready(setup, executable)
+                        continue
+
                     if entry_model == "BREAKOUT":
+                        # Invalidation:
+                        # ORB BUY is invalid if price closes back below breakout level.
                         if last_closed["close"] < orb_high:
                             self._mark_invalidated(
                                 setup,
@@ -246,6 +268,8 @@ class ExecutionEngine:
                             )
 
                     else:
+                        # WAIT_RETEST logic
+                        # Invalidation if price fully returns below the opposite side of the ORB.
                         if last_closed["close"] < orb_low:
                             self._mark_invalidated(
                                 setup,

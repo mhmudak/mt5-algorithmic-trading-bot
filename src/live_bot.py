@@ -12,6 +12,7 @@ from src.notifier import send_telegram_message
 from src.order_executor import execute_trade
 from src.position_manager import manage_positions
 from src.risk import calculate_trade_plan
+from src.setup_audit import log_setup_event
 from src.trade_tracker import (
     update_trade_lifecycle,
     sync_open_positions,
@@ -165,10 +166,12 @@ def is_rr_valid(trade_plan, min_rr=1.2):
         return False
 
 
-def get_min_rr(strategy_name):
-    rr_150 = {
-        "ORB",
-    }
+def get_min_rr(strategy_name, entry_model=None):
+    if strategy_name == "ORB":
+        if entry_model == "FAST_CONTINUATION":
+            return 2.0
+
+        return 1.5
 
     rr_140 = {
         "FVG",
@@ -201,9 +204,6 @@ def get_min_rr(strategy_name):
     rr_110 = {
         "FVG_CE_MITIGATION",
     }
-
-    if strategy_name in rr_150:
-        return 1.2
 
     if strategy_name in rr_140:
         return 1.1
@@ -424,6 +424,8 @@ def validate_candidate_pre_execution(
             "CRT_TBS",
             "LIQUIDITY_TRAP",
             "FRACTAL_SWEEP",
+            "FAILED_BREAKOUT_REVERSAL",
+            "FAILED_FVG_REVERSAL",
         ]
 
         allow_mtf_override = (
@@ -1088,6 +1090,22 @@ def process_cycle(last_processed_candle_time):
                 f"reason={rejection_reason}"
             )
 
+            log_setup_event(
+                setup_id=build_setup_id(
+                    candidate.get("strategy"),
+                    candidate.get("signal"),
+                    tick.time,
+                ),
+                event="CANDIDATE_REJECTED",
+                strategy=candidate.get("strategy"),
+                signal=candidate.get("signal"),
+                entry_model=candidate.get("entry_model"),
+                score=candidate.get("score"),
+                session=session_name,
+                market_condition=market_condition,
+                reason=rejection_reason,
+            )
+
         if selected_candidate is None:
             signal = "NO_TRADE"
             score = 0
@@ -1190,6 +1208,24 @@ def process_cycle(last_processed_candle_time):
                 }
 
                 send_telegram_message(build_trade_message(detected_data))
+
+                log_setup_event(
+                    setup_id=selected_signal_data.get("setup_id"),
+                    event="SETUP_DETECTED",
+                    strategy=strategy_name,
+                    signal=signal,
+                    entry_model=selected_signal_data.get("entry_model"),
+                    score=score,
+                    session=session_name,
+                    market_condition=market_condition,
+                    entry=close_price,
+                    sl=selected_signal_data.get("sl_reference"),
+                    tp=(
+                        selected_signal_data.get("tp_reference")
+                        or selected_signal_data.get("pivot_target_level")
+                    ),
+                    reason=reason,
+                )
 
             original_signal = signal
             original_strategy_name = strategy_name
@@ -1455,6 +1491,8 @@ def process_cycle(last_processed_candle_time):
             "CRT_TBS",
             "LIQUIDITY_TRAP",
             "FRACTAL_SWEEP",
+            "FAILED_BREAKOUT_REVERSAL",
+            "FAILED_FVG_REVERSAL",
         ]
 
         final_allow_mtf_override = (
@@ -1632,7 +1670,27 @@ def process_cycle(last_processed_candle_time):
         except Exception:
             rr_value = "N/A"
 
-        min_rr_required = get_min_rr(strategy_name)
+        min_rr_required = get_min_rr(
+            strategy_name,
+            selected_signal_data.get("entry_model"),
+        )
+
+        log_setup_event(
+            setup_id=selected_signal_data.get("setup_id"),
+            event="TRADE_PLAN_READY",
+            strategy=strategy_name,
+            signal=signal,
+            entry_model=selected_signal_data.get("entry_model"),
+            score=score,
+            session=session_name,
+            market_condition=market_condition,
+            entry=trade_plan["entry_price"],
+            sl=trade_plan["stop_loss"],
+            tp=trade_plan["take_profit"],
+            rr=rr_value,
+            required_rr=min_rr_required,
+            reason=reason,
+        )
 
         if not best_setup.get("trade_plan_notified"):
             if TELEGRAM_VERBOSE_SIGNALS and not best_setup.get("trade_plan_notified"):
@@ -1829,11 +1887,46 @@ def process_cycle(last_processed_candle_time):
                                         f"Reason: execute_trade() returned False."
                                     )
 
+                                    log_setup_event(
+                                        setup_id=selected_signal_data.get("setup_id"),
+                                        event="EXECUTION_FAILED",
+                                        strategy=strategy_name,
+                                        signal=signal,
+                                        entry_model=selected_signal_data.get("entry_model"),
+                                        score=score,
+                                        session=session_name,
+                                        market_condition=market_condition,
+                                        entry=trade_plan["entry_price"],
+                                        sl=trade_plan["stop_loss"],
+                                        tp=trade_plan["take_profit"],
+                                        reason="execute_trade returned False",
+                                    )
+
                                 return current_candle_time
 
             # =========================
             # FINAL BLOCKED MESSAGE
             # =========================
+            log_setup_event(
+                setup_id=setup_id,
+                event="TRADE_BLOCKED",
+                strategy=strategy_name,
+                signal=signal,
+                entry_model=selected_signal_data.get("entry_model"),
+                score=score,
+                session=session_name,
+                market_condition=market_condition,
+                entry=entry,
+                sl=sl,
+                tp=tp,
+                rr=rr_value,
+                required_rr=min_rr_required,
+                reason=guard_reason,
+                extra={
+                    "reversal_summary": reversal_summary,
+                },
+            )
+
             send_telegram_message(
                 f"🚫 Setup #{setup_id} Blocked\n"
                 f"Symbol: {SYMBOL}\n"
@@ -1885,6 +1978,21 @@ def process_cycle(last_processed_candle_time):
             f"SL: {trade_plan['stop_loss']}\n"
             f"TP: {trade_plan['take_profit']}\n"
             f"Lot: {trade_plan['lot']}"
+        )
+
+        log_setup_event(
+            setup_id=selected_signal_data.get("setup_id"),
+            event="EXECUTION_ATTEMPT",
+            strategy=strategy_name,
+            signal=signal,
+            entry_model=selected_signal_data.get("entry_model"),
+            score=score,
+            session=session_name,
+            market_condition=market_condition,
+            entry=trade_plan["entry_price"],
+            sl=trade_plan["stop_loss"],
+            tp=trade_plan["take_profit"],
+            reason="Sending order to MT5",
         )
 
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
