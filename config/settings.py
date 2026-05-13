@@ -86,7 +86,7 @@ FOREX_FACTORY_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek
 # Example: if event appears 1 hour early, set +1.
 FOREX_FACTORY_TIME_OFFSET_HOURS = 3
 
-AUTO_NEWS_CURRENCIES = ["USD"]
+AUTO_NEWS_CURRENCIES = ["USD", "JPY"]
 AUTO_NEWS_IMPACT = ["High"]
 
 AUTO_NEWS_KEYWORDS = [
@@ -123,7 +123,7 @@ AUTO_NEWS_KEYWORDS = [
 # Execution / Risk Settings
 # =========================
 POSITION_MODE = "fixed"   # "fixed" or "risk"
-FIXED_LOT = 0.05
+FIXED_LOT = 0.06
 RISK_PER_TRADE_PCT = 0.25
 
 # =========================
@@ -578,6 +578,8 @@ SCALP_STRATEGIES = [
 ]
 
 SCALP_MIN_SCORE = 98
-SCALP_MIN_RR = 0.60
-SCALP_MAX_STOP_DISTANCE = 10.0
-SCALP_MIN_TARGET_DISTANCE = 3.0
+
+# Fixed scalp plan
+SCALP_FIXED_STOP_DISTANCE = 10.0
+SCALP_MIN_TARGET_DISTANCE = 3.5
+SCALP_MAX_TARGET_DISTANCE = 9.0

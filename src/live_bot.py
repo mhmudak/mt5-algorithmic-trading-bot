@@ -88,6 +88,13 @@ from config.settings import (
     ENABLE_EXTREME_SWEEP_RECLAIM,
     BETTER_ENTRY_FAST_EXPIRY_MINUTES,
     BETTER_ENTRY_FAST_EXPIRY_STRATEGIES,
+    ALLOW_OPPOSITE_DIRECTION_TRADES,
+    ENABLE_SCALP_MODE,
+    SCALP_STRATEGIES,
+    SCALP_MIN_SCORE,
+    SCALP_FIXED_STOP_DISTANCE,
+    SCALP_MIN_TARGET_DISTANCE,
+    SCALP_MAX_TARGET_DISTANCE,
 )
 
 from src.structure_liquidity_context import (
@@ -252,6 +259,168 @@ def calculate_rr_value(trade_plan):
         return None
 
     return None
+
+def get_scalp_sl_reference(df, signal, entry_price, signal_data):
+    signal_candle = df.iloc[-2]
+    prev_candle = df.iloc[-3]
+    atr = signal_candle["atr_14"]
+
+    buffer = max(atr * 0.15, 1.0)
+    strategy = signal_data.get("strategy")
+
+    if signal == "SELL":
+        raw_levels = []
+
+        for key in [
+            "fvg_top",
+            "failed_fvg_top",
+            "relief_high",
+            "liquidity_high",
+            "sweep_high",
+            "zone_high",
+            "ob_high",
+            "recent_high",
+        ]:
+            value = signal_data.get(key)
+            if value is not None:
+                raw_levels.append(float(value))
+
+        raw_levels.append(max(signal_candle["high"], prev_candle["high"]))
+
+        valid_sl_candidates = [
+            round(level + buffer, 2)
+            for level in raw_levels
+            if level + buffer > entry_price
+        ]
+
+        if not valid_sl_candidates:
+            return None, None
+
+        # Closest valid SL above entry
+        sl_reference = min(valid_sl_candidates)
+        return sl_reference, "SCALP_MICRO_STRUCTURE_SL"
+
+    if signal == "BUY":
+        raw_levels = []
+
+        for key in [
+            "fvg_bottom",
+            "failed_fvg_bottom",
+            "relief_low",
+            "liquidity_low",
+            "sweep_low",
+            "zone_low",
+            "ob_low",
+            "recent_low",
+        ]:
+            value = signal_data.get(key)
+            if value is not None:
+                raw_levels.append(float(value))
+
+        raw_levels.append(min(signal_candle["low"], prev_candle["low"]))
+
+        valid_sl_candidates = [
+            round(level - buffer, 2)
+            for level in raw_levels
+            if level - buffer < entry_price
+        ]
+
+        if not valid_sl_candidates:
+            return None, None
+
+        # Closest valid SL below entry
+        sl_reference = max(valid_sl_candidates)
+        return sl_reference, "SCALP_MICRO_STRUCTURE_SL"
+
+    return None, None
+
+
+def try_build_scalp_trade_plan(
+    df,
+    tick,
+    account_info,
+    signal,
+    strategy_name,
+    selected_signal_data,
+    normal_trade_plan,
+):
+    if not ENABLE_SCALP_MODE:
+        return None
+
+    if strategy_name not in SCALP_STRATEGIES:
+        return None
+
+    if selected_signal_data.get("score", 0) < SCALP_MIN_SCORE:
+        return None
+
+    if normal_trade_plan is None:
+        return None
+
+    entry_price = tick.ask if signal == "BUY" else tick.bid
+    normal_tp = normal_trade_plan.get("take_profit")
+
+    if normal_tp is None:
+        return None
+
+    # =========================
+    # Fixed scalp SL / capped TP
+    # =========================
+    if signal == "BUY":
+        raw_target_distance = normal_tp - entry_price
+
+        if raw_target_distance <= 0:
+            return None
+
+        target_distance = min(raw_target_distance, SCALP_MAX_TARGET_DISTANCE)
+
+        if target_distance < SCALP_MIN_TARGET_DISTANCE:
+            return None
+
+        stop_loss = entry_price - SCALP_FIXED_STOP_DISTANCE
+        take_profit = entry_price + target_distance
+
+    elif signal == "SELL":
+        raw_target_distance = entry_price - normal_tp
+
+        if raw_target_distance <= 0:
+            return None
+
+        target_distance = min(raw_target_distance, SCALP_MAX_TARGET_DISTANCE)
+
+        if target_distance < SCALP_MIN_TARGET_DISTANCE:
+            return None
+
+        stop_loss = entry_price + SCALP_FIXED_STOP_DISTANCE
+        take_profit = entry_price - target_distance
+
+    else:
+        return None
+
+    scalp_trade_plan = normal_trade_plan.copy()
+
+    scalp_trade_plan["entry_price"] = round(entry_price, 2)
+    scalp_trade_plan["stop_loss"] = round(stop_loss, 2)
+    scalp_trade_plan["take_profit"] = round(take_profit, 2)
+    scalp_trade_plan["stop_distance"] = round(SCALP_FIXED_STOP_DISTANCE, 2)
+
+    scalp_trade_plan["strategy"] = strategy_name
+    scalp_trade_plan["score"] = selected_signal_data.get("score", 0)
+    scalp_trade_plan["entry_model"] = (
+        f"{selected_signal_data.get('entry_model', 'N/A')}_SCALP"
+    )
+
+    scalp_trade_plan["is_scalp"] = True
+    scalp_trade_plan["scalp_sl_model"] = "FIXED_SCALP_STOP"
+    scalp_trade_plan["scalp_stop_distance"] = SCALP_FIXED_STOP_DISTANCE
+    scalp_trade_plan["scalp_target_distance"] = round(target_distance, 2)
+
+    scalp_trade_plan["reason"] = (
+        f"{normal_trade_plan.get('reason', selected_signal_data.get('reason', 'N/A'))} "
+        f"| SCALP_MODE: fixed SL={SCALP_FIXED_STOP_DISTANCE}, "
+        f"target={round(target_distance, 2)}"
+    )
+
+    return scalp_trade_plan
 
 def build_setup_id(strategy_name, signal, tick_time):
     prefix = (strategy_name or "UNK")[:3].upper()
@@ -563,6 +732,16 @@ def process_wait_better_entry_setups(df, tick, account_info, market_condition, s
 
         if has_same_direction_position(SYMBOL, opposite):
             logger.info("[BETTER ENTRY] Opposite position exists → skipping")
+            continue
+
+        news_blocked, news_reason = is_news_blackout_active()
+        if news_blocked:
+            logger.info(f"[BETTER ENTRY] News blocked | {news_reason}")
+            continue
+
+        time_blocked, time_reason = is_trading_blackout_active()
+        if time_blocked:
+            logger.info(f"[BETTER ENTRY] Time blocked | {time_reason}")
             continue
 
         send_telegram_message(
@@ -1782,6 +1961,92 @@ def process_cycle(last_processed_candle_time):
             rr_value = calculate_rr_value(trade_plan)
 
             # =========================
+            # SCALP MODE FALLBACK
+            # =========================
+            scalp_trade_plan = None
+
+            if low_rr_blocked and ENABLE_SCALP_MODE:
+                scalp_trade_plan = try_build_scalp_trade_plan(
+                    df=df,
+                    tick=tick,
+                    account_info=account_info,
+                    signal=signal,
+                    strategy_name=strategy_name,
+                    selected_signal_data=selected_signal_data,
+                    normal_trade_plan=trade_plan,
+                )
+
+            if scalp_trade_plan is not None:
+                scalp_allowed, scalp_guard_reason = check_trade_guard(signal, tick)
+
+                if scalp_allowed:
+                    from src.position_guard import has_same_direction_position
+
+                    opposite = "SELL" if signal == "BUY" else "BUY"
+
+                    if has_same_direction_position(SYMBOL, opposite):
+                        scalp_allowed = False
+                        scalp_guard_reason = f"Opposite {opposite} position already exists."
+
+                if not scalp_allowed:
+                    logger.info(
+                        f"[SCALP MODE] Blocked | "
+                        f"strategy={strategy_name} reason={scalp_guard_reason}"
+                    )
+
+                else:
+                    send_telegram_message(
+                        f"⚡ Scalp Mode Executing\n"
+                        f"Symbol: {SYMBOL}\n"
+                        f"Strategy: {strategy_name}\n"
+                        f"Signal: {signal}\n\n"
+                        f"Entry: {scalp_trade_plan['entry_price']}\n"
+                        f"SL: {scalp_trade_plan['stop_loss']}\n"
+                        f"TP: {scalp_trade_plan['take_profit']}\n"
+                        f"RR: {scalp_trade_plan['scalp_rr']}\n"
+                        f"SL Model: {scalp_trade_plan['scalp_sl_model']}"
+                    )
+
+                    log_setup_event(
+                        setup_id=selected_signal_data.get("setup_id"),
+                        event="SCALP_EXECUTION_ATTEMPT",
+                        strategy=strategy_name,
+                        signal=signal,
+                        entry_model=scalp_trade_plan.get("entry_model"),
+                        score=score,
+                        session=session_name,
+                        market_condition=market_condition,
+                        entry=scalp_trade_plan["entry_price"],
+                        sl=scalp_trade_plan["stop_loss"],
+                        tp=scalp_trade_plan["take_profit"],
+                        reason=scalp_trade_plan.get("reason", "Scalp mode execution"),
+                        extra={
+                            "is_scalp": True,
+                            "scalp_sl_model": scalp_trade_plan.get("scalp_sl_model"),
+                            "scalp_stop_distance": scalp_trade_plan.get("scalp_stop_distance"),
+                            "scalp_target_distance": scalp_trade_plan.get("scalp_target_distance"),
+                        },
+                    )
+
+                    execution_result = execute_trade(
+                        signal,
+                        scalp_trade_plan,
+                        SYMBOL,
+                    )
+
+                    if execution_result:
+                        if "best_setup" in locals():
+                            execution_engine.mark_executed(best_setup)
+                        return current_candle_time
+
+                    send_telegram_message(
+                        f"❌ Scalp Mode Execution Failed\n"
+                        f"Symbol: {SYMBOL}\n"
+                        f"Strategy: {strategy_name}\n"
+                        f"Signal: {signal}"
+                    )
+
+            # =========================
             # WAIT FOR BETTER ENTRY
             # =========================
             if (
@@ -1988,7 +2253,10 @@ def process_cycle(last_processed_candle_time):
     if signal in ["BUY", "SELL"] and trade_plan is not None:
         opposite = "SELL" if signal == "BUY" else "BUY"
 
-        if has_same_direction_position(SYMBOL, opposite):
+        if (
+            not ALLOW_OPPOSITE_DIRECTION_TRADES
+            and has_same_direction_position(SYMBOL, opposite)
+        ):
             logger.info("Opposite position exists → skipping execution")
 
             send_telegram_message(
@@ -2023,7 +2291,7 @@ def process_cycle(last_processed_candle_time):
             event="EXECUTION_ATTEMPT",
             strategy=strategy_name,
             signal=signal,
-            entry_model=selected_signal_data.get("entry_model"),
+            entry_model=trade_plan.get("entry_model") or selected_signal_data.get("entry_model"),
             score=score,
             session=session_name,
             market_condition=market_condition,
@@ -2031,6 +2299,12 @@ def process_cycle(last_processed_candle_time):
             sl=trade_plan["stop_loss"],
             tp=trade_plan["take_profit"],
             reason="Sending order to MT5",
+            extra={
+                "is_scalp": trade_plan.get("is_scalp", False),
+                "scalp_sl_model": trade_plan.get("scalp_sl_model"),
+                "scalp_stop_distance": trade_plan.get("scalp_stop_distance"),
+                "scalp_target_distance": trade_plan.get("scalp_target_distance"),
+            },
         )
 
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
