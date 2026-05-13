@@ -56,9 +56,7 @@ NEWS_BLOCK_AFTER_MINUTES = 15
 # Manual high-impact news blackout windows.
 # Format: "YYYY-MM-DD HH:MM"
 NEWS_BLACKOUT_WINDOWS = [
-    # Example:
-    # {"name": "US CPI", "time": "2026-05-06 15:30"},
-    # {"name": "FOMC", "time": "2026-05-07 21:00"},
+    # {"name": "High Impact News", "time": "2026-05-12 15:30"},
 ]
 
 # =========================
@@ -72,6 +70,53 @@ TRADING_BLACKOUT_WINDOWS = [
         "start": "03:00",
         "end": "04:00",
     },
+]
+
+# =========================
+# Automatic Economic Calendar Filter
+# =========================
+ENABLE_AUTO_NEWS_FILTER = True
+ECONOMIC_CALENDAR_PROVIDER = "FOREX_FACTORY"
+
+# Forex Factory weekly XML calendar.
+FOREX_FACTORY_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml"
+
+# If the calendar time is not aligned with your local bot time,
+# adjust this offset after testing.
+# Example: if event appears 1 hour early, set +1.
+FOREX_FACTORY_TIME_OFFSET_HOURS = 3
+
+AUTO_NEWS_CURRENCIES = ["USD"]
+AUTO_NEWS_IMPACT = ["High"]
+
+AUTO_NEWS_KEYWORDS = [
+    "CPI",
+    "Core CPI",
+    "PPI",
+    "Core PPI",
+    "Non-Farm Employment Change",
+    "Nonfarm Payrolls",
+    "NFP",
+    "Unemployment Rate",
+    "Average Hourly Earnings",
+    "FOMC",
+    "Federal Funds Rate",
+    "FOMC Statement",
+    "FOMC Press Conference",
+    "FOMC Meeting Minutes",
+    "Powell",
+    "Fed Chair",
+    "Core PCE",
+    "PCE Price Index",
+    "GDP",
+    "Advance GDP",
+    "Retail Sales",
+    "ISM Manufacturing PMI",
+    "ISM Services PMI",
+    "JOLTS",
+    "ADP",
+    "Unemployment Claims",
+    "Jobless Claims",
 ]
 
 # =========================
@@ -515,3 +560,24 @@ SUPPLY_DEMAND_RETEST_BASE_MIN_SCORE = 92
 # EXTREME SWEEP RECLAIM
 ENABLE_EXTREME_SWEEP_RECLAIM = True
 EXTREME_SWEEP_RECLAIM_BASE_MIN_SCORE = 92
+
+# =========================
+# Opposite Direction / Hedging
+# =========================
+ALLOW_OPPOSITE_DIRECTION_TRADES = True
+
+# =========================
+# Scalp Mode
+# =========================
+ENABLE_SCALP_MODE = True
+
+SCALP_STRATEGIES = [
+    "FVG_CE_MITIGATION",
+    "FAILED_FVG_REVERSAL",
+    "RELIEF_RALLY",
+]
+
+SCALP_MIN_SCORE = 98
+SCALP_MIN_RR = 0.60
+SCALP_MAX_STOP_DISTANCE = 10.0
+SCALP_MIN_TARGET_DISTANCE = 3.0
