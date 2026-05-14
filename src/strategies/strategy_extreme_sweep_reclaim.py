@@ -1,4 +1,5 @@
 from config.settings import ATR_MIN, ATR_MAX
+from src.strategy_debug import reject_strategy
 
 
 EXTREME_LOOKBACK = 30
@@ -51,7 +52,12 @@ def _score_setup(base_score, extreme_move, atr, reclaim_body, structure_shift, e
 
 def generate_signal(df):
     if len(df) < EXTREME_LOOKBACK + 5:
-        return None
+        return reject_strategy(
+            "EXTREME_SWEEP_RECLAIM",
+            "not_enough_data",
+            bars=len(df),
+            required=EXTREME_LOOKBACK + 5,
+        )
 
     entry = df.iloc[-2]
     prev = df.iloc[-3]
@@ -62,29 +68,50 @@ def generate_signal(df):
     price = entry["close"]
 
     if atr < ATR_MIN or atr > ATR_MAX:
-        return None
+        return reject_strategy(
+            "EXTREME_SWEEP_RECLAIM",
+            "atr_out_of_range",
+            atr=round(atr, 2),
+        )
 
     recent = df.iloc[-EXTREME_LOOKBACK:-4]
+
+    if recent.empty:
+        return reject_strategy("EXTREME_SWEEP_RECLAIM", "recent_context_empty")
 
     recent_high = recent["high"].max()
     recent_low = recent["low"].min()
     structure_range = recent_high - recent_low
 
     if structure_range <= 0:
-        return None
+        return reject_strategy(
+            "EXTREME_SWEEP_RECLAIM",
+            "invalid_structure_range",
+            structure_range=round(structure_range, 2),
+        )
 
     impulse_body = abs(impulse["close"] - impulse["open"])
     entry_body = abs(entry["close"] - entry["open"])
     entry_range = entry["high"] - entry["low"]
 
     if impulse_body < atr * MIN_BODY_ATR:
-        return None
+        return reject_strategy(
+            "EXTREME_SWEEP_RECLAIM",
+            "impulse_body_too_small",
+            impulse_body=round(impulse_body, 2),
+            required=round(atr * MIN_BODY_ATR, 2),
+        )
 
     if entry_body < atr * MIN_RECLAIM_BODY_ATR:
-        return None
+        return reject_strategy(
+            "EXTREME_SWEEP_RECLAIM",
+            "reclaim_body_too_small",
+            entry_body=round(entry_body, 2),
+            required=round(atr * MIN_RECLAIM_BODY_ATR, 2),
+        )
 
     if entry_range <= 0:
-        return None
+        return reject_strategy("EXTREME_SWEEP_RECLAIM", "invalid_entry_range")
 
     sl_buffer = _sl_buffer(atr)
     target_distance = _target_distance(atr, structure_range)
@@ -109,7 +136,7 @@ def generate_signal(df):
     )
 
     bullish_structure_shift = entry["close"] > prev["high"]
-    ema_reclaim = price > ema
+    bullish_ema_reclaim = price > ema
 
     if extreme_selloff and swept_recent_low and bullish_reclaim:
         sl_reference = round(min(impulse["low"], entry["low"]) - sl_buffer, 2)
@@ -127,7 +154,13 @@ def generate_signal(df):
         tp_reference = round(tp_reference, 2)
 
         if sl_reference >= entry["close"] or tp_reference <= entry["close"]:
-            return None
+            return reject_strategy(
+                "EXTREME_SWEEP_RECLAIM",
+                "invalid_bullish_sl_tp",
+                entry=round(entry["close"], 2),
+                sl=sl_reference,
+                tp=tp_reference,
+            )
 
         score = _score_setup(
             base_score=92,
@@ -135,7 +168,7 @@ def generate_signal(df):
             atr=atr,
             reclaim_body=entry_body,
             structure_shift=bullish_structure_shift,
-            ema_reclaim=ema_reclaim,
+            ema_reclaim=bullish_ema_reclaim,
         )
 
         return {
@@ -180,7 +213,7 @@ def generate_signal(df):
     )
 
     bearish_structure_shift = entry["close"] < prev["low"]
-    ema_reclaim = price < ema
+    bearish_ema_reclaim = price < ema
 
     if extreme_buyup and swept_recent_high and bearish_reclaim:
         sl_reference = round(max(impulse["high"], entry["high"]) + sl_buffer, 2)
@@ -198,7 +231,13 @@ def generate_signal(df):
         tp_reference = round(tp_reference, 2)
 
         if sl_reference <= entry["close"] or tp_reference >= entry["close"]:
-            return None
+            return reject_strategy(
+                "EXTREME_SWEEP_RECLAIM",
+                "invalid_bearish_sl_tp",
+                entry=round(entry["close"], 2),
+                sl=sl_reference,
+                tp=tp_reference,
+            )
 
         score = _score_setup(
             base_score=92,
@@ -206,7 +245,7 @@ def generate_signal(df):
             atr=atr,
             reclaim_body=entry_body,
             structure_shift=bearish_structure_shift,
-            ema_reclaim=ema_reclaim,
+            ema_reclaim=bearish_ema_reclaim,
         )
 
         return {
@@ -231,4 +270,15 @@ def generate_signal(df):
             ),
         }
 
-    return None
+    return reject_strategy(
+        "EXTREME_SWEEP_RECLAIM",
+        "no_valid_extreme_sweep_reclaim_setup",
+        extreme_selloff=extreme_selloff,
+        swept_recent_low=swept_recent_low,
+        bullish_reclaim=bullish_reclaim,
+        extreme_buyup=extreme_buyup,
+        swept_recent_high=swept_recent_high,
+        bearish_reclaim=bearish_reclaim,
+        impulse_body=round(impulse_body, 2),
+        required_extreme_body=round(atr * MIN_EXTREME_MOVE_ATR, 2),
+    )

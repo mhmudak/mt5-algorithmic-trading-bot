@@ -33,6 +33,23 @@ def load_trades():
         logger.error(f"[TRACKER] Failed to load trades: {e}")
         return {}
 
+def get_open_trades_by_source(source_name, signal=None):
+    trades = load_trades()
+    result = []
+
+    for position_id, trade in trades.items():
+        if trade.get("status") != "OPEN":
+            continue
+
+        if trade.get("source_name") != source_name:
+            continue
+
+        if signal and trade.get("signal") != signal:
+            continue
+
+        result.append((position_id, trade))
+
+    return result
 
 def save_trades(trades):
     tracker_file = get_tracker_file()
@@ -94,12 +111,20 @@ def _build_trade_record(
     session=None,
     reason="N/A",
     tp_buffer=0.0,
+    source_name=None,
+    source_chat=None,
+    source_message_id=None,
+    source_event_type=None,
 ):
     return {
         "position_id": str(position_id),
         "main_position_id": str(main_position_id),
         "trade_role": trade_role,
         "setup_id": setup_id,
+        "source_name": source_name,
+        "source_chat": source_chat,
+        "source_message_id": source_message_id,
+        "source_event_type": source_event_type,
         "entry_model": entry_model,
         "symbol": symbol,
         "signal": signal,
@@ -165,6 +190,10 @@ def register_executed_trade(symbol, signal, trade_plan, result):
         main_position_id=main_position_id,
         trade_role=trade_role,
         setup_id=trade_plan.get("setup_id", "N/A"),
+        source_name=trade_plan.get("source_name"),
+        source_chat=trade_plan.get("source_chat"),
+        source_message_id=trade_plan.get("source_message_id"),
+        source_event_type=trade_plan.get("source_event_type"),
         entry_model=trade_plan.get("entry_model"),
         symbol=symbol,
         signal=signal,
@@ -205,6 +234,7 @@ def register_executed_trade(symbol, signal, trade_plan, result):
         f"TP: {trade_plan['take_profit']}\n"
         f"TP Buffer: {trade_plan.get('tp_buffer', 0.0)}\n"
         f"Setup Score: {trade_plan.get('score', 0)}"
+        f"Source: {trade_plan.get('source_name', 'BOT')}\n"
     )
 
 

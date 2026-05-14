@@ -101,7 +101,7 @@ def execute_trade(signal, trade_plan, symbol):
         "tp": trade_plan["take_profit"],
         "deviation": 10,
         "magic": 123456,
-        "comment": "🤖 MhMud Bot MT5",
+        "comment": trade_plan.get("comment", "🤖 MhMudBot")[:31],
         "type_time": mt5.ORDER_TIME_GTC,
     }
 

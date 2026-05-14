@@ -1,4 +1,5 @@
 from config.settings import ATR_MIN, ATR_MAX
+from src.strategy_debug import reject_strategy
 
 
 AMD_LOOKBACK = 32
@@ -68,7 +69,7 @@ def _score_setup(
 
 def generate_signal(df):
     if len(df) < AMD_LOOKBACK + 5:
-        return None
+        return reject_strategy("AMD_FVG", "not_enough_data", bars=len(df), required=AMD_LOOKBACK + 5)
 
     # Closed-candle structure
     accumulation = df.iloc[-(ACCUMULATION_BARS + 5):-5]
@@ -81,31 +82,45 @@ def generate_signal(df):
     price = entry["close"]
 
     if atr < ATR_MIN or atr > ATR_MAX:
-        return None
+        return reject_strategy("AMD_FVG", "atr_out_of_range", atr=round(atr, 2))
 
     accumulation_high = accumulation["high"].max()
     accumulation_low = accumulation["low"].min()
     accumulation_range = accumulation_high - accumulation_low
 
     if accumulation_range <= 0:
-        return None
+        return reject_strategy("AMD_FVG", "invalid_accumulation_range", range=round(accumulation_range, 2))
 
     if accumulation_range > atr * MAX_ACCUMULATION_RANGE_ATR:
-        return None
+        return reject_strategy(
+            "AMD_FVG",
+            "accumulation_range_too_wide",
+            range=round(accumulation_range, 2),
+            max_allowed=round(atr * MAX_ACCUMULATION_RANGE_ATR, 2),
+        )
 
     if accumulation_range < atr * MIN_ACCUMULATION_RANGE_ATR:
-        return None
+        return reject_strategy(
+            "AMD_FVG",
+            "accumulation_range_too_small",
+            range=round(accumulation_range, 2),
+            min_required=round(atr * MIN_ACCUMULATION_RANGE_ATR, 2),
+        )
 
-    manipulation_body = abs(manipulation["close"] - manipulation["open"])
     displacement_body = abs(displacement["close"] - displacement["open"])
     entry_body = abs(entry["close"] - entry["open"])
     entry_range = entry["high"] - entry["low"]
 
     if entry_range <= 0:
-        return None
+        return reject_strategy("AMD_FVG", "invalid_entry_range")
 
     if displacement_body < atr * MIN_DISPLACEMENT_BODY_ATR:
-        return None
+        return reject_strategy(
+            "AMD_FVG",
+            "displacement_body_too_small",
+            body=round(displacement_body, 2),
+            required=round(atr * MIN_DISPLACEMENT_BODY_ATR, 2),
+        )
 
     sl_buffer = _sl_buffer(atr)
     target_distance = _target_distance(atr, accumulation_range)
@@ -115,14 +130,14 @@ def generate_signal(df):
     # Accumulation -> sell-side manipulation -> close back inside -> bullish displacement + FVG
     # =========================================================
     swept_low = manipulation["low"] < accumulation_low
-    manipulation_depth = accumulation_low - manipulation["low"]
+    buy_manipulation_depth = accumulation_low - manipulation["low"]
 
-    valid_manipulation_depth = (
-        manipulation_depth >= atr * MIN_MANIPULATION_ATR
-        and manipulation_depth <= atr * MAX_MANIPULATION_ATR
+    valid_buy_manipulation_depth = (
+        buy_manipulation_depth >= atr * MIN_MANIPULATION_ATR
+        and buy_manipulation_depth <= atr * MAX_MANIPULATION_ATR
     )
 
-    close_back_inside = (
+    buy_close_back_inside = (
         manipulation["close"] > accumulation_low
         and manipulation["close"] < accumulation_high
     )
@@ -146,18 +161,18 @@ def generate_signal(df):
         and entry["close"] >= entry["low"] + entry_range * 0.60
     )
 
-    entry_extension = entry["close"] - accumulation_high
-    not_late = entry_extension <= atr * MAX_ENTRY_EXTENSION_ATR
+    buy_entry_extension = entry["close"] - accumulation_high
+    buy_not_late = buy_entry_extension <= atr * MAX_ENTRY_EXTENSION_ATR
 
     if (
         swept_low
-        and valid_manipulation_depth
-        and close_back_inside
+        and valid_buy_manipulation_depth
+        and buy_close_back_inside
         and bullish_displacement
         and bullish_fvg_exists
         and bullish_fvg_size > atr * FVG_MIN_SIZE_ATR
         and bullish_reclaim
-        and not_late
+        and buy_not_late
     ):
         sl_reference = round(manipulation["low"] - sl_buffer, 2)
 
@@ -171,15 +186,21 @@ def generate_signal(df):
         tp_reference = round(tp_reference, 2)
 
         if sl_reference >= entry["close"] or tp_reference <= entry["close"]:
-            return None
+            return reject_strategy(
+                "AMD_FVG",
+                "invalid_bullish_sl_tp",
+                entry=round(entry["close"], 2),
+                sl=sl_reference,
+                tp=tp_reference,
+            )
 
         score = _score_setup(
             base_score=92,
             displacement_body=displacement_body,
             atr=atr,
-            manipulation_depth=manipulation_depth,
+            manipulation_depth=buy_manipulation_depth,
             fvg_size=bullish_fvg_size,
-            close_back_inside=close_back_inside,
+            close_back_inside=buy_close_back_inside,
             reclaim_quality=entry["close"] > displacement["high"],
         )
 
@@ -214,14 +235,14 @@ def generate_signal(df):
     # Accumulation -> buy-side manipulation -> close back inside -> bearish displacement + FVG
     # =========================================================
     swept_high = manipulation["high"] > accumulation_high
-    manipulation_depth = manipulation["high"] - accumulation_high
+    sell_manipulation_depth = manipulation["high"] - accumulation_high
 
-    valid_manipulation_depth = (
-        manipulation_depth >= atr * MIN_MANIPULATION_ATR
-        and manipulation_depth <= atr * MAX_MANIPULATION_ATR
+    valid_sell_manipulation_depth = (
+        sell_manipulation_depth >= atr * MIN_MANIPULATION_ATR
+        and sell_manipulation_depth <= atr * MAX_MANIPULATION_ATR
     )
 
-    close_back_inside = (
+    sell_close_back_inside = (
         manipulation["close"] < accumulation_high
         and manipulation["close"] > accumulation_low
     )
@@ -245,18 +266,18 @@ def generate_signal(df):
         and entry["close"] <= entry["high"] - entry_range * 0.60
     )
 
-    entry_extension = accumulation_low - entry["close"]
-    not_late = entry_extension <= atr * MAX_ENTRY_EXTENSION_ATR
+    sell_entry_extension = accumulation_low - entry["close"]
+    sell_not_late = sell_entry_extension <= atr * MAX_ENTRY_EXTENSION_ATR
 
     if (
         swept_high
-        and valid_manipulation_depth
-        and close_back_inside
+        and valid_sell_manipulation_depth
+        and sell_close_back_inside
         and bearish_displacement
         and bearish_fvg_exists
         and bearish_fvg_size > atr * FVG_MIN_SIZE_ATR
         and bearish_reclaim
-        and not_late
+        and sell_not_late
     ):
         sl_reference = round(manipulation["high"] + sl_buffer, 2)
 
@@ -270,15 +291,21 @@ def generate_signal(df):
         tp_reference = round(tp_reference, 2)
 
         if sl_reference <= entry["close"] or tp_reference >= entry["close"]:
-            return None
+            return reject_strategy(
+                "AMD_FVG",
+                "invalid_bearish_sl_tp",
+                entry=round(entry["close"], 2),
+                sl=sl_reference,
+                tp=tp_reference,
+            )
 
         score = _score_setup(
             base_score=92,
             displacement_body=displacement_body,
             atr=atr,
-            manipulation_depth=manipulation_depth,
+            manipulation_depth=sell_manipulation_depth,
             fvg_size=bearish_fvg_size,
-            close_back_inside=close_back_inside,
+            close_back_inside=sell_close_back_inside,
             reclaim_quality=entry["close"] < displacement["low"],
         )
 
@@ -308,4 +335,19 @@ def generate_signal(df):
             ),
         }
 
-    return None
+    return reject_strategy(
+        "AMD_FVG",
+        "no_valid_amd_fvg_setup",
+        swept_low=swept_low,
+        swept_high=swept_high,
+        buy_close_back_inside=buy_close_back_inside,
+        sell_close_back_inside=sell_close_back_inside,
+        bullish_displacement=bullish_displacement,
+        bearish_displacement=bearish_displacement,
+        bullish_fvg_exists=bullish_fvg_exists,
+        bearish_fvg_exists=bearish_fvg_exists,
+        bullish_reclaim=bullish_reclaim,
+        bearish_reclaim=bearish_reclaim,
+        buy_not_late=buy_not_late,
+        sell_not_late=sell_not_late,
+    )

@@ -2,6 +2,7 @@ import MetaTrader5 as mt5
 
 from src.logger import logger
 from src.notifier import send_telegram_message
+from src.order_executor import get_supported_filling_modes
 from src.trade_tracker import load_trades, save_trades, update_trade_statistics
 from config.settings import (
     ENABLE_MAIN_STAGE_MANAGEMENT,
@@ -427,7 +428,7 @@ def close_position_volume(position, close_volume, tick, reason="Partial close"):
         order_type = mt5.ORDER_TYPE_BUY
         price = tick.ask
 
-    request = {
+    base_request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": position.symbol,
         "volume": round(close_volume, 2),
@@ -438,23 +439,43 @@ def close_position_volume(position, close_volume, tick, reason="Partial close"):
         "magic": 123456,
         "comment": "MT5BotPC",
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
     }
 
-    result = mt5.order_send(request)
+    result = None
+    last_error_message = None
 
-    if result is None:
-        logger.error(f"[MANAGER] {reason} failed: {mt5.last_error()}")
-        return False
+    for filling_mode in get_supported_filling_modes(position.symbol):
+        request = base_request.copy()
+        request["type_filling"] = filling_mode
 
-    if result.retcode != mt5.TRADE_RETCODE_DONE:
-        logger.error(f"[MANAGER] {reason} rejected: {result}")
-        return False
+        result = mt5.order_send(request)
 
-    logger.info(
-        f"[MANAGER] {reason} success | ticket={position.ticket} closed_volume={close_volume}"
-    )
-    return True
+        if result is None:
+            last_error_message = (
+                f"{reason} failed with filling={filling_mode}: {mt5.last_error()}"
+            )
+            continue
+
+        if result.retcode == mt5.TRADE_RETCODE_DONE:
+            logger.info(
+                f"[MANAGER] {reason} success | "
+                f"ticket={position.ticket} "
+                f"closed_volume={close_volume} "
+                f"filling_mode={filling_mode}"
+            )
+            return True
+
+        last_error_message = f"{reason} rejected with filling={filling_mode}: {result}"
+
+        # 10030 = unsupported filling mode, try next one.
+        if result.retcode == 10030:
+            continue
+
+        # Other rejection: do not retry blindly.
+        break
+
+    logger.error(f"[MANAGER] {last_error_message}")
+    return False
 
 
 def apply_price_lock(position, direction, trigger_price, lock_profit_price, reason="Price lock"):

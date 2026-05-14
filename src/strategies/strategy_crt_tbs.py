@@ -1,5 +1,5 @@
 from config.settings import ATR_MIN, ATR_MAX
-
+from src.strategy_debug import reject_strategy
 
 CRT_TBS_SL_ATR_MULTIPLIER = 0.20
 CRT_TBS_MIN_SL_BUFFER = 2.0
@@ -40,7 +40,7 @@ def generate_signal(df):
     price = confirm["close"]
 
     if atr < ATR_MIN or atr > ATR_MAX:
-        return None
+        return reject_strategy("CRT_TBS", "atr_out_of_range", atr=atr)
 
     recent = df.iloc[-15:-3]
     range_high = recent["high"].max()
@@ -190,4 +190,11 @@ def generate_signal(df):
             ),
         }
 
-    return None
+    return reject_strategy(
+        "CRT_TBS",
+        "no_valid_crt_tbs_setup",
+        trapped_high=trapped_high,
+        trapped_low=trapped_low,
+        bearish_confirmation=bearish_confirmation,
+        bullish_confirmation=bullish_confirmation,
+    )

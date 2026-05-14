@@ -3,6 +3,7 @@ import pandas as pd
 
 from src.indicators import calculate_ema, calculate_atr
 from src.logger import logger
+from src.strategy_debug import reject_strategy
 from config.settings import (
     SYMBOL,
     EMA_PERIOD,
@@ -48,6 +49,7 @@ def _score_setup(base_score, body, atr, external_confirmed, close_aligned):
 
 def _fetch_symbol_df(symbol: str, bars: int):
     rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME, 0, bars)
+
     if rates is None:
         logger.error(f"[SMT PRO] Failed to fetch rates for {symbol}: {mt5.last_error()}")
         return None
@@ -64,14 +66,33 @@ def _fetch_symbol_df(symbol: str, bars: int):
 
 def generate_signal(df):
     if not ENABLE_EXTERNAL_SMT:
-        return None
+        return reject_strategy("SMT_PRO", "external_smt_disabled")
 
     if len(df) < SMT_LOOKBACK_BARS + 8:
-        return None
+        return reject_strategy(
+            "SMT_PRO",
+            "not_enough_main_data",
+            bars=len(df),
+            required=SMT_LOOKBACK_BARS + 8,
+        )
 
     confirm_df = _fetch_symbol_df(SMT_CONFIRMATION_SYMBOL, len(df))
-    if confirm_df is None or len(confirm_df) < SMT_LOOKBACK_BARS + 8:
-        return None
+
+    if confirm_df is None:
+        return reject_strategy(
+            "SMT_PRO",
+            "confirmation_symbol_unavailable",
+            symbol=SMT_CONFIRMATION_SYMBOL,
+        )
+
+    if len(confirm_df) < SMT_LOOKBACK_BARS + 8:
+        return reject_strategy(
+            "SMT_PRO",
+            "not_enough_confirmation_data",
+            symbol=SMT_CONFIRMATION_SYMBOL,
+            bars=len(confirm_df),
+            required=SMT_LOOKBACK_BARS + 8,
+        )
 
     # Use closed candles only
     df = df.iloc[:-1].reset_index(drop=True)
@@ -88,7 +109,7 @@ def generate_signal(df):
     price = entry["close"]
 
     if atr < ATR_MIN or atr > ATR_MAX:
-        return None
+        return reject_strategy("SMT_PRO", "atr_out_of_range", atr=atr)
 
     main_high_1 = df.iloc[-(SMT_LOOKBACK_BARS + 5):-5]["high"].max()
     main_high_2 = df.iloc[-5:]["high"].max()
@@ -109,7 +130,7 @@ def generate_signal(df):
     candle_range = entry["high"] - entry["low"]
 
     if body <= 0 or candle_range <= 0:
-        return None
+        return reject_strategy("SMT_PRO", "invalid_candle_body_or_range")
 
     upper_wick = entry["high"] - max(entry["open"], entry["close"])
     lower_wick = min(entry["open"], entry["close"]) - entry["low"]
@@ -143,7 +164,7 @@ def generate_signal(df):
         pattern_height = abs(main_high_2 - main_low_2)
 
         if pattern_height <= 0:
-            return None
+            return reject_strategy("SMT_PRO", "invalid_bearish_pattern_height")
 
         sl_reference = round(main_high_2 + sl_buffer, 2)
 
@@ -219,7 +240,7 @@ def generate_signal(df):
         pattern_height = abs(main_high_2 - main_low_2)
 
         if pattern_height <= 0:
-            return None
+            return reject_strategy("SMT_PRO", "invalid_bullish_pattern_height")
 
         sl_reference = round(main_low_2 - sl_buffer, 2)
 
@@ -268,4 +289,17 @@ def generate_signal(df):
             ),
         }
 
-    return None
+    return reject_strategy(
+        "SMT_PRO",
+        "no_valid_smt_pro_setup",
+        main_higher_high=main_higher_high,
+        confirm_no_higher_high=confirm_no_higher_high,
+        bearish_rejection=bearish_rejection,
+        bearish_context=bearish_context,
+        bearish_momentum=bearish_momentum,
+        main_lower_low=main_lower_low,
+        confirm_no_lower_low=confirm_no_lower_low,
+        bullish_rejection=bullish_rejection,
+        bullish_context=bullish_context,
+        bullish_momentum=bullish_momentum,
+    )

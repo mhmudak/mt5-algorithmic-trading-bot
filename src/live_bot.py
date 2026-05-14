@@ -226,18 +226,18 @@ def get_min_rr(strategy_name, entry_model=None, sl_model=None):
     }
 
     if strategy_name in rr_140:
-        return 1.1
+        return 1.15
 
     if strategy_name in rr_130:
-        return 1.0
+        return 1.05
 
     if strategy_name in rr_125:
-        return 0.95
+        return 1.00
 
     if strategy_name in rr_110:
-        return 0.80
+        return 0.85
 
-    return 0.9
+    return 0.95
 
 def calculate_rr_value(trade_plan):
     if not trade_plan:

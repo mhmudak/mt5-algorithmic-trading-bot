@@ -123,7 +123,7 @@ AUTO_NEWS_KEYWORDS = [
 # Execution / Risk Settings
 # =========================
 POSITION_MODE = "fixed"   # "fixed" or "risk"
-FIXED_LOT = 0.06
+FIXED_LOT = 0.05
 RISK_PER_TRADE_PCT = 0.25
 
 # =========================
@@ -583,3 +583,63 @@ SCALP_MIN_SCORE = 98
 SCALP_FIXED_STOP_DISTANCE = 10.0
 SCALP_MIN_TARGET_DISTANCE = 3.5
 SCALP_MAX_TARGET_DISTANCE = 9.0
+
+# =========================
+# Strategy Debugging
+# =========================
+ENABLE_STRATEGY_REJECTION_DEBUG = True
+
+# =========================
+# Telegram External Signal Trading
+# =========================
+ENABLE_TELEGRAM_SIGNAL_TRADING = False
+
+TELEGRAM_SIGNAL_MODE = "ALERT_ONLY"
+# ALERT_ONLY
+# CONFIRMATION
+# AUTO_EXECUTE
+
+TELEGRAM_SIGNAL_SYMBOL = "XAUUSD.m"
+
+ALLOW_TELEGRAM_PRE_SIGNAL_ENTRY = False
+TELEGRAM_PRE_SIGNAL_EMERGENCY_SL_PRICE = 12.0
+TELEGRAM_PRE_SIGNAL_EMERGENCY_TP_PRICE = 8.0
+TELEGRAM_PRE_SIGNAL_LOT = 0.01
+
+TELEGRAM_SIGNAL_DEFAULT_LOT = 0.04
+TELEGRAM_SIGNAL_LOW_RISK_LOT = 0.01
+
+TELEGRAM_SIGNAL_MIN_RR = 0.0
+TELEGRAM_SIGNAL_MAX_ENTRY_DISTANCE = 3.0
+
+# =========================
+# Telegram Source Listener
+# =========================
+ENABLE_TELEGRAM_SIGNAL_LISTENER = True
+
+TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
+TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
+TELEGRAM_USER_SESSION = "telegram_signal_session"
+
+# Keep this safe first
+TELEGRAM_SIGNAL_MODE = "AUTO_EXECUTE"
+# ALERT_ONLY
+# CONFIRMATION
+# AUTO_EXECUTE
+
+TELEGRAM_SIGNAL_SYMBOL = "XAUUSD.m"
+
+TELEGRAM_SIGNAL_SOURCES = [
+    {
+        "name": "Steve",
+        "chat": "/Steve/",
+        "enabled": True,
+        "parser_profile": "STEVE",
+    },
+    {
+        "name": "Nazeh_VIP",
+        "chat": "Nazeh VIP - VIP",
+        "enabled": True,
+        "parser_profile": "NAZEH",
+    },
+]

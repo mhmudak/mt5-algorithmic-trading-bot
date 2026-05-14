@@ -1,4 +1,5 @@
 from config.settings import ATR_MIN, ATR_MAX
+from src.strategy_debug import reject_strategy
 
 
 SMT_SL_ATR_MULTIPLIER = 0.20
@@ -33,7 +34,7 @@ def _score_setup(base_score, body, atr, wick_strength, close_aligned):
 
 def generate_signal(df):
     if len(df) < 45:
-        return None
+        return reject_strategy("SMT", "not_enough_data", bars=len(df), required=45)
 
     closed = df.iloc[:-1].reset_index(drop=True)
     data = closed.iloc[-40:].reset_index(drop=True)
@@ -45,7 +46,7 @@ def generate_signal(df):
     price = entry["close"]
 
     if atr < ATR_MIN or atr > ATR_MAX:
-        return None
+        return reject_strategy("SMT", "atr_out_of_range", atr=atr)
 
     highs = data["high"]
     lows = data["low"]
@@ -63,7 +64,7 @@ def generate_signal(df):
     candle_range = entry["high"] - entry["low"]
 
     if body <= 0 or candle_range <= 0:
-        return None
+        return reject_strategy("SMT", "invalid_body_or_range")
 
     upper_wick = entry["high"] - max(entry["open"], entry["close"])
     lower_wick = min(entry["open"], entry["close"]) - entry["low"]
@@ -75,7 +76,6 @@ def generate_signal(df):
     # Fake higher high / failed continuation
     # =========================================================
     higher_high = recent_high_2 > recent_high_1
-
     weak_close = entry["close"] < recent_high_2 - atr * 0.20
 
     rejection = (
@@ -91,7 +91,7 @@ def generate_signal(df):
         pattern_height = abs(recent_high_2 - recent_low_2)
 
         if pattern_height <= 0:
-            return None
+            return reject_strategy("SMT", "invalid_bearish_pattern_height")
 
         sl_reference = round(recent_high_2 + sl_buffer, 2)
 
@@ -141,7 +141,6 @@ def generate_signal(df):
     # Fake lower low / failed continuation
     # =========================================================
     lower_low = recent_low_2 < recent_low_1
-
     weak_close = entry["close"] > recent_low_2 + atr * 0.20
 
     rejection = (
@@ -157,7 +156,7 @@ def generate_signal(df):
         pattern_height = abs(recent_high_2 - recent_low_2)
 
         if pattern_height <= 0:
-            return None
+            return reject_strategy("SMT", "invalid_bullish_pattern_height")
 
         sl_reference = round(recent_low_2 - sl_buffer, 2)
 
@@ -202,4 +201,15 @@ def generate_signal(df):
             ),
         }
 
-    return None
+    return reject_strategy(
+        "SMT",
+        "no_valid_smt_setup",
+        higher_high=higher_high,
+        lower_low=lower_low,
+        bearish_rejection=rejection if higher_high else None,
+        bullish_rejection=rejection if lower_low else None,
+        bearish_context=bearish_context,
+        bullish_context=bullish_context,
+        bearish_momentum=bearish_momentum,
+        bullish_momentum=bullish_momentum,
+    )
