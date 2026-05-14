@@ -1,15 +1,19 @@
 from config.settings import ATR_MIN, ATR_MAX
 
 
-AMD_LOOKBACK = 28
+AMD_LOOKBACK = 32
 ACCUMULATION_BARS = 10
 
 MAX_ACCUMULATION_RANGE_ATR = 2.8
 MIN_ACCUMULATION_RANGE_ATR = 0.6
 
 MIN_MANIPULATION_ATR = 0.15
+MAX_MANIPULATION_ATR = 1.8
+
 MIN_DISPLACEMENT_BODY_ATR = 0.35
 FVG_MIN_SIZE_ATR = 0.10
+
+MAX_ENTRY_EXTENSION_ATR = 0.80
 
 SL_ATR_BUFFER = 0.20
 MIN_SL_BUFFER = 2.0
@@ -30,7 +34,15 @@ def _target_distance(atr, accumulation_range):
     )
 
 
-def _score_setup(base_score, displacement_body, atr, manipulation_depth, fvg_size):
+def _score_setup(
+    base_score,
+    displacement_body,
+    atr,
+    manipulation_depth,
+    fvg_size,
+    close_back_inside,
+    reclaim_quality,
+):
     score = base_score
 
     if manipulation_depth > atr * 0.30:
@@ -45,6 +57,12 @@ def _score_setup(base_score, displacement_body, atr, manipulation_depth, fvg_siz
     if fvg_size > atr * 0.20:
         score += 2
 
+    if close_back_inside:
+        score += 2
+
+    if reclaim_quality:
+        score += 2
+
     return min(score, 99)
 
 
@@ -52,7 +70,7 @@ def generate_signal(df):
     if len(df) < AMD_LOOKBACK + 5:
         return None
 
-    # Closed candles only
+    # Closed-candle structure
     accumulation = df.iloc[-(ACCUMULATION_BARS + 5):-5]
     manipulation = df.iloc[-4]
     displacement = df.iloc[-3]
@@ -81,6 +99,10 @@ def generate_signal(df):
     manipulation_body = abs(manipulation["close"] - manipulation["open"])
     displacement_body = abs(displacement["close"] - displacement["open"])
     entry_body = abs(entry["close"] - entry["open"])
+    entry_range = entry["high"] - entry["low"]
+
+    if entry_range <= 0:
+        return None
 
     if displacement_body < atr * MIN_DISPLACEMENT_BODY_ATR:
         return None
@@ -89,12 +111,21 @@ def generate_signal(df):
     target_distance = _target_distance(atr, accumulation_range)
 
     # =========================================================
-    # BUY: sell-side manipulation + bullish displacement + bullish FVG
+    # BUY AMD
+    # Accumulation -> sell-side manipulation -> close back inside -> bullish displacement + FVG
     # =========================================================
     swept_low = manipulation["low"] < accumulation_low
     manipulation_depth = accumulation_low - manipulation["low"]
 
-    closed_back_inside = manipulation["close"] > accumulation_low
+    valid_manipulation_depth = (
+        manipulation_depth >= atr * MIN_MANIPULATION_ATR
+        and manipulation_depth <= atr * MAX_MANIPULATION_ATR
+    )
+
+    close_back_inside = (
+        manipulation["close"] > accumulation_low
+        and manipulation["close"] < accumulation_high
+    )
 
     bullish_displacement = (
         displacement["close"] > displacement["open"]
@@ -112,16 +143,21 @@ def generate_signal(df):
         entry["close"] > entry["open"]
         and entry["close"] > bullish_fvg_top
         and entry_body > atr * 0.20
+        and entry["close"] >= entry["low"] + entry_range * 0.60
     )
+
+    entry_extension = entry["close"] - accumulation_high
+    not_late = entry_extension <= atr * MAX_ENTRY_EXTENSION_ATR
 
     if (
         swept_low
-        and manipulation_depth > atr * MIN_MANIPULATION_ATR
-        and closed_back_inside
+        and valid_manipulation_depth
+        and close_back_inside
         and bullish_displacement
         and bullish_fvg_exists
         and bullish_fvg_size > atr * FVG_MIN_SIZE_ATR
         and bullish_reclaim
+        and not_late
     ):
         sl_reference = round(manipulation["low"] - sl_buffer, 2)
 
@@ -143,39 +179,52 @@ def generate_signal(df):
             atr=atr,
             manipulation_depth=manipulation_depth,
             fvg_size=bullish_fvg_size,
+            close_back_inside=close_back_inside,
+            reclaim_quality=entry["close"] > displacement["high"],
         )
 
         return {
             "signal": "BUY",
             "score": score,
             "strategy": "AMD_FVG",
-            "entry_model": "AMD_SELLSIDE_SWEEP_BULLISH_FVG",
+            "entry_model": "AMD_SELLSIDE_SWEEP_BULLISH_FVG_RECLAIM",
             "pattern_height": abs(tp_reference - entry["close"]),
             "accumulation_high": accumulation_high,
             "accumulation_low": accumulation_low,
             "manipulation_low": manipulation["low"],
+            "manipulation_close": manipulation["close"],
             "fvg_bottom": bullish_fvg_bottom,
             "fvg_top": bullish_fvg_top,
             "sl_reference": sl_reference,
             "tp_reference": tp_reference,
             "target_model": target_model,
             "momentum": "bullish_displacement_after_sellside_sweep",
-            "direction_context": "amd_bullish_reversal",
+            "direction_context": "amd_bullish_reversal_close_back_inside_range",
             "reason": (
                 f"AMD FVG BUY -> accumulation {round(accumulation_low, 2)}-{round(accumulation_high, 2)} -> "
-                f"sell-side sweep {round(manipulation['low'], 2)} -> bullish displacement + FVG "
+                f"sell-side manipulation {round(manipulation['low'], 2)} -> "
+                f"closed back inside range -> bullish displacement + FVG "
                 f"{round(bullish_fvg_bottom, 2)}-{round(bullish_fvg_top, 2)} -> "
                 f"SL {sl_reference} -> TP {target_model} {tp_reference}"
             ),
         }
 
     # =========================================================
-    # SELL: buy-side manipulation + bearish displacement + bearish FVG
+    # SELL AMD
+    # Accumulation -> buy-side manipulation -> close back inside -> bearish displacement + FVG
     # =========================================================
     swept_high = manipulation["high"] > accumulation_high
     manipulation_depth = manipulation["high"] - accumulation_high
 
-    closed_back_inside = manipulation["close"] < accumulation_high
+    valid_manipulation_depth = (
+        manipulation_depth >= atr * MIN_MANIPULATION_ATR
+        and manipulation_depth <= atr * MAX_MANIPULATION_ATR
+    )
+
+    close_back_inside = (
+        manipulation["close"] < accumulation_high
+        and manipulation["close"] > accumulation_low
+    )
 
     bearish_displacement = (
         displacement["close"] < displacement["open"]
@@ -193,16 +242,21 @@ def generate_signal(df):
         entry["close"] < entry["open"]
         and entry["close"] < bearish_fvg_bottom
         and entry_body > atr * 0.20
+        and entry["close"] <= entry["high"] - entry_range * 0.60
     )
+
+    entry_extension = accumulation_low - entry["close"]
+    not_late = entry_extension <= atr * MAX_ENTRY_EXTENSION_ATR
 
     if (
         swept_high
-        and manipulation_depth > atr * MIN_MANIPULATION_ATR
-        and closed_back_inside
+        and valid_manipulation_depth
+        and close_back_inside
         and bearish_displacement
         and bearish_fvg_exists
         and bearish_fvg_size > atr * FVG_MIN_SIZE_ATR
         and bearish_reclaim
+        and not_late
     ):
         sl_reference = round(manipulation["high"] + sl_buffer, 2)
 
@@ -224,27 +278,31 @@ def generate_signal(df):
             atr=atr,
             manipulation_depth=manipulation_depth,
             fvg_size=bearish_fvg_size,
+            close_back_inside=close_back_inside,
+            reclaim_quality=entry["close"] < displacement["low"],
         )
 
         return {
             "signal": "SELL",
             "score": score,
             "strategy": "AMD_FVG",
-            "entry_model": "AMD_BUYSIDE_SWEEP_BEARISH_FVG",
+            "entry_model": "AMD_BUYSIDE_SWEEP_BEARISH_FVG_RECLAIM",
             "pattern_height": abs(entry["close"] - tp_reference),
             "accumulation_high": accumulation_high,
             "accumulation_low": accumulation_low,
             "manipulation_high": manipulation["high"],
+            "manipulation_close": manipulation["close"],
             "fvg_bottom": bearish_fvg_bottom,
             "fvg_top": bearish_fvg_top,
             "sl_reference": sl_reference,
             "tp_reference": tp_reference,
             "target_model": target_model,
             "momentum": "bearish_displacement_after_buyside_sweep",
-            "direction_context": "amd_bearish_reversal",
+            "direction_context": "amd_bearish_reversal_close_back_inside_range",
             "reason": (
                 f"AMD FVG SELL -> accumulation {round(accumulation_low, 2)}-{round(accumulation_high, 2)} -> "
-                f"buy-side sweep {round(manipulation['high'], 2)} -> bearish displacement + FVG "
+                f"buy-side manipulation {round(manipulation['high'], 2)} -> "
+                f"closed back inside range -> bearish displacement + FVG "
                 f"{round(bearish_fvg_bottom, 2)}-{round(bearish_fvg_top, 2)} -> "
                 f"SL {sl_reference} -> TP {target_model} {tp_reference}"
             ),

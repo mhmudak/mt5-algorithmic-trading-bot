@@ -22,6 +22,7 @@ BREAKER_MAX_RISK_ATR_MULTIPLIER = 1.5
 BREAKER_TARGET_ATR_MIN = 1.5
 BREAKER_TARGET_ATR_MAX = 3.0
 
+BREAKER_MAX_ENTRY_EXTENSION_ATR = 0.70
 
 def _sl_buffer(atr):
     return min(
@@ -172,7 +173,13 @@ def generate_signal(df):
         and entry["close"] >= entry["low"] + entry_range * 0.60
     )
 
-    if bullish_break and retest_zone_from_above and bullish_reclaim:
+    buy_extension_from_zone = entry["close"] - zone_high
+    buy_not_late = (
+        buy_extension_from_zone >= 0
+        and buy_extension_from_zone <= atr * BREAKER_MAX_ENTRY_EXTENSION_ATR
+    )
+
+    if bullish_break and retest_zone_from_above and bullish_reclaim and buy_not_late:
         entry_price = entry["close"]
 
         sl_reference, sl_model, sl_risk = _choose_buy_sl(
@@ -226,7 +233,9 @@ def generate_signal(df):
             "target_model": target_model,
             "momentum": "bullish_breaker_retest_reclaim",
             "direction_context": "price_above_ema",
+            "entry_extension_from_zone": round(buy_extension_from_zone, 2),
             "reason": (
+                f"entry extension {round(buy_extension_from_zone, 2)} -> "
                 f"Bullish breaker block -> zone {round(zone_low, 2)}-{round(zone_high, 2)} "
                 f"broken upward then retested -> "
                 f"SL {sl_model} {sl_reference} risk={round(sl_risk, 2)} max={round(max_risk, 2)} -> "
@@ -255,7 +264,13 @@ def generate_signal(df):
         and entry["close"] <= entry["high"] - entry_range * 0.60
     )
 
-    if bearish_break and retest_zone_from_below and bearish_reject:
+    sell_extension_from_zone = zone_low - entry["close"]
+    sell_not_late = (
+        sell_extension_from_zone >= 0
+        and sell_extension_from_zone <= atr * BREAKER_MAX_ENTRY_EXTENSION_ATR
+    )
+
+    if bearish_break and retest_zone_from_below and bearish_reject and sell_not_late:
         entry_price = entry["close"]
 
         sl_reference, sl_model, sl_risk = _choose_sell_sl(
@@ -308,8 +323,10 @@ def generate_signal(df):
             "tp_reference": tp_reference,
             "target_model": target_model,
             "momentum": "bearish_breaker_retest_rejection",
+            "entry_extension_from_zone": round(sell_extension_from_zone, 2),
             "direction_context": "price_below_ema",
             "reason": (
+                f"entry extension {round(sell_extension_from_zone, 2)} -> "
                 f"Bearish breaker block -> zone {round(zone_low, 2)}-{round(zone_high, 2)} "
                 f"broken downward then retested -> "
                 f"SL {sl_model} {sl_reference} risk={round(sl_risk, 2)} max={round(max_risk, 2)} -> "
