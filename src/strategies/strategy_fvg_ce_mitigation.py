@@ -8,7 +8,6 @@ MIN_FVG_SIZE_ATR = 0.12
 MIN_REACTION_BODY_ATR = 0.20
 
 CE_TOUCH_BUFFER_ATR = 0.20
-MAX_EXTENSION_FROM_CE_ATR = 0.60
 
 SL_ATR_BUFFER = 0.20
 MIN_SL_BUFFER = 2.0
@@ -29,15 +28,7 @@ def _target_distance(atr, fvg_size):
     )
 
 
-def _score_setup(
-    base_score,
-    body,
-    atr,
-    ce_touched,
-    strong_reaction,
-    clean_context,
-    extension_from_ce,
-):
+def _score_setup(base_score, body, atr, ce_touched, strong_reaction, clean_context):
     score = base_score
 
     if body > atr * 0.30:
@@ -55,17 +46,14 @@ def _score_setup(
     if clean_context:
         score += 2
 
-    # Better score if entry is still close to CE and not chasing.
-    if extension_from_ce <= atr * 0.35:
-        score += 2
-
     return min(score, 99)
 
 
 def _find_recent_bullish_fvg(df, atr):
     """
-    Bullish FVG:
+    Finds a recent bullish FVG:
     c1 high < c3 low.
+    Returns the most recent valid gap.
     """
     closed = df.iloc[:-1].reset_index(drop=True)
 
@@ -98,8 +86,9 @@ def _find_recent_bullish_fvg(df, atr):
 
 def _find_recent_bearish_fvg(df, atr):
     """
-    Bearish FVG:
+    Finds a recent bearish FVG:
     c1 low > c3 high.
+    Returns the most recent valid gap.
     """
     closed = df.iloc[:-1].reset_index(drop=True)
 
@@ -184,11 +173,6 @@ def generate_signal(df):
         )
 
         if ce_touched and reclaimed_fvg and strong_reaction:
-            extension_from_ce = entry["close"] - fvg_mid
-
-            if extension_from_ce > atr * MAX_EXTENSION_FROM_CE_ATR:
-                return None
-
             sl_reference = round(min(entry["low"], fvg_bottom) - sl_buffer, 2)
 
             if recent_high > entry["close"]:
@@ -210,7 +194,6 @@ def generate_signal(df):
                 ce_touched=True,
                 strong_reaction=True,
                 clean_context=price > ema,
-                extension_from_ce=extension_from_ce,
             )
 
             return {
@@ -222,7 +205,6 @@ def generate_signal(df):
                 "fvg_top": fvg_top,
                 "fvg_bottom": fvg_bottom,
                 "fvg_mid": fvg_mid,
-                "entry_extension_from_ce": round(extension_from_ce, 2),
                 "recent_high": recent_high,
                 "recent_low": recent_low,
                 "sl_reference": sl_reference,
@@ -233,7 +215,6 @@ def generate_signal(df):
                 "reason": (
                     f"FVG CE BUY -> bullish FVG {round(fvg_bottom, 2)}-{round(fvg_top, 2)} "
                     f"mitigated near CE {round(fvg_mid, 2)} -> reclaim confirmed -> "
-                    f"extension from CE {round(extension_from_ce, 2)} -> "
                     f"SL {sl_reference} -> TP {target_model} {tp_reference}"
                 ),
             }
@@ -266,11 +247,6 @@ def generate_signal(df):
         )
 
         if ce_touched and rejected_fvg and strong_reaction:
-            extension_from_ce = fvg_mid - entry["close"]
-
-            if extension_from_ce > atr * MAX_EXTENSION_FROM_CE_ATR:
-                return None
-
             sl_reference = round(max(entry["high"], fvg_top) + sl_buffer, 2)
 
             if recent_low < entry["close"]:
@@ -292,7 +268,6 @@ def generate_signal(df):
                 ce_touched=True,
                 strong_reaction=True,
                 clean_context=price < ema,
-                extension_from_ce=extension_from_ce,
             )
 
             return {
@@ -304,7 +279,6 @@ def generate_signal(df):
                 "fvg_top": fvg_top,
                 "fvg_bottom": fvg_bottom,
                 "fvg_mid": fvg_mid,
-                "entry_extension_from_ce": round(extension_from_ce, 2),
                 "recent_high": recent_high,
                 "recent_low": recent_low,
                 "sl_reference": sl_reference,
@@ -315,7 +289,6 @@ def generate_signal(df):
                 "reason": (
                     f"FVG CE SELL -> bearish FVG {round(fvg_bottom, 2)}-{round(fvg_top, 2)} "
                     f"mitigated near CE {round(fvg_mid, 2)} -> rejection confirmed -> "
-                    f"extension from CE {round(extension_from_ce, 2)} -> "
                     f"SL {sl_reference} -> TP {target_model} {tp_reference}"
                 ),
             }

@@ -7,9 +7,6 @@ MIN_FVG_SIZE_ATR = 0.12
 MIN_FAILURE_BODY_ATR = 0.25
 MIN_DISPLACEMENT_BODY_ATR = 0.35
 
-MAX_IMMEDIATE_EXTENSION_ATR = 0.45
-RETEST_BUFFER_ATR = 0.25
-
 SL_ATR_BUFFER = 0.20
 MIN_SL_BUFFER = 2.0
 MAX_SL_BUFFER = 5.0
@@ -29,7 +26,7 @@ def _target_distance(atr, fvg_size):
     )
 
 
-def _score_setup(base_score, body, atr, fvg_size, displacement_ok, close_quality, entry_model):
+def _score_setup(base_score, body, atr, fvg_size, displacement_ok, close_quality):
     score = base_score
 
     if body > atr * 0.35:
@@ -47,13 +44,14 @@ def _score_setup(base_score, body, atr, fvg_size, displacement_ok, close_quality
     if close_quality:
         score += 2
 
-    if entry_model in ["FAILED_BULLISH_FVG_RETEST", "FAILED_BEARISH_FVG_RETEST"]:
-        score += 2
-
     return min(score, 99)
 
 
 def _find_recent_bullish_fvg(df, atr):
+    """
+    Bullish FVG:
+    c1 high < c3 low.
+    """
     closed = df.iloc[:-1].reset_index(drop=True)
 
     for i in range(len(closed) - 4, max(2, len(closed) - FAILED_FVG_LOOKBACK), -1):
@@ -83,6 +81,10 @@ def _find_recent_bullish_fvg(df, atr):
 
 
 def _find_recent_bearish_fvg(df, atr):
+    """
+    Bearish FVG:
+    c1 low > c3 high.
+    """
     closed = df.iloc[:-1].reset_index(drop=True)
 
     for i in range(len(closed) - 4, max(2, len(closed) - FAILED_FVG_LOOKBACK), -1):
@@ -109,16 +111,6 @@ def _find_recent_bearish_fvg(df, atr):
             }
 
     return None
-
-
-def _recent_close_below(df, level, bars=5):
-    recent = df.iloc[-(bars + 2):-2]
-    return any(recent["close"] < level)
-
-
-def _recent_close_above(df, level, bars=5):
-    recent = df.iloc[-(bars + 2):-2]
-    return any(recent["close"] > level)
 
 
 def generate_signal(df):
@@ -149,7 +141,6 @@ def generate_signal(df):
     recent_low = recent["low"].min()
 
     sl_buffer = _sl_buffer(atr)
-    retest_buffer = atr * RETEST_BUFFER_ATR
 
     # =========================================================
     # SELL: bullish FVG fails
@@ -162,45 +153,21 @@ def generate_signal(df):
         fvg_mid = bullish_fvg["fvg_mid"]
         fvg_size = bullish_fvg["fvg_size"]
 
-        close_below_fvg = entry["close"] < fvg_bottom
-        prior_failure = _recent_close_below(df, fvg_bottom)
-
-        immediate_extension = fvg_bottom - entry["close"]
-        immediate_not_late = (
-            immediate_extension >= 0
-            and immediate_extension <= atr * MAX_IMMEDIATE_EXTENSION_ATR
-        )
-
-        immediate_failure = (
-            close_below_fvg
+        fvg_failed = (
+            entry["close"] < fvg_bottom
             and prev["low"] <= fvg_top
-            and immediate_not_late
-        )
-
-        retest_failure = (
-            prior_failure
-            and entry["high"] >= fvg_bottom - retest_buffer
-            and entry["close"] < fvg_bottom
         )
 
         bearish_displacement = (
             entry["close"] < entry["open"]
+            and entry["close"] < prev["low"]
             and body > atr * MIN_DISPLACEMENT_BODY_ATR
         )
 
-        bearish_structure_shift = entry["close"] < prev["low"]
         ema_context = price < ema
         close_quality = entry["close"] <= entry["high"] - candle_range * 0.65
 
-        entry_model = None
-
-        if immediate_failure and bearish_displacement and bearish_structure_shift and close_quality:
-            entry_model = "FAILED_BULLISH_FVG_IMMEDIATE"
-
-        elif retest_failure and bearish_displacement and close_quality:
-            entry_model = "FAILED_BULLISH_FVG_RETEST"
-
-        if entry_model:
+        if fvg_failed and bearish_displacement and close_quality:
             sl_reference = round(max(entry["high"], fvg_top) + sl_buffer, 2)
 
             if recent_low < entry["close"]:
@@ -222,14 +189,13 @@ def generate_signal(df):
                 fvg_size=fvg_size,
                 displacement_ok=bearish_displacement,
                 close_quality=close_quality,
-                entry_model=entry_model,
             )
 
             return {
                 "signal": "SELL",
                 "score": score,
                 "strategy": "FAILED_FVG_REVERSAL",
-                "entry_model": entry_model,
+                "entry_model": "FAILED_BULLISH_FVG_REVERSAL",
                 "pattern_height": abs(entry["close"] - tp_reference),
                 "failed_fvg_top": fvg_top,
                 "failed_fvg_bottom": fvg_bottom,
@@ -246,7 +212,7 @@ def generate_signal(df):
                 "reason": (
                     f"Failed bullish FVG SELL -> bullish FVG "
                     f"{round(fvg_bottom, 2)}-{round(fvg_top, 2)} failed -> "
-                    f"entry_model={entry_model} -> bearish displacement confirmed -> "
+                    f"bearish displacement confirmed -> "
                     f"SL {sl_reference} -> TP {target_model} {tp_reference}"
                 ),
             }
@@ -262,45 +228,21 @@ def generate_signal(df):
         fvg_mid = bearish_fvg["fvg_mid"]
         fvg_size = bearish_fvg["fvg_size"]
 
-        close_above_fvg = entry["close"] > fvg_top
-        prior_failure = _recent_close_above(df, fvg_top)
-
-        immediate_extension = entry["close"] - fvg_top
-        immediate_not_late = (
-            immediate_extension >= 0
-            and immediate_extension <= atr * MAX_IMMEDIATE_EXTENSION_ATR
-        )
-
-        immediate_failure = (
-            close_above_fvg
+        fvg_failed = (
+            entry["close"] > fvg_top
             and prev["high"] >= fvg_bottom
-            and immediate_not_late
-        )
-
-        retest_failure = (
-            prior_failure
-            and entry["low"] <= fvg_top + retest_buffer
-            and entry["close"] > fvg_top
         )
 
         bullish_displacement = (
             entry["close"] > entry["open"]
+            and entry["close"] > prev["high"]
             and body > atr * MIN_DISPLACEMENT_BODY_ATR
         )
 
-        bullish_structure_shift = entry["close"] > prev["high"]
         ema_context = price > ema
         close_quality = entry["close"] >= entry["low"] + candle_range * 0.65
 
-        entry_model = None
-
-        if immediate_failure and bullish_displacement and bullish_structure_shift and close_quality:
-            entry_model = "FAILED_BEARISH_FVG_IMMEDIATE"
-
-        elif retest_failure and bullish_displacement and close_quality:
-            entry_model = "FAILED_BEARISH_FVG_RETEST"
-
-        if entry_model:
+        if fvg_failed and bullish_displacement and close_quality:
             sl_reference = round(min(entry["low"], fvg_bottom) - sl_buffer, 2)
 
             if recent_high > entry["close"]:
@@ -322,14 +264,13 @@ def generate_signal(df):
                 fvg_size=fvg_size,
                 displacement_ok=bullish_displacement,
                 close_quality=close_quality,
-                entry_model=entry_model,
             )
 
             return {
                 "signal": "BUY",
                 "score": score,
                 "strategy": "FAILED_FVG_REVERSAL",
-                "entry_model": entry_model,
+                "entry_model": "FAILED_BEARISH_FVG_REVERSAL",
                 "pattern_height": abs(tp_reference - entry["close"]),
                 "failed_fvg_top": fvg_top,
                 "failed_fvg_bottom": fvg_bottom,
@@ -346,7 +287,7 @@ def generate_signal(df):
                 "reason": (
                     f"Failed bearish FVG BUY -> bearish FVG "
                     f"{round(fvg_bottom, 2)}-{round(fvg_top, 2)} failed -> "
-                    f"entry_model={entry_model} -> bullish displacement confirmed -> "
+                    f"bullish displacement confirmed -> "
                     f"SL {sl_reference} -> TP {target_model} {tp_reference}"
                 ),
             }

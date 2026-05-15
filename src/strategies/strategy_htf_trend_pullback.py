@@ -5,7 +5,6 @@ PULLBACK_LOOKBACK = 30
 
 PULLBACK_VALUE_ATR_BUFFER = 0.35
 PULLBACK_MIN_BODY_ATR = 0.20
-PULLBACK_MAX_ENTRY_EXTENSION_ATR = 0.70
 
 PULLBACK_SL_ATR_MULTIPLIER = 0.25
 PULLBACK_MIN_SL_BUFFER = 2.0
@@ -85,7 +84,7 @@ def _choose_sell_sl(entry_price, pullback_high, recent_high, sl_buffer, max_stop
     return None, "SL_TOO_TIGHT_OR_TOO_WIDE", None
 
 
-def _score_setup(base_score, body, atr, close_aligned, rejection_strength, sl_model, entry_extension):
+def _score_setup(base_score, body, atr, close_aligned, rejection_strength, sl_model):
     score = base_score
 
     if body > atr * 0.30:
@@ -103,14 +102,11 @@ def _score_setup(base_score, body, atr, close_aligned, rejection_strength, sl_mo
     if sl_model in ["RECENT_STRUCTURE_LOW_SL", "RECENT_STRUCTURE_HIGH_SL"]:
         score += 1
 
-    if entry_extension <= atr * 0.40:
-        score += 1
-
     return min(score, 99)
 
 
 def generate_signal(df):
-    if len(df) < PULLBACK_LOOKBACK + 8:
+    if len(df) < PULLBACK_LOOKBACK + 5:
         return None
 
     entry = df.iloc[-2]
@@ -170,11 +166,6 @@ def generate_signal(df):
         entry_price = entry["close"]
         pullback_low = min(entry["low"], prev["low"])
 
-        entry_extension = entry_price - ema
-
-        if entry_extension > atr * PULLBACK_MAX_ENTRY_EXTENSION_ATR:
-            return None
-
         sl_reference, sl_model, sl_risk = _choose_buy_sl(
             entry_price=entry_price,
             pullback_low=pullback_low,
@@ -205,7 +196,6 @@ def generate_signal(df):
             close_aligned=price > ema,
             rejection_strength=lower_wick > body * 1.2,
             sl_model=sl_model,
-            entry_extension=entry_extension,
         )
 
         return {
@@ -217,7 +207,6 @@ def generate_signal(df):
             "recent_high": recent_high,
             "recent_low": recent_low,
             "ema_value": ema,
-            "entry_extension_from_ema": round(entry_extension, 2),
             "sl_reference": sl_reference,
             "sl_model": sl_model,
             "sl_risk": round(sl_risk, 2),
@@ -229,7 +218,6 @@ def generate_signal(df):
             "reason": (
                 f"HTF trend pullback BUY -> price pulled back near EMA {round(ema, 2)} -> "
                 f"bullish reclaim confirmed -> "
-                f"entry extension {round(entry_extension, 2)} -> "
                 f"SL {sl_model} {sl_reference} risk={round(sl_risk, 2)} max={round(max_stop_distance, 2)} -> "
                 f"TP {target_model} {tp_reference}"
             ),
@@ -255,11 +243,6 @@ def generate_signal(df):
     if bearish_context and pulled_back_to_value and bearish_rejection:
         entry_price = entry["close"]
         pullback_high = max(entry["high"], prev["high"])
-
-        entry_extension = ema - entry_price
-
-        if entry_extension > atr * PULLBACK_MAX_ENTRY_EXTENSION_ATR:
-            return None
 
         sl_reference, sl_model, sl_risk = _choose_sell_sl(
             entry_price=entry_price,
@@ -291,7 +274,6 @@ def generate_signal(df):
             close_aligned=price < ema,
             rejection_strength=upper_wick > body * 1.2,
             sl_model=sl_model,
-            entry_extension=entry_extension,
         )
 
         return {
@@ -303,7 +285,6 @@ def generate_signal(df):
             "recent_high": recent_high,
             "recent_low": recent_low,
             "ema_value": ema,
-            "entry_extension_from_ema": round(entry_extension, 2),
             "sl_reference": sl_reference,
             "sl_model": sl_model,
             "sl_risk": round(sl_risk, 2),
@@ -315,7 +296,6 @@ def generate_signal(df):
             "reason": (
                 f"HTF trend pullback SELL -> price pulled back near EMA {round(ema, 2)} -> "
                 f"bearish rejection confirmed -> "
-                f"entry extension {round(entry_extension, 2)} -> "
                 f"SL {sl_model} {sl_reference} risk={round(sl_risk, 2)} max={round(max_stop_distance, 2)} -> "
                 f"TP {target_model} {tp_reference}"
             ),
