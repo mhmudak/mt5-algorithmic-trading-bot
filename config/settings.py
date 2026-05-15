@@ -19,7 +19,7 @@ TELEGRAM_VERBOSE_SIGNALS = False
 # =========================
 # Market / Data Settings
 # =========================
-SYMBOL = "XAUUSD.m"
+SYMBOL = "XAUUSD"
 TIMEFRAME = mt5.TIMEFRAME_M15
 BARS_TO_FETCH = 100
 
@@ -147,7 +147,7 @@ COOLDOWN_MINUTES = 1
 # Execution Price Drift Guard
 # =========================
 ENABLE_PRICE_DRIFT_GUARD = True
-MAX_ENTRY_PRICE_DRIFT = 0.30
+MAX_ENTRY_PRICE_DRIFT = 0.66
 
 # =========================
 # Cooldown After SL Hit
@@ -397,7 +397,7 @@ MARKET_THRESHOLD_MODIFIERS = {
 # External SMT Confirmation
 # =========================
 ENABLE_EXTERNAL_SMT = True
-SMT_CONFIRMATION_SYMBOL = "XAGUSD.m"
+SMT_CONFIRMATION_SYMBOL = "XAGUSD"
 SMT_LOOKBACK_BARS = 20
 
 # =========================
@@ -408,13 +408,13 @@ ENABLE_EXTERNAL_MACRO_CONFIRMATION = True
 # Use your broker's exact symbols.
 # If a symbol does not exist on your broker, the engine will skip it safely.
 EXTERNAL_MACRO_CONFIRMATIONS = [
-    # {
-    #     "symbol": "DXY",
-    #     "mode": "INVERSE",
-    #     "weight": 2,
-    # },
     {
-        "symbol": "USDJPY.m",
+        "symbol": "DXY",
+        "mode": "INVERSE",
+        "weight": 2,
+    },
+    {
+        "symbol": "USDJPY",
         "mode": "INVERSE",
         "weight": 1,
     },
@@ -583,3 +583,109 @@ SCALP_MIN_SCORE = 98
 SCALP_FIXED_STOP_DISTANCE = 10.0
 SCALP_MIN_TARGET_DISTANCE = 3.5
 SCALP_MAX_TARGET_DISTANCE = 9.0
+
+# =========================
+# Telegram External Signal Trading
+# =========================
+ENABLE_TELEGRAM_SIGNAL_TRADING = False
+
+TELEGRAM_SIGNAL_MODE = "ALERT_ONLY"
+# ALERT_ONLY
+# CONFIRMATION
+# AUTO_EXECUTE
+
+TELEGRAM_SIGNAL_SYMBOL = "XAUUSD"
+
+ALLOW_TELEGRAM_PRE_SIGNAL_ENTRY = False
+TELEGRAM_PRE_SIGNAL_EMERGENCY_SL_PRICE = 12.0
+TELEGRAM_PRE_SIGNAL_EMERGENCY_TP_PRICE = 8.0
+TELEGRAM_PRE_SIGNAL_LOT = 0.01
+
+TELEGRAM_SIGNAL_DEFAULT_LOT = 0.04
+TELEGRAM_SIGNAL_LOW_RISK_LOT = 0.01
+
+TELEGRAM_SIGNAL_MIN_RR = 0.0
+TELEGRAM_SIGNAL_MAX_ENTRY_DISTANCE = 3.0
+
+# =========================
+# Telegram Source Listener
+# =========================
+ENABLE_TELEGRAM_SIGNAL_LISTENER = True
+
+TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
+TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
+TELEGRAM_USER_SESSION = "telegram_signal_session"
+
+TELEGRAM_SIGNAL_MODE = "AUTO_EXECUTE"
+# ALERT_ONLY / CONFIRMATION / AUTO_EXECUTE
+
+TELEGRAM_SIGNAL_SYMBOL = "XAUUSD"
+
+ALLOW_TELEGRAM_SIGNAL_WITHOUT_TP = True
+TELEGRAM_NO_TP_LOT = 0.05
+
+TELEGRAM_SIGNAL_SOURCES = [
+    {
+        "name": "Steve",
+        "chat": 3480309161,
+        "enabled": True,
+        "parser_profile": "STEVE",
+    },
+    {
+        "name": "Nazeh_VIP",
+        "chat": 2629691581,
+        "enabled": True,
+        "parser_profile": "NAZEH",
+    },
+]
+
+# =========================
+# Delayed Retrace Entry
+# =========================
+ENABLE_DELAYED_RETRACE_ENTRY = True
+DELAYED_ENTRY_OFFSET_PRICE = 5.5
+DELAYED_ENTRY_EXPIRY_MINUTES = 15
+
+DELAYED_ENTRY_SKIP_IF_RR_ABOVE = 1.5
+DELAYED_ENTRY_CANCEL_IF_PROFIT_MISSED = 5.0
+
+# Split Delayed Entry
+ENABLE_SPLIT_DELAYED_ENTRY = True
+SPLIT_DELAYED_ENTRY_IMMEDIATE_PCT = 0.50
+
+DELAYED_ENTRY_STRATEGIES = [
+    "FVG_CE_MITIGATION",
+    "ORDER_BLOCK",
+    "BREAKER_BLOCK",
+    "HTF_TREND_PULLBACK",
+    "RELIEF_RALLY",
+    "FAILED_FVG_REVERSAL",
+    "FVG",
+    "OB_FVG_COMBO",
+    "MTF_SR_FVG_RECLAIM",
+]
+
+# Hybrid Delayed Entry Confirmation
+ENABLE_DELAYED_ENTRY_CONFIRMATION = True
+
+# Use M1 first. If noisy, change to mt5.TIMEFRAME_M5.
+DELAYED_ENTRY_CONFIRMATION_TIMEFRAME = mt5.TIMEFRAME_M5
+DELAYED_ENTRY_CONFIRMATION_BARS = 80
+
+DELAYED_ENTRY_CONFIRMATION_BUFFER_PRICE = 0.50
+DELAYED_ENTRY_MIN_BODY_ATR = 0.10
+
+# Market-condition based delayed-entry offset
+DELAYED_ENTRY_OFFSET_BY_MARKET = {
+    "TRENDING": 4.5,
+    "PULLBACK_TREND": 2.5,
+    "RANGING": 3.5,
+    "VOLATILE": 5.5,
+    "PENDING": 4.5,
+}
+
+# =========================
+# MTF_SR_FVG_RECLAIM
+# =========================
+ENABLE_MTF_SR_FVG_RECLAIM = True
+MTF_SR_FVG_RECLAIM_BASE_MIN_SCORE = 93

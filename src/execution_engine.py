@@ -116,6 +116,7 @@ class ExecutionEngine:
                 "INVALIDATED",
                 "EXPIRED",
                 "WAIT_BETTER_ENTRY",
+                "WAIT_DELAYED_ENTRY",
                 "EXECUTION_FAILED",
                 "SKIPPED",
             ]:
@@ -317,6 +318,32 @@ class ExecutionEngine:
             if datetime.utcnow() > setup["expires_at"]:
                 setup["state"] = "EXPIRED"
                 setup["wait_reason"] = "Better-entry setup expired"
+                continue
+
+            valid_setups.append(setup)
+
+        return valid_setups
+
+    def mark_wait_delayed_entry(self, setup, target_entry_price, expiry_minutes):
+        setup["state"] = "WAIT_DELAYED_ENTRY"
+        setup["wait_reason"] = (
+            f"Waiting for delayed retrace entry | target={target_entry_price}"
+        )
+        setup["delayed_entry_target"] = target_entry_price
+        setup["delayed_entry_started_at"] = datetime.utcnow()
+        setup["expires_at"] = datetime.utcnow() + timedelta(minutes=expiry_minutes)
+
+
+    def get_wait_delayed_entry_setups(self):
+        valid_setups = []
+
+        for setup in self.active_setups:
+            if setup.get("state") != "WAIT_DELAYED_ENTRY":
+                continue
+
+            if datetime.utcnow() > setup["expires_at"]:
+                setup["state"] = "EXPIRED"
+                setup["wait_reason"] = "Delayed entry setup expired"
                 continue
 
             valid_setups.append(setup)

@@ -95,6 +95,19 @@ from config.settings import (
     SCALP_FIXED_STOP_DISTANCE,
     SCALP_MIN_TARGET_DISTANCE,
     SCALP_MAX_TARGET_DISTANCE,
+    ENABLE_DELAYED_RETRACE_ENTRY,
+    DELAYED_ENTRY_OFFSET_PRICE,
+    DELAYED_ENTRY_EXPIRY_MINUTES,
+    DELAYED_ENTRY_STRATEGIES,
+    ENABLE_SPLIT_DELAYED_ENTRY,
+    SPLIT_DELAYED_ENTRY_IMMEDIATE_PCT,
+    ENABLE_DELAYED_ENTRY_CONFIRMATION,
+    DELAYED_ENTRY_CONFIRMATION_TIMEFRAME,
+    DELAYED_ENTRY_CONFIRMATION_BARS,
+    DELAYED_ENTRY_CONFIRMATION_BUFFER_PRICE,
+    DELAYED_ENTRY_MIN_BODY_ATR,
+    DELAYED_ENTRY_OFFSET_BY_MARKET,
+    ENABLE_MTF_SR_FVG_RECLAIM,
 )
 
 from src.structure_liquidity_context import (
@@ -143,6 +156,7 @@ STRATEGY_SPECIFIC_CONFIRMED = {
     "HTF_FIB_CONFLUENCE",
     "SUPPLY_DEMAND_RETEST",
     "EXTREME_SWEEP_RECLAIM",
+    "MTF_SR_FVG_RECLAIM",
 }
 
 def fetch_market_data():
@@ -259,6 +273,111 @@ def calculate_rr_value(trade_plan):
         return None
 
     return None
+
+def split_lot_for_delayed_entry(symbol, total_lot, immediate_pct):
+    symbol_info = mt5.symbol_info(symbol)
+
+    if symbol_info is None:
+        return total_lot, 0.0
+
+    min_volume = symbol_info.volume_min
+    step = symbol_info.volume_step
+
+    def round_volume(volume):
+        rounded = round(round(volume / step) * step, 2)
+        return max(rounded, 0.0)
+
+    immediate_lot = round_volume(total_lot * immediate_pct)
+    delayed_lot = round_volume(total_lot - immediate_lot)
+
+    if immediate_lot < min_volume:
+        return total_lot, 0.0
+
+    if delayed_lot < min_volume:
+        return total_lot, 0.0
+
+    return immediate_lot, delayed_lot
+
+def get_delayed_entry_offset(market_condition):
+    return DELAYED_ENTRY_OFFSET_BY_MARKET.get(
+        market_condition,
+        DELAYED_ENTRY_OFFSET_PRICE,
+    )
+
+
+def fetch_delayed_confirmation_data():
+    rates = mt5.copy_rates_from_pos(
+        SYMBOL,
+        DELAYED_ENTRY_CONFIRMATION_TIMEFRAME,
+        0,
+        DELAYED_ENTRY_CONFIRMATION_BARS,
+    )
+
+    if rates is None or len(rates) < 10:
+        return None
+
+    confirm_df = pd.DataFrame(rates)
+    confirm_df["time"] = pd.to_datetime(confirm_df["time"], unit="s")
+    confirm_df["ema_20"] = calculate_ema(confirm_df, EMA_PERIOD)
+    confirm_df["atr_14"] = calculate_atr(confirm_df, ATR_PERIOD)
+
+    return confirm_df
+
+
+def delayed_entry_confirmation_ok(signal, target_entry):
+    if not ENABLE_DELAYED_ENTRY_CONFIRMATION:
+        return True, "confirmation_disabled"
+
+    confirm_df = fetch_delayed_confirmation_data()
+
+    if confirm_df is None:
+        return False, "no_confirmation_data"
+
+    candle = confirm_df.iloc[-2]
+    prev = confirm_df.iloc[-3]
+
+    atr = candle["atr_14"]
+    body = abs(candle["close"] - candle["open"])
+
+    if atr <= 0:
+        return False, "invalid_confirmation_atr"
+
+    if body < atr * DELAYED_ENTRY_MIN_BODY_ATR:
+        return False, "confirmation_body_too_small"
+
+    buffer = DELAYED_ENTRY_CONFIRMATION_BUFFER_PRICE
+
+    if signal == "BUY":
+        touched_target = candle["low"] <= target_entry + buffer
+        bullish_confirmation = (
+            candle["close"] > candle["open"]
+            and (
+                candle["close"] > target_entry
+                or candle["close"] > prev["high"]
+            )
+        )
+
+        if touched_target and bullish_confirmation:
+            return True, "m1_bullish_reclaim"
+
+        return False, "m1_bullish_reclaim_not_confirmed"
+
+    if signal == "SELL":
+        touched_target = candle["high"] >= target_entry - buffer
+        bearish_confirmation = (
+            candle["close"] < candle["open"]
+            and (
+                candle["close"] < target_entry
+                or candle["close"] < prev["low"]
+            )
+        )
+
+        if touched_target and bearish_confirmation:
+            return True, "m1_bearish_rejection"
+
+        return False, "m1_bearish_rejection_not_confirmed"
+
+    return False, "invalid_signal"
 
 def get_scalp_sl_reference(df, signal, entry_price, signal_data):
     signal_candle = df.iloc[-2]
@@ -776,6 +895,185 @@ def process_wait_better_entry_setups(df, tick, account_info, market_condition, s
 
     return False
 
+def process_wait_delayed_entry_setups(df, tick, account_info, market_condition, session_name):
+    delayed_setups = execution_engine.get_wait_delayed_entry_setups()
+
+    if not delayed_setups:
+        return False
+
+    delayed_setups = sorted(
+        delayed_setups,
+        key=lambda setup: setup["data"].get("score", 0),
+        reverse=True,
+    )
+
+    for setup in delayed_setups:
+        setup_data = setup["data"]
+        signal = setup_data.get("signal")
+        strategy_name = setup_data.get("strategy")
+        target_entry = setup.get("delayed_entry_target")
+
+        if signal not in ["BUY", "SELL"] or target_entry is None:
+            continue
+
+        current_price = tick.ask if signal == "BUY" else tick.bid
+
+        if signal == "BUY" and current_price > target_entry:
+            logger.info(
+                f"[DELAYED ENTRY] BUY not reached yet | "
+                f"current={current_price} target={target_entry}"
+            )
+            continue
+
+        if signal == "SELL" and current_price < target_entry:
+            logger.info(
+                f"[DELAYED ENTRY] SELL not reached yet | "
+                f"current={current_price} target={target_entry}"
+            )
+            continue
+
+        confirmed, confirmation_reason = delayed_entry_confirmation_ok(
+            signal,
+            target_entry,
+        )
+
+        if not confirmed:
+            logger.info(
+                f"[DELAYED ENTRY] Confirmation not ready | "
+                f"strategy={strategy_name} signal={signal} "
+                f"reason={confirmation_reason}"
+            )
+            continue
+
+        trade_plan = calculate_trade_plan(
+            df=df,
+            signal=signal,
+            tick=tick,
+            account_balance=account_info.balance,
+            signal_data=setup_data,
+        )
+
+        if trade_plan is None:
+            logger.info(
+                f"[DELAYED ENTRY] Trade plan failed | "
+                f"strategy={strategy_name} signal={signal}"
+            )
+            continue
+
+        trade_plan["score"] = setup_data.get("score", 0)
+        trade_plan["strategy"] = strategy_name
+        trade_plan["market_condition"] = market_condition
+        trade_plan["reason"] = setup_data.get("reason", "N/A")
+        trade_plan["session"] = setup_data.get("session", session_name)
+        trade_plan["setup_id"] = setup_data.get("setup_id", "N/A")
+
+        delayed_lot = setup.get("delayed_entry_lot")
+
+        if delayed_lot:
+            trade_plan["lot"] = delayed_lot
+            trade_plan["reason"] = (
+                f"{trade_plan.get('reason', '')} | SPLIT_DELAYED_ENTRY remaining lot"
+            )
+
+        rr_value = calculate_rr_value(trade_plan)
+        min_rr_required = get_min_rr(
+            strategy_name,
+            setup_data.get("entry_model"),
+            setup_data.get("sl_model"),
+        )
+
+        if rr_value is None or rr_value < min_rr_required:
+            logger.info(
+                f"[DELAYED ENTRY] RR invalid | "
+                f"strategy={strategy_name} rr={rr_value} required={min_rr_required}"
+            )
+            continue
+
+        news_blocked, news_reason = is_news_blackout_active()
+        if news_blocked:
+            logger.info(f"[DELAYED ENTRY] News blocked | {news_reason}")
+            continue
+
+        time_blocked, time_reason = is_trading_blackout_active()
+        if time_blocked:
+            logger.info(f"[DELAYED ENTRY] Time blocked | {time_reason}")
+            continue
+
+        trade_allowed, guard_reason = check_trade_guard(signal, tick)
+
+        if not trade_allowed:
+            logger.info(
+                f"[DELAYED ENTRY] Guard blocked | "
+                f"strategy={strategy_name} reason={guard_reason}"
+            )
+            continue
+
+        from src.position_guard import has_same_direction_position
+
+        opposite = "SELL" if signal == "BUY" else "BUY"
+
+        if has_same_direction_position(SYMBOL, opposite):
+            setup["state"] = "SKIPPED"
+            setup["wait_reason"] = "Skipped because opposite position exists"
+            logger.info("[DELAYED ENTRY] Opposite position exists → skipped")
+            continue
+
+        send_telegram_message(
+            f"✅ Delayed Entry Reached #{setup_data.get('setup_id', 'N/A')}\n"
+            f"Symbol: {SYMBOL}\n"
+            f"Strategy: {strategy_name}\n"
+            f"Signal: {signal}\n\n"
+            f"Target Entry: {target_entry}\n"
+            f"Actual Entry: {trade_plan['entry_price']}\n"
+            f"SL: {trade_plan['stop_loss']}\n"
+            f"TP: {trade_plan['take_profit']}\n"
+            f"RR: {rr_value} / Required: {min_rr_required}"
+            f"Confirmation: {confirmation_reason}\n"
+        )
+
+        log_setup_event(
+            setup_id=setup_data.get("setup_id"),
+            event="SPLIT_DELAYED_EXECUTION_ATTEMPT",
+            strategy=strategy_name,
+            signal=signal,
+            entry_model=trade_plan.get("entry_model") or setup_data.get("entry_model"),
+            score=setup_data.get("score", 0),
+            session=setup_data.get("session", session_name),
+            market_condition=market_condition,
+            entry=trade_plan["entry_price"],
+            sl=trade_plan["stop_loss"],
+            tp=trade_plan["take_profit"],
+            rr=rr_value,
+            required_rr=min_rr_required,
+            reason=trade_plan.get("reason", "Split delayed entry remaining execution"),
+            extra={
+                "is_split_delayed_entry": True,
+                "split_part": "DELAYED",
+                "delayed_lot": trade_plan.get("lot"),
+                "delayed_target": setup.get("delayed_entry_target"),
+            },
+        )
+
+        execution_result = execute_trade(signal, trade_plan, SYMBOL)
+
+        if execution_result:
+            execution_engine.mark_executed(setup)
+            return True
+
+        setup["state"] = "EXECUTION_FAILED"
+        setup["wait_reason"] = "Delayed entry execution failed"
+
+        send_telegram_message(
+            f"❌ Delayed Entry Execution Failed\n"
+            f"Symbol: {SYMBOL}\n"
+            f"Strategy: {strategy_name}\n"
+            f"Signal: {signal}"
+        )
+
+        return False
+
+    return False
+
 def process_cycle(last_processed_candle_time):
     global last_signal, reversal_count
 
@@ -824,6 +1122,20 @@ def process_cycle(last_processed_candle_time):
     # =========================
     if ENABLE_WAIT_FOR_BETTER_ENTRY:
         if process_wait_better_entry_setups(
+            df=df,
+            tick=tick,
+            account_info=account_info,
+            market_condition="PENDING",
+            session_name="PENDING",
+        ):
+            return current_candle_time
+
+    # =========================
+    # WAIT FOR DELAYED RETRACE ENTRY CHECK
+    # Runs every loop, not only on a new M15 candle.
+    # =========================
+    if ENABLE_DELAYED_RETRACE_ENTRY:
+        if process_wait_delayed_entry_setups(
             df=df,
             tick=tick,
             account_info=account_info,
@@ -893,6 +1205,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_htf_fib_confluence import generate_signal as htf_fib_confluence_signal
     from src.strategies.strategy_supply_demand_retest import generate_signal as supply_demand_retest_signal
     from src.strategies.strategy_extreme_sweep_reclaim import generate_signal as extreme_sweep_reclaim_signal
+    from src.strategies.strategy_mtf_sr_fvg_reclaim import generate_signal as mtf_sr_fvg_reclaim_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -969,6 +1282,7 @@ def process_cycle(last_processed_candle_time):
             ("OB_FVG_COMBO", ob_fvg_combo_signal),
             ("RELIEF_RALLY", relief_rally_signal),
             ("HTF_FIB_CONFLUENCE", htf_fib_confluence_signal),
+            ("MTF_SR_FVG_RECLAIM", mtf_sr_fvg_reclaim_signal),
             ("SUPPLY_DEMAND_RETEST", supply_demand_retest_signal),
             ("WAVETREND_PIVOT", wavetrend_pivot_signal),
             ("STRUCTURE_LIQUIDITY", structure_liquidity_signal),
@@ -985,6 +1299,7 @@ def process_cycle(last_processed_candle_time):
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
             ("FAILED_FVG_REVERSAL", failed_fvg_reversal_signal),
             ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
+            ("MTF_SR_FVG_RECLAIM", mtf_sr_fvg_reclaim_signal),
             ("SUPPLY_DEMAND_RETEST", supply_demand_retest_signal),
             ("EXTREME_SWEEP_RECLAIM", extreme_sweep_reclaim_signal),
             ("STRUCTURE_LIQUIDITY", structure_liquidity_signal),
@@ -1010,6 +1325,7 @@ def process_cycle(last_processed_candle_time):
             ("FRACTAL_SWEEP", fractal_sweep_signal),
             ("FAILED_FVG_REVERSAL", failed_fvg_reversal_signal),
             ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
+            ("MTF_SR_FVG_RECLAIM", mtf_sr_fvg_reclaim_signal),
             ("SUPPLY_DEMAND_RETEST", supply_demand_retest_signal),
             ("EXTREME_SWEEP_RECLAIM", extreme_sweep_reclaim_signal),
             ("STRUCTURE_LIQUIDITY", structure_liquidity_signal),
@@ -1033,6 +1349,13 @@ def process_cycle(last_processed_candle_time):
     # =========================
     # STRATEGY TOGGLES
     # =========================
+    if not ENABLE_MTF_SR_FVG_RECLAIM:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "MTF_SR_FVG_RECLAIM"
+        ]
+        logger.info("[STRATEGY TOGGLE] MTF_SR_FVG_RECLAIM disabled")
 
     if not ENABLE_EXTREME_SWEEP_RECLAIM:
         strategy_map = [
@@ -2270,6 +2593,107 @@ def process_cycle(last_processed_candle_time):
             if "best_setup" in locals():
                 best_setup["state"] = "SKIPPED"
                 best_setup["wait_reason"] = "Skipped because opposite position exists"
+
+            return current_candle_time
+
+        if (
+            ENABLE_DELAYED_RETRACE_ENTRY
+            and strategy_name in DELAYED_ENTRY_STRATEGIES
+            and not trade_plan.get("is_scalp", False)
+            and "best_setup" in locals()
+        ):
+            current_entry = trade_plan["entry_price"]
+
+            delayed_offset = get_delayed_entry_offset(market_condition)
+
+            if signal == "BUY":
+                delayed_target = round(current_entry - delayed_offset, 2)
+            else:
+                delayed_target = round(current_entry + delayed_offset, 2)
+
+            immediate_lot = trade_plan["lot"]
+            delayed_lot = 0.0
+
+            if ENABLE_SPLIT_DELAYED_ENTRY:
+                immediate_lot, delayed_lot = split_lot_for_delayed_entry(
+                    SYMBOL,
+                    trade_plan["lot"],
+                    SPLIT_DELAYED_ENTRY_IMMEDIATE_PCT,
+                )
+
+            # Execute first part now
+            if ENABLE_SPLIT_DELAYED_ENTRY and delayed_lot > 0:
+                immediate_trade_plan = trade_plan.copy()
+                immediate_trade_plan["lot"] = immediate_lot
+                immediate_trade_plan["reason"] = (
+                    f"{trade_plan.get('reason', '')} | SPLIT_DELAYED_ENTRY immediate lot"
+                )
+
+                send_telegram_message(
+                    f"🔥 Split Entry Executing Now\n"
+                    f"Symbol: {SYMBOL}\n"
+                    f"Strategy: {strategy_name}\n"
+                    f"Signal: {signal}\n\n"
+                    f"Immediate Lot: {immediate_lot}\n"
+                    f"Delayed Lot: {delayed_lot}\n"
+                    f"Current Entry: {current_entry}\n"
+                    f"Delayed Target: {delayed_target}"
+                )
+
+                log_setup_event(
+                    setup_id=selected_signal_data.get("setup_id"),
+                    event="SPLIT_IMMEDIATE_EXECUTION_ATTEMPT",
+                    strategy=strategy_name,
+                    signal=signal,
+                    entry_model=immediate_trade_plan.get("entry_model") or selected_signal_data.get("entry_model"),
+                    score=score,
+                    session=session_name,
+                    market_condition=market_condition,
+                    entry=immediate_trade_plan["entry_price"],
+                    sl=immediate_trade_plan["stop_loss"],
+                    tp=immediate_trade_plan["take_profit"],
+                    reason=immediate_trade_plan.get("reason", "Split delayed entry immediate execution"),
+                    extra={
+                        "is_split_delayed_entry": True,
+                        "split_part": "IMMEDIATE",
+                        "immediate_lot": immediate_lot,
+                        "delayed_lot": delayed_lot,
+                        "delayed_target": delayed_target,
+                    },
+                )
+
+                execution_result = execute_trade(signal, immediate_trade_plan, SYMBOL)
+
+                if not execution_result:
+                    send_telegram_message(
+                        f"❌ Split Entry Immediate Execution Failed\n"
+                        f"Symbol: {SYMBOL}\n"
+                        f"Strategy: {strategy_name}\n"
+                        f"Signal: {signal}"
+                    )
+                    return current_candle_time
+
+            execution_engine.mark_wait_delayed_entry(
+                setup=best_setup,
+                target_entry_price=delayed_target,
+                expiry_minutes=DELAYED_ENTRY_EXPIRY_MINUTES,
+            )
+
+            best_setup["delayed_entry_lot"] = delayed_lot if delayed_lot > 0 else trade_plan["lot"]
+
+            send_telegram_message(
+                f"⏳ Setup #{selected_signal_data.get('setup_id', 'N/A')} Waiting for Delayed Entry\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Strategy: {strategy_name}\n"
+                f"Signal: {signal}\n\n"
+                f"Current Entry: {current_entry}\n"
+                f"Target Delayed Entry: {delayed_target}\n"
+                f"Immediate Lot Executed: {immediate_lot if delayed_lot > 0 else 0.0}\n"
+                f"Remaining Lot Waiting: {best_setup.get('delayed_entry_lot')}\n"
+                f"Offset: {delayed_offset}\n"
+                f"Market Condition: {market_condition}\n"
+                f"Expiry: {DELAYED_ENTRY_EXPIRY_MINUTES} minutes"
+            )
 
             return current_candle_time
 

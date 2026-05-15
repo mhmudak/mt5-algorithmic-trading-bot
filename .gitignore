@@ -54,3 +54,6 @@ strategy_performance.json
 # =========================
 .DS_Store
 Thumbs.db
+
+*.session
+*.session-journal

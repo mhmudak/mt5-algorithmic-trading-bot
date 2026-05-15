@@ -54,6 +54,34 @@ STRATEGY_SL_REFERENCE_MODELS = {
     "HTF_FIB_CONFLUENCE",
     "SUPPLY_DEMAND_RETEST",
     "EXTREME_SWEEP_RECLAIM",
+    "MTF_SR_FVG_RECLAIM",
+}
+
+
+PATTERN_TARGET_STRATEGIES = {
+    "HEAD_SHOULDERS",
+    "TRIANGLE_PENNANT",
+    "ORDER_BLOCK",
+    "SMT",
+    "SMT_PRO",
+    "CRT_TBS",
+    "OB_FVG_COMBO",
+    "LIQUIDITY_TRAP",
+    "RELIEF_RALLY",
+    "FRACTAL_SWEEP",
+    "BREAKER_BLOCK",
+    "MTF_OB_ENTRY",
+    "FCR_M1_FVG",
+    "STRUCTURE_LIQUIDITY",
+    "LVN_FVG_RECLAIM",
+    "AMD_FVG",
+    "FVG_CE_MITIGATION",
+    "LIQUIDITY_POOL_OB",
+    "FAILED_BREAKOUT_REVERSAL",
+    "FAILED_FVG_REVERSAL",
+    "HTF_FIB_CONFLUENCE",
+    "SUPPLY_DEMAND_RETEST",
+    "EXTREME_SWEEP_RECLAIM",
 }
 
 
@@ -104,16 +132,26 @@ def _fallback_atr_stop(signal, entry_price, atr):
     return entry_price + atr
 
 
-def _fallback_structure_take_profit(signal, entry_price, recent_support, recent_resistance, tp_buffer):
+def _fallback_structure_take_profit(
+    signal,
+    entry_price,
+    recent_support,
+    recent_resistance,
+    tp_buffer,
+):
     if signal == "BUY":
         take_profit = recent_resistance - tp_buffer
+
         if take_profit <= entry_price:
             return None
+
         return take_profit
 
     take_profit = recent_support + tp_buffer
+
     if take_profit >= entry_price:
         return None
+
     return take_profit
 
 
@@ -127,11 +165,24 @@ def _pattern_height_take_profit(signal, entry_price, height):
     return entry_price - height
 
 
-def _strategy_fallback_take_profit(strategy, signal, entry_price, stop_distance, signal_data, recent_support, recent_resistance):
+def _strategy_fallback_take_profit(
+    strategy,
+    signal,
+    entry_price,
+    stop_distance,
+    signal_data,
+    recent_support,
+    recent_resistance,
+):
     height = signal_data.get("pattern_height", 0) if signal_data else 0
 
     if strategy == "LIQUIDITY_CANDLE":
-        return _rr_target(signal, entry_price, stop_distance, LIQUIDITY_CANDLE_R_MULTIPLIER)
+        return _rr_target(
+            signal,
+            entry_price,
+            stop_distance,
+            LIQUIDITY_CANDLE_R_MULTIPLIER,
+        )
 
     if strategy == "FVG":
         if height <= 0:
@@ -147,25 +198,21 @@ def _strategy_fallback_take_profit(strategy, signal, entry_price, stop_distance,
 
     if strategy == "ORB":
         entry_model = signal_data.get("entry_model", "BREAKOUT") if signal_data else "BREAKOUT"
-        rr = 1.8 if entry_model == "BREAKOUT" else 2.2
+
+        if entry_model == "BREAKOUT":
+            rr = 1.8
+        elif entry_model == "FAST_CONTINUATION":
+            rr = 2.0
+        else:
+            rr = 2.2
+
         return _rr_target(signal, entry_price, stop_distance, rr)
 
     if strategy == "WAVETREND_PIVOT":
         pivot_target_level = signal_data.get("pivot_target_level") if signal_data else None
         return pivot_target_level
 
-    if strategy in [
-        "HEAD_SHOULDERS",
-        "TRIANGLE_PENNANT",
-        "ORDER_BLOCK",
-        "SMT",
-        "SMT_PRO",
-        "CRT_TBS",
-        "OB_FVG_COMBO",
-        "LIQUIDITY_TRAP",
-        "RELIEF_RALLY",
-        "FRACTAL_SWEEP",
-    ]:
+    if strategy in PATTERN_TARGET_STRATEGIES:
         pattern_tp = _pattern_height_take_profit(signal, entry_price, height)
 
         if pattern_tp is not None:
@@ -186,7 +233,6 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
     if len(df) < BREAKOUT_LOOKBACK + 2:
         return None
 
-    # Use closed candle for ATR/context, and tick only for the actual entry price.
     last_closed = df.iloc[-2]
     atr = last_closed["atr_14"]
 
@@ -224,6 +270,7 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
         return None
 
     stop_distance = abs(entry_price - stop_loss)
+
     if stop_distance <= 0:
         return None
 
@@ -272,6 +319,7 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
         return None
 
     min_tp_distance = 0.3
+
     if abs(take_profit - entry_price) < min_tp_distance:
         return None
 
