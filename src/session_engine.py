@@ -63,6 +63,7 @@ def session_score_adjustment(strategy_name: str, session_name: str):
         "FAILED_BREAKOUT_REVERSAL",
         "FAILED_FVG_REVERSAL",
         "EXTREME_SWEEP_RECLAIM",
+        "IFVG_RETEST_CONFLUENCE",
     }
 
     if strategy_name in reversal_strategies:
@@ -94,6 +95,7 @@ def session_score_adjustment(strategy_name: str, session_name: str):
         "HTF_FIB_CONFLUENCE",
         "SUPPLY_DEMAND_RETEST",
         "MTF_SR_FVG_RECLAIM",
+        "IFVG_RETEST_CONFLUENCE",
     }
 
     if strategy_name in structural_strategies:

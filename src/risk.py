@@ -55,6 +55,8 @@ STRATEGY_SL_REFERENCE_MODELS = {
     "SUPPLY_DEMAND_RETEST",
     "EXTREME_SWEEP_RECLAIM",
     "MTF_SR_FVG_RECLAIM",
+    "ORB_V00",
+    "IFVG_RETEST_CONFLUENCE",
 }
 
 
@@ -196,7 +198,7 @@ def _strategy_fallback_take_profit(
     if strategy == "LIQUIDITY_SWEEP":
         return _rr_target(signal, entry_price, stop_distance, 1.5)
 
-    if strategy == "ORB":
+    if strategy in ["ORB", "ORB_V00"]:
         entry_model = signal_data.get("entry_model", "BREAKOUT") if signal_data else "BREAKOUT"
 
         if entry_model == "BREAKOUT":

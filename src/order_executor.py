@@ -40,6 +40,7 @@ def execute_trade(signal, trade_plan, symbol):
     if EXECUTION_MODE == "SIMULATION":
         print("\n[SIMULATION MODE]")
         print(f"Would execute {signal} trade:")
+
         for key, value in trade_plan.items():
             print(f"{key}: {value}")
 
@@ -62,6 +63,7 @@ def execute_trade(signal, trade_plan, symbol):
         return False
 
     tick = mt5.symbol_info_tick(symbol)
+
     if tick is None:
         error_message = f"❌ Order failed: no tick data for {symbol} | {mt5.last_error()}"
         print(error_message)
@@ -101,7 +103,6 @@ def execute_trade(signal, trade_plan, symbol):
         "tp": trade_plan["take_profit"],
         "deviation": 10,
         "magic": 123456,
-        "comment": "🤖 MhMud Bot MT5",
         "comment": trade_plan.get("comment", "MhMudBot")[:31],
         "type_time": mt5.ORDER_TIME_GTC,
     }
@@ -128,12 +129,9 @@ def execute_trade(signal, trade_plan, symbol):
 
         last_error_message = f"Order rejected with filling={filling_mode}: {result}"
 
-        # 10030 = unsupported filling mode.
-        # Try the next filling mode instead of failing immediately.
         if result.retcode == 10030:
             continue
 
-        # For other rejection reasons, do not keep retrying blindly.
         break
 
     if result is None:
@@ -156,6 +154,7 @@ def execute_trade(signal, trade_plan, symbol):
     print(f"[EXECUTION] Executed: {executed_price}")
     print(f"[EXECUTION] Slippage: {slippage}")
     print(f"[EXECUTION] Filling Mode: {successful_filling_mode}")
+    print("Order result:", result)
 
     if slippage > MAX_SLIPPAGE:
         print("[WARNING] High slippage detected!")
@@ -167,8 +166,6 @@ def execute_trade(signal, trade_plan, symbol):
             f"Executed: {executed_price}\n"
             f"Slippage: {round(slippage, 2)}"
         )
-
-    print("Order result:", result)
 
     register_executed_trade(symbol, signal, trade_plan, result)
 

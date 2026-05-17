@@ -2,6 +2,7 @@ import MetaTrader5 as mt5
 
 from src.logger import logger
 from src.notifier import send_telegram_message
+from src.order_executor import get_supported_filling_modes
 from src.trade_tracker import load_trades, save_trades, update_trade_statistics
 from config.settings import (
     ENABLE_MAIN_STAGE_MANAGEMENT,
@@ -25,7 +26,6 @@ from config.settings import (
     WORST_EXTRA_LOCK_PROFIT_PRICE,
     ENABLE_MAIN_RUNNER_MODE,
     MAIN_RUNNER_START_STAGE,
-    MAIN_RUNNER_REMAINING_PCT,
     MAIN_RUNNER_REMOVE_TP,
     MAIN_RUNNER_EMERGENCY_TP_PRICE,
 )
@@ -43,16 +43,19 @@ def manage_positions(symbol: str):
         return
 
     tick = mt5.symbol_info_tick(symbol)
+
     if tick is None:
         logger.error("[MANAGER] No tick data")
         return
 
     trades = load_trades()
+
     if not trades:
         logger.info("[MANAGER] No tracked trades found")
         return
 
     tracked_positions = []
+
     for position in positions:
         position_id = str(position.ticket)
         trade = trades.get(position_id)
@@ -74,11 +77,33 @@ def manage_positions(symbol: str):
         logger.info("[MANAGER] No tracked open positions to manage")
         return
 
-    buy_positions = [(p, t) for p, t in tracked_positions if p.type == mt5.POSITION_TYPE_BUY]
-    sell_positions = [(p, t) for p, t in tracked_positions if p.type == mt5.POSITION_TYPE_SELL]
+    buy_positions = [
+        (position, trade)
+        for position, trade in tracked_positions
+        if position.type == mt5.POSITION_TYPE_BUY
+    ]
 
-    manage_direction_group(symbol=symbol, direction="BUY", group=buy_positions, tick=tick, trades=trades)
-    manage_direction_group(symbol=symbol, direction="SELL", group=sell_positions, tick=tick, trades=trades)
+    sell_positions = [
+        (position, trade)
+        for position, trade in tracked_positions
+        if position.type == mt5.POSITION_TYPE_SELL
+    ]
+
+    manage_direction_group(
+        symbol=symbol,
+        direction="BUY",
+        group=buy_positions,
+        tick=tick,
+        trades=trades,
+    )
+
+    manage_direction_group(
+        symbol=symbol,
+        direction="SELL",
+        group=sell_positions,
+        tick=tick,
+        trades=trades,
+    )
 
     save_trades(trades)
 
@@ -95,6 +120,7 @@ def manage_direction_group(symbol, direction, group, tick, trades):
     main_position_id = str(main_position.ticket)
 
     extras = []
+
     for position, trade in group:
         position_id = str(position.ticket)
 
@@ -106,10 +132,13 @@ def manage_direction_group(symbol, direction, group, tick, trades):
             trade["main_position_id"] = main_position_id
             extras.append((position, trade))
 
-    logger.info(f"[MANAGER] {direction} group | main={main_position_id} extras={len(extras)}")
+    logger.info(
+        f"[MANAGER] {direction} group | main={main_position_id} extras={len(extras)}"
+    )
 
     if len(extras) >= 2 and ENABLE_WORST_EXTRA_LOCK:
         worst_extra_position, _ = get_worst_extra(direction, extras)
+
         apply_price_lock(
             position=worst_extra_position,
             direction=direction,
@@ -123,6 +152,7 @@ def manage_direction_group(symbol, direction, group, tick, trades):
         manage_extra_entry(position, trade, tick)
 
     main_position = get_position_by_ticket(symbol, main_position.ticket)
+
     if main_position is not None:
         update_trade_statistics(main_position, main_trade, tick)
         manage_main_trade(main_position, main_trade, tick)
@@ -131,6 +161,7 @@ def manage_direction_group(symbol, direction, group, tick, trades):
 def get_worst_extra(direction, extras):
     if direction == "SELL":
         return min(extras, key=lambda item: item[0].price_open)
+
     return max(extras, key=lambda item: item[0].price_open)
 
 
@@ -147,6 +178,7 @@ def manage_extra_entry(position, trade, tick):
     position_id = str(position.ticket)
     current_volume = float(position.volume)
     price_profit_distance = get_price_profit_distance(position, tick)
+    direction = "BUY" if position.type == mt5.POSITION_TYPE_BUY else "SELL"
 
     logger.info(
         f"[MANAGER] EXTRA | position={position_id} "
@@ -156,29 +188,31 @@ def manage_extra_entry(position, trade, tick):
     if not ENABLE_EXTRA_ENTRY_MANAGEMENT:
         return
 
-    # +3 -> BE
     if price_profit_distance >= EXTRA_ENTRY_BREAK_EVEN_TRIGGER_PRICE:
         apply_price_lock(
             position=position,
-            direction="BUY" if position.type == mt5.POSITION_TYPE_BUY else "SELL",
+            direction=direction,
             trigger_price=EXTRA_ENTRY_BREAK_EVEN_TRIGGER_PRICE,
             lock_profit_price=0.0,
             reason="Extra BE lock",
         )
 
-    # +5 -> lock +2
     if price_profit_distance >= EXTRA_ENTRY_LOCK_TRIGGER_PRICE:
         apply_price_lock(
             position=position,
-            direction="BUY" if position.type == mt5.POSITION_TYPE_BUY else "SELL",
+            direction=direction,
             trigger_price=EXTRA_ENTRY_LOCK_TRIGGER_PRICE,
             lock_profit_price=EXTRA_ENTRY_LOCK_PRICE,
             reason="Extra +2 lock",
         )
 
-    # +8 -> full close
     if price_profit_distance >= EXTRA_ENTRY_TAKE_PROFIT_PRICE:
-        if close_position_volume(position, current_volume, tick, reason="Extra entry full close"):
+        if close_position_volume(
+            position,
+            current_volume,
+            tick,
+            reason="Extra entry full close",
+        ):
             send_telegram_message(
                 f"Extra Entry Closed\n"
                 f"Position: {position_id}\n"
@@ -186,6 +220,7 @@ def manage_extra_entry(position, trade, tick):
                 f"Price Trigger: {EXTRA_ENTRY_TAKE_PROFIT_PRICE}\n"
                 f"Closed Volume: {current_volume}"
             )
+
 
 def calculate_runner_tp(position, direction):
     if not ENABLE_MAIN_RUNNER_MODE:
@@ -198,6 +233,7 @@ def calculate_runner_tp(position, direction):
         return round(position.price_open + MAIN_RUNNER_EMERGENCY_TP_PRICE, 2)
 
     return round(position.price_open - MAIN_RUNNER_EMERGENCY_TP_PRICE, 2)
+
 
 def activate_main_runner_mode(position, trade, direction, lock_profit_price, reason):
     if not ENABLE_MAIN_RUNNER_MODE:
@@ -229,6 +265,7 @@ def activate_main_runner_mode(position, trade, direction, lock_profit_price, rea
 
     return False
 
+
 def manage_main_trade(position, trade, tick):
     if not ENABLE_MAIN_STAGE_MANAGEMENT:
         return
@@ -245,7 +282,6 @@ def manage_main_trade(position, trade, tick):
         f"current_volume={current_volume} initial_volume={initial_volume}"
     )
 
-    # Stage 1: +7.5 -> close 25%
     if (
         not trade.get("stage_1_done", False)
         and price_profit_distance >= MAIN_STAGE_1_TRIGGER_PRICE
@@ -258,7 +294,12 @@ def manage_main_trade(position, trade, tick):
         )
 
         if stage_close_volume > 0:
-            if close_position_volume(position, stage_close_volume, tick, reason="Main stage 1 partial close"):
+            if close_position_volume(
+                position,
+                stage_close_volume,
+                tick,
+                reason="Main stage 1 partial close",
+            ):
                 trade["stage_1_done"] = True
                 send_telegram_message(
                     f"Main Trade Stage 1\n"
@@ -268,29 +309,29 @@ def manage_main_trade(position, trade, tick):
                 )
 
     position = get_position_by_ticket(position.symbol, position.ticket)
+
     if position is None:
         return
 
     price_profit_distance = get_price_profit_distance(position, tick)
 
-    # Early lock: +12 -> lock +2.5
     if price_profit_distance >= MAIN_EARLY_LOCK_TRIGGER_PRICE:
         apply_price_lock(
             position=position,
             direction=direction,
             trigger_price=MAIN_EARLY_LOCK_TRIGGER_PRICE,
             lock_profit_price=MAIN_EARLY_LOCK_PRICE,
-            reason="Main early +2.5 lock",
+            reason="Main early lock",
         )
 
     position = get_position_by_ticket(position.symbol, position.ticket)
+
     if position is None:
         return
 
     current_volume = float(position.volume)
     price_profit_distance = get_price_profit_distance(position, tick)
 
-    # Stage 2: +18 -> close 25% + lock +12.5
     if (
         not trade.get("stage_2_done", False)
         and price_profit_distance >= MAIN_STAGE_2_TRIGGER_PRICE
@@ -303,10 +344,16 @@ def manage_main_trade(position, trade, tick):
         )
 
         if stage_close_volume > 0:
-            if close_position_volume(position, stage_close_volume, tick, reason="Main stage 2 partial close"):
+            if close_position_volume(
+                position,
+                stage_close_volume,
+                tick,
+                reason="Main stage 2 partial close",
+            ):
                 trade["stage_2_done"] = True
 
                 updated_position = get_position_by_ticket(position.symbol, position.ticket)
+
                 if updated_position is not None:
                     if ENABLE_MAIN_RUNNER_MODE and MAIN_RUNNER_START_STAGE <= 2:
                         activate_main_runner_mode(
@@ -334,13 +381,13 @@ def manage_main_trade(position, trade, tick):
                 )
 
     position = get_position_by_ticket(position.symbol, position.ticket)
+
     if position is None:
         return
 
     current_volume = float(position.volume)
     price_profit_distance = get_price_profit_distance(position, tick)
 
-    # Stage 3: +28 -> close 25% + lock +16
     if (
         not trade.get("stage_3_done", False)
         and price_profit_distance >= MAIN_STAGE_3_TRIGGER_PRICE
@@ -353,10 +400,16 @@ def manage_main_trade(position, trade, tick):
         )
 
         if stage_close_volume > 0:
-            if close_position_volume(position, stage_close_volume, tick, reason="Main stage 3 partial close"):
+            if close_position_volume(
+                position,
+                stage_close_volume,
+                tick,
+                reason="Main stage 3 partial close",
+            ):
                 trade["stage_3_done"] = True
 
                 updated_position = get_position_by_ticket(position.symbol, position.ticket)
+
                 if updated_position is not None:
                     if ENABLE_MAIN_RUNNER_MODE and MAIN_RUNNER_START_STAGE <= 3:
                         activate_main_runner_mode(
@@ -395,8 +448,10 @@ def calculate_stage_close_volume(initial_volume, close_pct, current_volume, symb
 
     if current_volume - target_volume < min_volume:
         adjusted = round(current_volume - min_volume, 2)
+
         if adjusted <= 0:
             return 0.0
+
         target_volume = round_to_broker_volume(adjusted, symbol_info)
 
     if target_volume >= current_volume:
@@ -427,7 +482,7 @@ def close_position_volume(position, close_volume, tick, reason="Partial close"):
         order_type = mt5.ORDER_TYPE_BUY
         price = tick.ask
 
-    request = {
+    base_request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": position.symbol,
         "volume": round(close_volume, 2),
@@ -438,23 +493,41 @@ def close_position_volume(position, close_volume, tick, reason="Partial close"):
         "magic": 123456,
         "comment": "MT5BotPC",
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
     }
 
-    result = mt5.order_send(request)
+    result = None
+    last_error_message = None
 
-    if result is None:
-        logger.error(f"[MANAGER] {reason} failed: {mt5.last_error()}")
-        return False
+    for filling_mode in get_supported_filling_modes(position.symbol):
+        request = base_request.copy()
+        request["type_filling"] = filling_mode
 
-    if result.retcode != mt5.TRADE_RETCODE_DONE:
-        logger.error(f"[MANAGER] {reason} rejected: {result}")
-        return False
+        result = mt5.order_send(request)
 
-    logger.info(
-        f"[MANAGER] {reason} success | ticket={position.ticket} closed_volume={close_volume}"
-    )
-    return True
+        if result is None:
+            last_error_message = (
+                f"{reason} failed with filling={filling_mode}: {mt5.last_error()}"
+            )
+            continue
+
+        if result.retcode == mt5.TRADE_RETCODE_DONE:
+            logger.info(
+                f"[MANAGER] {reason} success | "
+                f"ticket={position.ticket} "
+                f"closed_volume={close_volume} "
+                f"filling_mode={filling_mode}"
+            )
+            return True
+
+        last_error_message = f"{reason} rejected with filling={filling_mode}: {result}"
+
+        if result.retcode == 10030:
+            continue
+
+        break
+
+    logger.error(f"[MANAGER] {last_error_message}")
+    return False
 
 
 def apply_price_lock(position, direction, trigger_price, lock_profit_price, reason="Price lock"):
@@ -463,6 +536,7 @@ def apply_price_lock(position, direction, trigger_price, lock_profit_price, reas
     current_tp = position.tp
 
     tick = mt5.symbol_info_tick(position.symbol)
+
     if tick is None:
         logger.error(f"[MANAGER] No tick data for {position.ticket}")
         return False
@@ -520,6 +594,7 @@ def modify_sl(position, new_sl, tp, reason="SL update"):
 
 def get_position_by_ticket(symbol, ticket):
     positions = mt5.positions_get(symbol=symbol)
+
     if positions is None:
         return None
 

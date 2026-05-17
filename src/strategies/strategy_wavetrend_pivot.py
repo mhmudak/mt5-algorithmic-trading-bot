@@ -20,6 +20,7 @@ from config.settings import (
 from src.indicators import calculate_ema, calculate_atr
 from src.wavetrend import calculate_wavetrend
 from src.pivots import calculate_daily_pivots
+from src.strategy_debug import reject_strategy
 from src.logger import logger
 
 
@@ -125,7 +126,7 @@ def generate_signal(df):
     m5_df = _fetch_m5_data()
 
     if m5_df is None:
-        return None
+        return reject_strategy("WAVETREND_PIVOT", "m5_data_unavailable")
 
     m5_df = calculate_wavetrend(
         m5_df.copy(),
@@ -135,7 +136,7 @@ def generate_signal(df):
 
     pivots = calculate_daily_pivots(m5_df)
     if pivots is None:
-        return None
+        return reject_strategy("WAVETREND_PIVOT", "daily_pivots_unavailable")
 
     ordered_levels = pivots.get("ordered")
     if not ordered_levels:
@@ -149,10 +150,10 @@ def generate_signal(df):
     price = entry["close"]
 
     if atr < ATR_MIN or atr > ATR_MAX:
-        return None
+        return reject_strategy("WAVETREND_PIVOT", "atr_out_of_range", atr=atr)
 
     if atr < MIN_ATR_FOR_M5_SCALP:
-        return None
+        return reject_strategy("WAVETREND_PIVOT", "atr_too_low_for_m5_scalp", atr=atr)
 
     wt1 = entry["wt1"]
     wt2 = entry["wt2"]
@@ -193,7 +194,13 @@ def generate_signal(df):
     )
 
     if in_middle_zone:
-        return None
+        return reject_strategy(
+            "WAVETREND_PIVOT",
+            "middle_zone_no_trade",
+            price=round(price, 2),
+            support=round(support_level, 2),
+            resistance=round(resistance_level, 2),
+        )
 
     ema_slope = m5_df["ema_20"].iloc[-2] - m5_df["ema_20"].iloc[-5]
     sl_buffer = _sl_buffer(atr)
@@ -484,4 +491,12 @@ def generate_signal(df):
             ),
         }
 
-    return None
+    return reject_strategy(
+        "WAVETREND_PIVOT",
+        "no_valid_wavetrend_pivot_setup",
+        price=round(price, 2),
+        support=round(support_level, 2) if "support_level" in locals() else None,
+        resistance=round(resistance_level, 2) if "resistance_level" in locals() else None,
+        wt1=round(wt1, 2) if "wt1" in locals() else None,
+        wt2=round(wt2, 2) if "wt2" in locals() else None,
+    )

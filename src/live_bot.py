@@ -35,9 +35,19 @@ from src.position_guard import count_same_direction_positions
 from src.execution_engine import ExecutionEngine
 execution_engine = ExecutionEngine()
 
+from src.protected_reentry import (
+    get_protected_reentry_context,
+    apply_protected_reentry_confirmation,
+)
+
 from src.supply_demand_context import (
     analyze_supply_demand_context,
     apply_supply_demand_confirmation,
+)
+
+from src.elliott_fib_context import (
+    analyze_elliott_fib_context,
+    apply_elliott_fib_confirmation,
 )
 
 from config.settings import (
@@ -108,11 +118,28 @@ from config.settings import (
     DELAYED_ENTRY_MIN_BODY_ATR,
     DELAYED_ENTRY_OFFSET_BY_MARKET,
     ENABLE_MTF_SR_FVG_RECLAIM,
+    ENABLE_ELLIOTT_FIB_CONTEXT,
+    REQUIRE_M5_CONFIRMATION_FOR_EXTRA,
+    EXTRA_ENTRY_CONFIRMATION_TIMEFRAME,
+    EXTRA_ENTRY_CONFIRMATION_BARS,
+    EXTRA_ENTRY_MIN_BODY_ATR,
+    ENABLE_PROTECTED_REENTRY,
+    ENABLE_TIME_CONTEXT_ENGINE,
+    ENABLE_ORB_V00,
+    ENABLE_IFVG_RETEST_CONFLUENCE,
+    ENABLE_SOFT_SMC_FOR_STRONG_SETUPS,
+    SOFT_SMC_MIN_SCORE,
+    SOFT_SMC_STRATEGIES,
 )
 
 from src.structure_liquidity_context import (
     analyze_structure_liquidity,
     apply_structure_liquidity_confirmation,
+)
+
+from src.time_context import (
+    analyze_time_context,
+    apply_time_context_confirmation,
 )
 
 last_signal = None
@@ -157,6 +184,8 @@ STRATEGY_SPECIFIC_CONFIRMED = {
     "SUPPLY_DEMAND_RETEST",
     "EXTREME_SWEEP_RECLAIM",
     "MTF_SR_FVG_RECLAIM",
+    "ORB_V00",
+    "IFVG_RETEST_CONFLUENCE",
 }
 
 def fetch_market_data():
@@ -273,6 +302,69 @@ def calculate_rr_value(trade_plan):
         return None
 
     return None
+
+def extra_entry_confirmation_ok(signal):
+    if not REQUIRE_M5_CONFIRMATION_FOR_EXTRA:
+        return True, "extra_confirmation_disabled"
+
+    rates = mt5.copy_rates_from_pos(
+        SYMBOL,
+        EXTRA_ENTRY_CONFIRMATION_TIMEFRAME,
+        0,
+        EXTRA_ENTRY_CONFIRMATION_BARS,
+    )
+
+    if rates is None or len(rates) < 10:
+        return False, "no_m5_confirmation_data"
+
+    confirm_df = pd.DataFrame(rates)
+    confirm_df["time"] = pd.to_datetime(confirm_df["time"], unit="s")
+    confirm_df["ema_20"] = calculate_ema(confirm_df, EMA_PERIOD)
+    confirm_df["atr_14"] = calculate_atr(confirm_df, ATR_PERIOD)
+
+    candle = confirm_df.iloc[-2]
+    prev = confirm_df.iloc[-3]
+
+    atr = candle["atr_14"]
+    body = abs(candle["close"] - candle["open"])
+
+    if atr <= 0:
+        return False, "invalid_m5_atr"
+
+    if body < atr * EXTRA_ENTRY_MIN_BODY_ATR:
+        return False, "m5_body_too_small"
+
+    if signal == "BUY":
+        confirmed = (
+            candle["close"] > candle["open"]
+            and candle["close"] > candle["ema_20"]
+            and (
+                candle["close"] > prev["high"]
+                or candle["close"] >= candle["low"] + (candle["high"] - candle["low"]) * 0.60
+            )
+        )
+
+        if confirmed:
+            return True, "m5_buy_confirmation"
+
+        return False, "m5_buy_not_confirmed"
+
+    if signal == "SELL":
+        confirmed = (
+            candle["close"] < candle["open"]
+            and candle["close"] < candle["ema_20"]
+            and (
+                candle["close"] < prev["low"]
+                or candle["close"] <= candle["high"] - (candle["high"] - candle["low"]) * 0.60
+            )
+        )
+
+        if confirmed:
+            return True, "m5_sell_confirmation"
+
+        return False, "m5_sell_not_confirmed"
+
+    return False, "invalid_signal"
 
 def split_lot_for_delayed_entry(symbol, total_lot, immediate_pct):
     symbol_info = mt5.symbol_info(symbol)
@@ -598,11 +690,30 @@ def select_confirmed_ready_setup(ready_setups, df, selected_signal_data):
 
         smc_check = smart_money_confirm(df, setup_signal)
 
-        if not smc_check["confirmed"]:
+        soft_smc_allowed = (
+            ENABLE_SOFT_SMC_FOR_STRONG_SETUPS
+            and setup_strategy in SOFT_SMC_STRATEGIES
+            and setup_data.get("score", 0) >= SOFT_SMC_MIN_SCORE
+        )
+
+        if not smc_check["confirmed"] and not soft_smc_allowed:
             rejected_reasons.append(
                 f"{setup_strategy}:{setup_signal}:smc_failed"
             )
             continue
+
+        if not smc_check["confirmed"] and soft_smc_allowed:
+            setup_data.setdefault("smc", [])
+            setup_data["smc"].append("soft_smc_pass")
+            setup_data["reason"] = (
+                f"{setup_data.get('reason', 'N/A')} | "
+                f"SOFT_SMC_PASS: score={setup_data.get('score', 0)}"
+            )
+
+            smc_check = {
+                "confirmed": True,
+                "reasons": ["soft_smc_pass"],
+            }
 
         return setup, smc_check, rejected_reasons
 
@@ -844,6 +955,19 @@ def process_wait_better_entry_setups(df, tick, account_info, market_condition, s
                 f"strategy={strategy_name} reason={guard_reason}"
             )
             continue
+
+        same_direction_count = count_same_direction_positions(SYMBOL, signal)
+        is_extra_entry = same_direction_count >= 1
+
+        if is_extra_entry and REQUIRE_M5_CONFIRMATION_FOR_EXTRA:
+            extra_confirmed, extra_confirm_reason = extra_entry_confirmation_ok(signal)
+
+            if not extra_confirmed:
+                logger.info(
+                    f"[BETTER ENTRY] Extra confirmation failed | "
+                    f"strategy={strategy_name} signal={signal} reason={extra_confirm_reason}"
+                )
+                continue
 
         from src.position_guard import has_same_direction_position
 
@@ -1164,6 +1288,16 @@ def process_cycle(last_processed_candle_time):
     session_name = detect_session(current_candle_time)
     logger.info(f"[SESSION] {session_name}")
 
+    time_context = None
+
+    if ENABLE_TIME_CONTEXT_ENGINE:
+        time_context = analyze_time_context(current_candle_time)
+
+        if time_context and time_context.get("active"):
+            logger.info(
+                f"[TIME CONTEXT] reasons={time_context.get('reasons')}"
+            )
+
     # =========================
     # SIGNAL GENERATION
     # =========================
@@ -1206,6 +1340,8 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_supply_demand_retest import generate_signal as supply_demand_retest_signal
     from src.strategies.strategy_extreme_sweep_reclaim import generate_signal as extreme_sweep_reclaim_signal
     from src.strategies.strategy_mtf_sr_fvg_reclaim import generate_signal as mtf_sr_fvg_reclaim_signal
+    from src.strategies.strategy_orb_v00 import generate_signal as orb_v00_signal
+    from src.strategies.strategy_ifvg_retest_confluence import generate_signal as ifvg_retest_confluence_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -1242,6 +1378,25 @@ def process_cycle(last_processed_candle_time):
                 f"reasons={supply_demand_context.get('reasons')}"
             )
 
+    elliott_fib_context = None
+
+    if ENABLE_ELLIOTT_FIB_CONTEXT:
+        elliott_fib_context = analyze_elliott_fib_context(df)
+
+        if elliott_fib_context:
+            logger.info(
+                f"[ELLIOTT FIB CONTEXT] "
+                f"bias={elliott_fib_context.get('bias')} "
+                f"timeframe={elliott_fib_context.get('timeframe')} "
+                f"zone={elliott_fib_context.get('zone_low')}-"
+                f"{elliott_fib_context.get('zone_high')}"
+            )
+
+    protected_reentry_context = {}
+
+    if ENABLE_PROTECTED_REENTRY:
+        protected_reentry_context = get_protected_reentry_context()
+
     # =========================
     # AI STRATEGY SELECTION
     # =========================
@@ -1254,6 +1409,7 @@ def process_cycle(last_processed_candle_time):
             ("SESSION_ORB_RETEST", session_orb_retest_signal),
             ("LVN_FVG_RECLAIM", lvn_fvg_reclaim_signal),
             ("FVG_CE_MITIGATION", fvg_ce_mitigation_signal),
+            ("ORB_V00", orb_v00_signal),
             ("ORB", orb_signal),
             ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
             ("FCR_M1_FVG", fcr_m1_fvg_signal),
@@ -1278,6 +1434,7 @@ def process_cycle(last_processed_candle_time):
             ("ORDER_BLOCK", order_block_signal),
             ("BREAKER_BLOCK", breaker_block_signal),
             ("FVG_CE_MITIGATION", fvg_ce_mitigation_signal),
+            ("IFVG_RETEST_CONFLUENCE", ifvg_retest_confluence_signal),
             ("FVG", fvg_signal),
             ("OB_FVG_COMBO", ob_fvg_combo_signal),
             ("RELIEF_RALLY", relief_rally_signal),
@@ -1299,6 +1456,7 @@ def process_cycle(last_processed_candle_time):
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
             ("FAILED_FVG_REVERSAL", failed_fvg_reversal_signal),
             ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
+            ("IFVG_RETEST_CONFLUENCE", ifvg_retest_confluence_signal),
             ("MTF_SR_FVG_RECLAIM", mtf_sr_fvg_reclaim_signal),
             ("SUPPLY_DEMAND_RETEST", supply_demand_retest_signal),
             ("EXTREME_SWEEP_RECLAIM", extreme_sweep_reclaim_signal),
@@ -1325,6 +1483,7 @@ def process_cycle(last_processed_candle_time):
             ("FRACTAL_SWEEP", fractal_sweep_signal),
             ("FAILED_FVG_REVERSAL", failed_fvg_reversal_signal),
             ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
+            ("IFVG_RETEST_CONFLUENCE", ifvg_retest_confluence_signal),
             ("MTF_SR_FVG_RECLAIM", mtf_sr_fvg_reclaim_signal),
             ("SUPPLY_DEMAND_RETEST", supply_demand_retest_signal),
             ("EXTREME_SWEEP_RECLAIM", extreme_sweep_reclaim_signal),
@@ -1337,6 +1496,7 @@ def process_cycle(last_processed_candle_time):
             ("LVN_FVG_RECLAIM", lvn_fvg_reclaim_signal),
             ("AMD_FVG", amd_fvg_signal),
             ("FVG_CE_MITIGATION", fvg_ce_mitigation_signal),
+            ("ORB_V00", orb_v00_signal),
             ("ORB", orb_signal),
             ("FCR_M1_FVG", fcr_m1_fvg_signal),
             ("LIQUIDITY_SWEEP", liquidity_sweep_signal),
@@ -1349,6 +1509,22 @@ def process_cycle(last_processed_candle_time):
     # =========================
     # STRATEGY TOGGLES
     # =========================
+    if not ENABLE_IFVG_RETEST_CONFLUENCE:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "IFVG_RETEST_CONFLUENCE"
+        ]
+        logger.info("[STRATEGY TOGGLE] IFVG_RETEST_CONFLUENCE disabled")
+
+    if not ENABLE_ORB_V00:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "ORB_V00"
+        ]
+        logger.info("[STRATEGY TOGGLE] ORB_V00 disabled")
+
     if not ENABLE_MTF_SR_FVG_RECLAIM:
         strategy_map = [
             (name, strat)
@@ -1537,6 +1713,60 @@ def process_cycle(last_processed_candle_time):
                             f"boost={sd_boost} reasons={sd_reasons}"
                         )
 
+                if ENABLE_ELLIOTT_FIB_CONTEXT:
+                    fib_boost, fib_reasons = apply_elliott_fib_confirmation(
+                        result,
+                        elliott_fib_context,
+                    )
+
+                    result["score"] += fib_boost
+
+                    if fib_reasons:
+                        result.setdefault("elliott_fib_reasons", [])
+                        result["elliott_fib_reasons"].extend(fib_reasons)
+
+                        logger.info(
+                            f"[ELLIOTT FIB CONFIRMATION] "
+                            f"strategy={name} signal={result.get('signal')} "
+                            f"boost={fib_boost} reasons={fib_reasons}"
+                        )
+
+                if ENABLE_PROTECTED_REENTRY:
+                    reentry_boost, reentry_reasons = apply_protected_reentry_confirmation(
+                        result,
+                        protected_reentry_context,
+                    )
+
+                    result["score"] += reentry_boost
+
+                    if reentry_reasons:
+                        result.setdefault("protected_reentry_reasons", [])
+                        result["protected_reentry_reasons"].extend(reentry_reasons)
+
+                        logger.info(
+                            f"[PROTECTED REENTRY CONFIRMATION] "
+                            f"strategy={name} signal={result.get('signal')} "
+                            f"boost={reentry_boost} reasons={reentry_reasons}"
+                        )
+
+                if ENABLE_TIME_CONTEXT_ENGINE:
+                    time_boost, time_reasons = apply_time_context_confirmation(
+                        result,
+                        time_context,
+                    )
+
+                    result["score"] += time_boost
+
+                    if time_reasons:
+                        result.setdefault("time_context_reasons", [])
+                        result["time_context_reasons"].extend(time_reasons)
+
+                        logger.info(
+                            f"[TIME CONTEXT CONFIRMATION] "
+                            f"strategy={name} signal={result.get('signal')} "
+                            f"boost={time_boost} reasons={time_reasons}"
+                        )
+
                 if ENABLE_SMC_ENGINE and result["score"] < SMC_MIN_FINAL_SCORE:
                     logger.info(
                         f"[SMC FILTER] Rejected {name} "
@@ -1704,6 +1934,24 @@ def process_cycle(last_processed_candle_time):
                     f"{','.join(selected_signal_data['supply_demand_reasons'])}"
                 )
 
+            if selected_signal_data.get("elliott_fib_reasons"):
+                reason += (
+                    f" | ELLIOTT/FIB: "
+                    f"{','.join(selected_signal_data['elliott_fib_reasons'])}"
+                )
+
+            if selected_signal_data.get("time_context_reasons"):
+                reason += (
+                    f" | TIME: "
+                    f"{','.join(selected_signal_data['time_context_reasons'])}"
+                )
+
+            if selected_signal_data.get("protected_reentry_reasons"):
+                reason += (
+                    f" | PROTECTED REENTRY: "
+                    f"{','.join(selected_signal_data['protected_reentry_reasons'])}"
+                )
+
             if selected_signal_data.get("macro_reasons"):
                 reason += (
                     f" | MACRO: "
@@ -1758,6 +2006,9 @@ def process_cycle(last_processed_candle_time):
                         or selected_signal_data.get("pivot_target_level")
                     ),
                     reason=reason,
+                    extra={
+                        "protected_reentry": selected_signal_data.get("protected_reentry"),
+                    },
                 )
 
             original_signal = signal
@@ -2576,6 +2827,38 @@ def process_cycle(last_processed_candle_time):
     if signal in ["BUY", "SELL"] and trade_plan is not None:
         opposite = "SELL" if signal == "BUY" else "BUY"
 
+        # =========================
+        # EXTRA ENTRY M5 CONFIRMATION
+        # =========================
+        same_direction_count = count_same_direction_positions(SYMBOL, signal)
+        is_extra_entry = same_direction_count >= 1
+
+        if is_extra_entry and REQUIRE_M5_CONFIRMATION_FOR_EXTRA:
+            extra_confirmed, extra_confirm_reason = extra_entry_confirmation_ok(signal)
+
+            if not extra_confirmed:
+                logger.info(
+                    f"[EXTRA CONFIRMATION] Extra entry skipped | "
+                    f"strategy={strategy_name} signal={signal} reason={extra_confirm_reason}"
+                )
+
+                send_telegram_message(
+                    f"🚫 Extra Entry Skipped\n"
+                    f"Symbol: {SYMBOL}\n"
+                    f"Strategy: {strategy_name}\n"
+                    f"Signal: {signal}\n\n"
+                    f"Reason: {extra_confirm_reason}"
+                )
+
+                if "best_setup" in locals():
+                    best_setup["state"] = "SKIPPED"
+                    best_setup["wait_reason"] = f"Extra skipped: {extra_confirm_reason}"
+
+                return current_candle_time
+
+        # =========================
+        # OPPOSITE POSITION GUARD
+        # =========================
         if (
             not ALLOW_OPPOSITE_DIRECTION_TRADES
             and has_same_direction_position(SYMBOL, opposite)

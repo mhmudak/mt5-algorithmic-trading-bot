@@ -12,6 +12,11 @@ GOOGLE_SHEETS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbxkbNRMwx3u
 GOOGLE_SHEETS_WEBHOOK_SECRET = "MyBot2k26MhMud"
 
 # =========================
+# Strategy Debugging
+# =========================
+ENABLE_STRATEGY_REJECTION_DEBUG = True
+
+# =========================
 # Telegram Signal Messages
 # =========================
 TELEGRAM_VERBOSE_SIGNALS = False
@@ -244,6 +249,16 @@ MIN_PROMOTED_MAIN_SCORE = 90
 
 EXTRA_FIXED_TP_PRICE = 5.5
 
+REQUIRE_MAIN_PROTECTED_FOR_EXTRA = False
+
+# =========================
+# Extra Entry Confirmation
+# =========================
+REQUIRE_M5_CONFIRMATION_FOR_EXTRA = True
+EXTRA_ENTRY_CONFIRMATION_TIMEFRAME = mt5.TIMEFRAME_M5
+EXTRA_ENTRY_CONFIRMATION_BARS = 80
+EXTRA_ENTRY_MIN_BODY_ATR = 0.10
+
 # =========================
 # Manual Trades Aggressive Trailing
 # =========================
@@ -429,7 +444,7 @@ SMC_MIN_FINAL_SCORE = 88
 # =========================
 # Strategy Toggles
 # =========================
-ENABLE_FCR_M1_FVG = False
+ENABLE_FCR_M1_FVG = True # may turn it off
 
 # =========================
 # Session Engine
@@ -449,9 +464,9 @@ SESSION_NEWYORK_END = 21
 # =========================
 # WaveTrend Pivot M5 Strategy
 # =========================
-ENABLE_WAVETREND_PIVOT_M5 = False
+ENABLE_WAVETREND_PIVOT_M5 = True # may turn it off
 WAVETREND_PIVOT_TIMEFRAME = mt5.TIMEFRAME_M5
-WAVETREND_PIVOT_BARS = 180
+WAVETREND_PIVOT_BARS = 600
 
 WT_CHANNEL_LENGTH = 10
 WT_AVERAGE_LENGTH = 21
@@ -689,3 +704,147 @@ DELAYED_ENTRY_OFFSET_BY_MARKET = {
 # =========================
 ENABLE_MTF_SR_FVG_RECLAIM = True
 MTF_SR_FVG_RECLAIM_BASE_MIN_SCORE = 93
+
+# =========================
+# Elliott / Fibonacci Context
+# =========================
+ENABLE_ELLIOTT_FIB_CONTEXT = True # may turn it off
+ELLIOTT_FIB_CONTEXT_BOOST = 3
+ELLIOTT_FIB_CONFLICT_PENALTY = 2
+
+# =========================
+# Protected Re-Entry
+# =========================
+ENABLE_PROTECTED_REENTRY = True
+
+PROTECTED_REENTRY_MIN_PROFIT_PRICE = 6.0
+PROTECTED_REENTRY_LOOKBACK_MINUTES = 90
+PROTECTED_REENTRY_SCORE_BOOST = 3
+
+PROTECTED_REENTRY_CLOSE_REASONS = [
+    "SL",
+    "SL_LIKELY",
+    "PROFIT_CLOSE",
+]
+
+PROTECTED_REENTRY_STRATEGIES = [
+    "FVG_CE_MITIGATION",
+    "ORDER_BLOCK",
+    "BREAKER_BLOCK",
+    "HTF_TREND_PULLBACK",
+    "RELIEF_RALLY",
+    "FAILED_FVG_REVERSAL",
+    "FAILED_BREAKOUT_REVERSAL",
+    "ORB",
+]
+
+# =========================
+# Time Context Engine
+# =========================
+ENABLE_TIME_CONTEXT_ENGINE = True # may turn it off
+
+TIME_CONTEXT_WINDOWS = [
+    {
+        "name": "LONDON_OPEN_MOMENTUM",
+        "start": "07:00",
+        "end": "09:30",
+        "boost": 2,
+        "penalty": 1,
+        "boost_strategies": [
+            "ORB",
+            "SESSION_ORB_RETEST",
+            "FVG_CE_MITIGATION",
+            "ORDER_BLOCK",
+            "BREAKER_BLOCK",
+            "HTF_TREND_PULLBACK",
+            "MTF_SR_FVG_RECLAIM",
+        ],
+        "penalty_strategies": [
+            "FAST",
+        ],
+    },
+    {
+        "name": "NEWYORK_OPEN_LIQUIDITY",
+        "start": "13:00",
+        "end": "15:30",
+        "boost": 2,
+        "penalty": 1,
+        "boost_strategies": [
+            "ORB",
+            "SESSION_ORB_RETEST",
+            "LIQUIDITY_SWEEP",
+            "LIQUIDITY_TRAP",
+            "FAILED_BREAKOUT_REVERSAL",
+            "FAILED_FVG_REVERSAL",
+            "VWAP_RECLAIM",
+            "EXTREME_SWEEP_RECLAIM",
+        ],
+        "penalty_strategies": [
+            "FAST",
+        ],
+    },
+    {
+        "name": "ASIA_RANGE_TRAP",
+        "start": "00:00",
+        "end": "07:00",
+        "boost": 1,
+        "penalty": 2,
+        "boost_strategies": [
+            "LIQUIDITY_TRAP",
+            "CRT_TBS",
+            "FRACTAL_SWEEP",
+            "VWAP_RECLAIM",
+            "STRUCTURE_LIQUIDITY",
+        ],
+        "penalty_strategies": [
+            "ORB",
+            "FAST",
+            "STRICT",
+        ],
+    },
+    {
+        "name": "OFF_HOURS_LOW_QUALITY",
+        "start": "21:00",
+        "end": "23:59",
+        "boost": 0,
+        "penalty": 2,
+        "boost_strategies": [],
+        "penalty_strategies": [
+            "ORB",
+            "FAST",
+            "STRICT",
+            "FCR_M1_FVG",
+        ],
+    },
+]
+
+# =========================
+# ORB_V00
+# =========================
+ENABLE_ORB_V00 = True
+ORB_V00_BASE_MIN_SCORE = 92
+
+# =========================
+# IFVG_RETEST_CONFLUENCE
+# =========================
+ENABLE_IFVG_RETEST_CONFLUENCE = True # may turn it off
+IFVG_RETEST_CONFLUENCE_BASE_MIN_SCORE = 93
+
+# =========================
+# Soft SMC Pass
+# =========================
+ENABLE_SOFT_SMC_FOR_STRONG_SETUPS = True # may turn it off
+SOFT_SMC_MIN_SCORE = 98
+
+SOFT_SMC_STRATEGIES = [
+    "FVG_CE_MITIGATION",
+    "BREAKER_BLOCK",
+    "ORDER_BLOCK",
+    "OB_FVG_COMBO",
+    "HTF_TREND_PULLBACK",
+    "LVN_FVG_RECLAIM",
+    "AMD_FVG",
+    "LIQUIDITY_POOL_OB",
+    "IFVG_RETEST_CONFLUENCE",
+    "MTF_SR_FVG_RECLAIM",
+]

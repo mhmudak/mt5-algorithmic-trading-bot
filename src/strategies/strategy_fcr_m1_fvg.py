@@ -3,21 +3,22 @@ import pandas as pd
 
 from config.settings import SYMBOL, EMA_PERIOD, ATR_PERIOD, ATR_MIN, ATR_MAX
 from src.indicators import calculate_ema, calculate_atr
+from src.strategy_debug import reject_strategy
 from src.logger import logger
 
 
 FCR_TIMEFRAME = mt5.TIMEFRAME_M5
 ENTRY_TIMEFRAME = mt5.TIMEFRAME_M1
 
-FCR_BARS = 80
-ENTRY_BARS = 120
+FCR_BARS = 60
+ENTRY_BARS = 90
 
 # FCR candle quality
 FCR_MIN_RANGE_ATR = 0.60
 FCR_MIN_BODY_ATR = 0.25
 
 # M1 entry quality
-MIN_M1_BODY_ATR = 0.15
+MIN_M1_BODY_ATR = 0.12
 MAX_EXTENSION_ATR = 1.60
 
 # FVG quality
@@ -108,19 +109,22 @@ def generate_signal(df):
     - SL beyond FVG / micro structure
     - TP = 3R
     """
-
     m5_df = _fetch_df(FCR_TIMEFRAME, FCR_BARS)
     m1_df = _fetch_df(ENTRY_TIMEFRAME, ENTRY_BARS)
 
     if m5_df is None or m1_df is None:
-        return None
+        return reject_strategy("FCR_M1_FVG", "data_unavailable")
 
-    # Closed candles only
     m5_closed = m5_df.iloc[:-1].copy()
     m1_closed = m1_df.iloc[:-1].copy()
 
     if len(m5_closed) < 10 or len(m1_closed) < 10:
-        return None
+        return reject_strategy(
+            "FCR_M1_FVG",
+            "not_enough_closed_data",
+            m5_bars=len(m5_closed),
+            m1_bars=len(m1_closed),
+        )
 
     # =========================================================
     # M5 FCR candle
@@ -134,14 +138,28 @@ def generate_signal(df):
     fcr_atr = fcr["atr_14"]
 
     if fcr_range <= 0 or fcr_atr <= 0:
-        return None
+        return reject_strategy(
+            "FCR_M1_FVG",
+            "invalid_fcr_range_or_atr",
+            fcr_range=round(fcr_range, 2),
+            fcr_atr=round(fcr_atr, 2),
+        )
 
-    # avoid weak FCR candle
     if fcr_range < fcr_atr * FCR_MIN_RANGE_ATR:
-        return None
+        return reject_strategy(
+            "FCR_M1_FVG",
+            "fcr_range_too_small",
+            fcr_range=round(fcr_range, 2),
+            required=round(fcr_atr * FCR_MIN_RANGE_ATR, 2),
+        )
 
     if fcr_body < fcr_atr * FCR_MIN_BODY_ATR:
-        return None
+        return reject_strategy(
+            "FCR_M1_FVG",
+            "fcr_body_too_small",
+            fcr_body=round(fcr_body, 2),
+            required=round(fcr_atr * FCR_MIN_BODY_ATR, 2),
+        )
 
     # =========================================================
     # M1 candles after FCR
@@ -156,16 +174,21 @@ def generate_signal(df):
     price = entry["close"]
 
     if atr < ATR_MIN or atr > ATR_MAX:
-        return None
+        return reject_strategy("FCR_M1_FVG", "m1_atr_out_of_range", atr=round(atr, 2))
 
     body = abs(entry["close"] - entry["open"])
     candle_range = entry["high"] - entry["low"]
 
     if candle_range <= 0:
-        return None
+        return reject_strategy("FCR_M1_FVG", "invalid_m1_candle_range")
 
     if body < atr * MIN_M1_BODY_ATR:
-        return None
+        return reject_strategy(
+            "FCR_M1_FVG",
+            "m1_entry_body_too_small",
+            body=round(body, 2),
+            required=round(atr * MIN_M1_BODY_ATR, 2),
+        )
 
     sl_buffer = _sl_buffer(atr)
 
@@ -201,7 +224,13 @@ def generate_signal(df):
         tp_reference = round(entry["close"] + (stop_distance * TARGET_R_MULTIPLIER), 2)
 
         if sl_reference >= entry["close"] or tp_reference <= entry["close"]:
-            return None
+            return reject_strategy(
+                "FCR_M1_FVG",
+                "invalid_bullish_sl_tp",
+                entry=round(entry["close"], 2),
+                sl=sl_reference,
+                tp=tp_reference,
+            )
 
         score = _score_setup(
             base_score=93,
@@ -269,7 +298,13 @@ def generate_signal(df):
         tp_reference = round(entry["close"] - (stop_distance * TARGET_R_MULTIPLIER), 2)
 
         if sl_reference <= entry["close"] or tp_reference >= entry["close"]:
-            return None
+            return reject_strategy(
+                "FCR_M1_FVG",
+                "invalid_bearish_sl_tp",
+                entry=round(entry["close"], 2),
+                sl=sl_reference,
+                tp=tp_reference,
+            )
 
         score = _score_setup(
             base_score=93,
@@ -305,4 +340,18 @@ def generate_signal(df):
             ),
         }
 
-    return None
+    return reject_strategy(
+        "FCR_M1_FVG",
+        "no_valid_fcr_m1_fvg_setup",
+        fcr_high=round(fcr_high, 2),
+        fcr_low=round(fcr_low, 2),
+        broke_high=broke_high,
+        bullish_fvg=bool(bullish_fvg),
+        bullish_engulfing=bullish_engulfing,
+        bullish_reclaim=bullish_reclaim,
+        buy_not_chasing=not_chasing if "not_chasing" in locals() else None,
+        broke_low=broke_low,
+        bearish_fvg=bool(bearish_fvg),
+        bearish_engulfing=bearish_engulfing,
+        bearish_reclaim=bearish_reclaim,
+    )
