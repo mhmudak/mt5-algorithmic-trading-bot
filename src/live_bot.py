@@ -35,6 +35,11 @@ from src.position_guard import count_same_direction_positions
 from src.execution_engine import ExecutionEngine
 execution_engine = ExecutionEngine()
 
+from src.choch_mss_context import (
+    analyze_choch_mss_context,
+    apply_choch_mss_confirmation,
+)
+
 from src.protected_reentry import (
     get_protected_reentry_context,
     apply_protected_reentry_confirmation,
@@ -130,6 +135,9 @@ from config.settings import (
     ENABLE_SOFT_SMC_FOR_STRONG_SETUPS,
     SOFT_SMC_MIN_SCORE,
     SOFT_SMC_STRATEGIES,
+    ENABLE_CHOCH_MSS_CONTEXT,
+    ENABLE_CHOCH_MSS_HARD_FILTER,
+    CHOCH_MSS_HARD_FILTER_STRATEGIES,
 )
 
 from src.structure_liquidity_context import (
@@ -302,6 +310,14 @@ def calculate_rr_value(trade_plan):
         return None
 
     return None
+
+def has_choch_mss_conflict(signal_data):
+    reasons = signal_data.get("choch_mss_reasons", [])
+
+    return any(
+        str(reason).startswith("choch_mss_conflict")
+        for reason in reasons
+    )
 
 def extra_entry_confirmation_ok(signal):
     if not REQUIRE_M5_CONFIRMATION_FOR_EXTRA:
@@ -820,6 +836,16 @@ def validate_candidate_pre_execution(
             candidate,
             f"score_too_low {score}/{min_required_score}",
         )
+
+    # =========================
+    # CHoCH / MSS HARD FILTER
+    # =========================
+    if (
+        ENABLE_CHOCH_MSS_HARD_FILTER
+        and strategy_name in CHOCH_MSS_HARD_FILTER_STRATEGIES
+        and has_choch_mss_conflict(candidate)
+    ):
+        return False, candidate, "choch_mss_conflict_hard_block"
 
     # =========================
     # MTF CONFIRMATION
@@ -1392,6 +1418,19 @@ def process_cycle(last_processed_candle_time):
                 f"{elliott_fib_context.get('zone_high')}"
             )
 
+    choch_mss_context = None
+
+    if ENABLE_CHOCH_MSS_CONTEXT:
+        choch_mss_context = analyze_choch_mss_context(df)
+
+        if choch_mss_context:
+            logger.info(
+                f"[CHOCH MSS CONTEXT] "
+                f"bias={choch_mss_context.get('bias')} "
+                f"type={choch_mss_context.get('type')} "
+                f"reasons={choch_mss_context.get('reasons')}"
+            )
+
     protected_reentry_context = {}
 
     if ENABLE_PROTECTED_REENTRY:
@@ -1767,6 +1806,24 @@ def process_cycle(last_processed_candle_time):
                             f"boost={time_boost} reasons={time_reasons}"
                         )
 
+                if ENABLE_CHOCH_MSS_CONTEXT:
+                    choch_boost, choch_reasons = apply_choch_mss_confirmation(
+                        result,
+                        choch_mss_context,
+                    )
+
+                    result["score"] += choch_boost
+
+                    if choch_reasons:
+                        result.setdefault("choch_mss_reasons", [])
+                        result["choch_mss_reasons"].extend(choch_reasons)
+
+                        logger.info(
+                            f"[CHOCH MSS CONFIRMATION] "
+                            f"strategy={name} signal={result.get('signal')} "
+                            f"boost={choch_boost} reasons={choch_reasons}"
+                        )
+
                 if ENABLE_SMC_ENGINE and result["score"] < SMC_MIN_FINAL_SCORE:
                     logger.info(
                         f"[SMC FILTER] Rejected {name} "
@@ -1938,6 +1995,12 @@ def process_cycle(last_processed_candle_time):
                 reason += (
                     f" | ELLIOTT/FIB: "
                     f"{','.join(selected_signal_data['elliott_fib_reasons'])}"
+                )
+
+            if selected_signal_data.get("choch_mss_reasons"):
+                reason += (
+                    f" | CHOCH/MSS: "
+                    f"{','.join(selected_signal_data['choch_mss_reasons'])}"
                 )
 
             if selected_signal_data.get("time_context_reasons"):
@@ -2268,6 +2331,30 @@ def process_cycle(last_processed_candle_time):
         # =========================
         # FINAL CONTEXT REVALIDATION
         # =========================
+
+        # =========================
+        # FINAL CHoCH / MSS HARD FILTER
+        # =========================
+        if (
+            ENABLE_CHOCH_MSS_HARD_FILTER
+            and setup_strategy in CHOCH_MSS_HARD_FILTER_STRATEGIES
+            and has_choch_mss_conflict(setup_data)
+        ):
+            logger.info(
+                f"[FINAL CHOCH/MSS] Ready setup rejected | "
+                f"strategy={setup_strategy} signal={setup_signal}"
+            )
+
+            send_telegram_message(
+                f"🚫 Ready Setup Rejected by CHoCH/MSS\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Strategy: {setup_strategy}\n"
+                f"Signal: {setup_signal}\n"
+                f"Reason: CHoCH/MSS conflict"
+            )
+
+            return current_candle_time
+
         final_mtf_bias = get_mtf_bias()
         final_mtf_conflict = final_mtf_bias is not None and final_mtf_bias != setup_signal
 
