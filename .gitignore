@@ -5,6 +5,7 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+*.pyc
 *.egg-info/
 .eggs/
 build/
@@ -55,5 +56,13 @@ strategy_performance.json
 .DS_Store
 Thumbs.db
 
+# Temporary comparison files
+old_*.py
+
+# Local exports / reports
+*.csv
+*.xlsx
+
+# MT5 / Telegram local sessions
 *.session
 *.session-journal
