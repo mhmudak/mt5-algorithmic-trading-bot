@@ -31,6 +31,7 @@ def session_score_adjustment(strategy_name: str, session_name: str):
         "SNIPER_V2",
         "STRICT",
         "FAST",
+        "WAVETREND_MOMENTUM",
     }
 
     if strategy_name in momentum_strategies:

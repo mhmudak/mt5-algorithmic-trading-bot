@@ -8,8 +8,8 @@ load_dotenv()
 # Google Sheets Logging
 # =========================
 ENABLE_GOOGLE_SHEETS_LOGGING = True
-GOOGLE_SHEETS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbxkbNRMwx3uTquhpaKdypk2T3uPxEkR3zbwsXAJEXa6Yq_kdlAt_ETJueAxfLOUsD7nZw/exec"
-GOOGLE_SHEETS_WEBHOOK_SECRET = "MyBot2k26MhMud"
+GOOGLE_SHEETS_WEBHOOK_URL = os.getenv("GOOGLE_SHEETS_WEBHOOK_URL", "")
+GOOGLE_SHEETS_WEBHOOK_SECRET = os.getenv("GOOGLE_SHEETS_WEBHOOK_SECRET", "")
 
 # =========================
 # Strategy Debugging
@@ -24,7 +24,7 @@ TELEGRAM_VERBOSE_SIGNALS = False
 # =========================
 # Market / Data Settings
 # =========================
-SYMBOL = "XAUUSD"
+SYMBOL = "XAUUSD.s"
 TIMEFRAME = mt5.TIMEFRAME_M15
 BARS_TO_FETCH = 100
 
@@ -67,7 +67,7 @@ NEWS_BLACKOUT_WINDOWS = [
 # =========================
 # Trading Time Blackout
 # =========================
-ENABLE_TRADING_TIME_BLACKOUT = True
+ENABLE_TRADING_TIME_BLACKOUT = False
 
 TRADING_BLACKOUT_WINDOWS = [
     {
@@ -128,7 +128,7 @@ AUTO_NEWS_KEYWORDS = [
 # Execution / Risk Settings
 # =========================
 POSITION_MODE = "fixed"   # "fixed" or "risk"
-FIXED_LOT = 0.06
+FIXED_LOT = 0.08
 RISK_PER_TRADE_PCT = 0.25
 
 # =========================
@@ -148,17 +148,30 @@ MAX_SPREAD = 0.5
 MAX_SLIPPAGE = 0.3
 COOLDOWN_MINUTES = 1
 
+ENABLE_HIGH_SLIPPAGE_RETRACEMENT = True
+HIGH_SLIPPAGE_RETRACEMENT_PRICE = 10.0
+HIGH_SLIPPAGE_EXTRA_SL_PRICE = 3.0
+HIGH_SLIPPAGE_WAIT_TIMEOUT_SECONDS = 1800
+HIGH_SLIPPAGE_WAIT_POLL_SECONDS = 5
+
 # =========================
 # Execution Price Drift Guard
 # =========================
 ENABLE_PRICE_DRIFT_GUARD = True
 MAX_ENTRY_PRICE_DRIFT = 0.66
 
+ENABLE_MOMENTUM_CONTINUATION_ON_PRICE_DRIFT = True
+MOMENTUM_CONTINUATION_MAX_DRIFT_PRICE = 5.0
+MOMENTUM_CONTINUATION_MIN_RR = 1.0
+
+
+FVG_CE_MITIGATION_ALLOW_MOMENTUM_DRIFT = False
+
 # =========================
 # Cooldown After SL Hit
 # =========================
 ENABLE_COOLDOWN_AFTER_SL = True
-COOLDOWN_AFTER_SL_MINUTES = 5
+COOLDOWN_AFTER_SL_MINUTES = 4
 
 # =========================
 # Same Direction Entries
@@ -277,7 +290,7 @@ MAX_DRAWDOWN_USD = 100.0
 # =========================
 # Strategy Mode
 # =========================
-TRADING_MODE = "DUAL"  
+TRADING_MODE = "DUAL"
 # "NORMAL" = use strategy
 # "BUY_ONLY"
 # "SELL_ONLY"
@@ -412,7 +425,7 @@ MARKET_THRESHOLD_MODIFIERS = {
 # External SMT Confirmation
 # =========================
 ENABLE_EXTERNAL_SMT = True
-SMT_CONFIRMATION_SYMBOL = "XAGUSD"
+SMT_CONFIRMATION_SYMBOL = "XAGUSD.s"
 SMT_LOOKBACK_BARS = 20
 
 # =========================
@@ -423,13 +436,13 @@ ENABLE_EXTERNAL_MACRO_CONFIRMATION = True
 # Use your broker's exact symbols.
 # If a symbol does not exist on your broker, the engine will skip it safely.
 EXTERNAL_MACRO_CONFIRMATIONS = [
+    # {
+    #     "symbol": "DXY",
+    #     "mode": "INVERSE",
+    #     "weight": 2,
+    # },
     {
-        "symbol": "DXY",
-        "mode": "INVERSE",
-        "weight": 2,
-    },
-    {
-        "symbol": "USDJPY",
+        "symbol": "USDJPY.s",
         "mode": "INVERSE",
         "weight": 1,
     },
@@ -444,7 +457,7 @@ SMC_MIN_FINAL_SCORE = 88
 # =========================
 # Strategy Toggles
 # =========================
-ENABLE_FCR_M1_FVG = True # may turn it off
+ENABLE_FCR_M1_FVG = False # may turn it off
 
 # =========================
 # Session Engine
@@ -523,7 +536,7 @@ MAX_CONFLUENCE_SCORE_BOOST = 6
 # Candidate Selection / Fallback
 # =========================
 ENABLE_CANDIDATE_FALLBACK = True
-MAX_CANDIDATES_PER_CANDLE = 3
+MAX_CANDIDATES_PER_CANDLE = 5
 
 # =========================
 # Multi-Strategy Extra Entries
@@ -592,24 +605,25 @@ SCALP_STRATEGIES = [
     "RELIEF_RALLY",
 ]
 
-SCALP_MIN_SCORE = 98
+SCALP_MIN_RR = 1.0
+SCALP_MIN_SCORE = 97
 
 # Fixed scalp plan
-SCALP_FIXED_STOP_DISTANCE = 10.0
-SCALP_MIN_TARGET_DISTANCE = 3.5
-SCALP_MAX_TARGET_DISTANCE = 9.0
+SCALP_FIXED_STOP_DISTANCE = 5.0
+SCALP_MIN_TARGET_DISTANCE = 4.0
+SCALP_MAX_TARGET_DISTANCE = 8.0
 
 # =========================
 # Telegram External Signal Trading
 # =========================
 ENABLE_TELEGRAM_SIGNAL_TRADING = False
 
-TELEGRAM_SIGNAL_MODE = "ALERT_ONLY"
+TELEGRAM_SIGNAL_MODE = "AUTO_EXECUTE"
 # ALERT_ONLY
 # CONFIRMATION
 # AUTO_EXECUTE
 
-TELEGRAM_SIGNAL_SYMBOL = "XAUUSD"
+TELEGRAM_SIGNAL_SYMBOL = "XAUUSD.s"
 
 ALLOW_TELEGRAM_PRE_SIGNAL_ENTRY = False
 TELEGRAM_PRE_SIGNAL_EMERGENCY_SL_PRICE = 12.0
@@ -634,7 +648,7 @@ TELEGRAM_USER_SESSION = "telegram_signal_session"
 TELEGRAM_SIGNAL_MODE = "AUTO_EXECUTE"
 # ALERT_ONLY / CONFIRMATION / AUTO_EXECUTE
 
-TELEGRAM_SIGNAL_SYMBOL = "XAUUSD"
+TELEGRAM_SIGNAL_SYMBOL = "XAUUSD.s"
 
 ALLOW_TELEGRAM_SIGNAL_WITHOUT_TP = True
 TELEGRAM_NO_TP_LOT = 0.05
@@ -646,13 +660,18 @@ TELEGRAM_SIGNAL_SOURCES = [
         "enabled": True,
         "parser_profile": "STEVE",
     },
-    {
-        "name": "Nazeh_VIP",
-        "chat": 2629691581,
-        "enabled": True,
-        "parser_profile": "NAZEH",
-    },
+    # {
+    #     "name": "Nazeh_VIP",
+    #     "chat": 2629691581,
+    #     "enabled": True,
+    #     "parser_profile": "NAZEH",
+    # },
 ]
+
+ENABLE_TELEGRAM_WAIT_BETTER_ENTRY = True
+TELEGRAM_WAIT_BETTER_ENTRY_POLL_SECONDS = 10
+TELEGRAM_WAIT_BETTER_ENTRY_MAX_PROFIT_MOVE = 10.0
+TELEGRAM_WAIT_BETTER_ENTRY_TIMEOUT_SECONDS = 1800
 
 # =========================
 # Delayed Retrace Entry
@@ -678,6 +697,7 @@ DELAYED_ENTRY_STRATEGIES = [
     "FVG",
     "OB_FVG_COMBO",
     "MTF_SR_FVG_RECLAIM",
+    "WAVETREND_MOMENTUM",
 ]
 
 # Hybrid Delayed Entry Confirmation
@@ -708,7 +728,7 @@ MTF_SR_FVG_RECLAIM_BASE_MIN_SCORE = 93
 # =========================
 # Elliott / Fibonacci Context
 # =========================
-ENABLE_ELLIOTT_FIB_CONTEXT = True # may turn it off
+ENABLE_ELLIOTT_FIB_CONTEXT = False # may turn it off
 ELLIOTT_FIB_CONTEXT_BOOST = 3
 ELLIOTT_FIB_CONFLICT_PENALTY = 2
 
@@ -741,7 +761,7 @@ PROTECTED_REENTRY_STRATEGIES = [
 # =========================
 # Time Context Engine
 # =========================
-ENABLE_TIME_CONTEXT_ENGINE = True # may turn it off
+ENABLE_TIME_CONTEXT_ENGINE = False # may turn it off
 
 TIME_CONTEXT_WINDOWS = [
     {
@@ -847,4 +867,70 @@ SOFT_SMC_STRATEGIES = [
     "LIQUIDITY_POOL_OB",
     "IFVG_RETEST_CONFLUENCE",
     "MTF_SR_FVG_RECLAIM",
+    "WAVETREND_MOMENTUM",
+]
+
+# BREAKER_BLOCK
+ENABLE_BREAKER_BLOCK_EXTRA_SL = True
+BREAKER_BLOCK_EXTRA_SL_PRICE = 3.0
+
+# =========================
+# Range / Consolidation Strategies
+# =========================
+ENABLE_RANGE_SWEEP_RECLAIM = True
+RANGE_SWEEP_RECLAIM_BASE_MIN_SCORE = 92
+
+RANGE_SWEEP_LOOKBACK_BARS = 48
+RANGE_SWEEP_BUFFER_PRICE = 0.80
+RANGE_SWEEP_RECLAIM_BUFFER_PRICE = 0.30
+RANGE_SWEEP_SL_BUFFER_PRICE = 1.50
+RANGE_SWEEP_MIN_RANGE_ATR = 2.0
+RANGE_SWEEP_MAX_RANGE_ATR = 10.0
+
+
+ENABLE_VWAP_RANGE_MEAN_REVERSION = True
+VWAP_RANGE_MEAN_REVERSION_BASE_MIN_SCORE = 90
+
+VWAP_RANGE_LOOKBACK_BARS = 96
+VWAP_RANGE_EDGE_ZONE_PCT = 0.25
+VWAP_RANGE_MIN_DEVIATION_ATR = 0.80
+VWAP_RANGE_SL_BUFFER_PRICE = 1.50
+
+# =========================
+# ORB Direct Breakout Execution
+# =========================
+ENABLE_ORB_DIRECT_BREAKOUT = True
+ORB_DIRECT_BREAKOUT_MIN_SCORE = 98
+ORB_DIRECT_BREAKOUT_REQUIRE_SMC = True
+ORB_DIRECT_BREAKOUT_EXTRA_SL_PRICE = 3.0
+
+# WAVETREND_MOMENTUM_M5
+ENABLE_WAVETREND_MOMENTUM_M5 = True
+WAVETREND_MOMENTUM_BASE_MIN_SCORE = 91
+WAVETREND_MOMENTUM_EXTRA_SL_PRICE = 2.0
+WAVETREND_MOMENTUM_MIN_RR = 0.63
+
+# MICRO SR SWEEP RECLAIM
+ENABLE_MICRO_SR_SWEEP_RECLAIM = True
+MICRO_SR_SWEEP_RECLAIM_BASE_MIN_SCORE = 91
+
+# =========================
+# M5 Execution Confirmation
+# =========================
+ENABLE_M5_EXECUTION_CONFIRMATION = True
+
+M5_EXECUTION_CONFIRMATION_TIMEFRAME = mt5.TIMEFRAME_M5
+M5_EXECUTION_CONFIRMATION_BARS = 80
+M5_EXECUTION_MIN_BODY_ATR = 0.10
+
+M5_EXECUTION_CONFIRMATION_STRATEGIES = [
+    "ORB",
+    "ORB_V00",
+    "FVG",
+    "FVG_CE_MITIGATION",
+    "ORDER_BLOCK",
+    "BREAKER_BLOCK",
+    "FAILED_FVG_REVERSAL",
+    "FAILED_BREAKOUT_REVERSAL",
+    "WAVETREND_MOMENTUM",
 ]

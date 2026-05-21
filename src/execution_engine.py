@@ -6,6 +6,12 @@ from src.confirmation_engine import confirm_rejection_entry, confirm_breakout_ho
 INVALIDATED_SETUPS = []
 MAX_INVALIDATED_SETUPS = 50
 
+from config.settings import (
+    ENABLE_ORB_DIRECT_BREAKOUT,
+    ORB_DIRECT_BREAKOUT_MIN_SCORE,
+    ORB_DIRECT_BREAKOUT_REQUIRE_SMC,
+    ORB_DIRECT_BREAKOUT_EXTRA_SL_PRICE,
+)
 
 def get_recent_invalidated_setups(strategy=None, max_age_minutes=30):
     now = datetime.utcnow()
@@ -101,6 +107,72 @@ class ExecutionEngine:
 
         self.active_setups.append(setup)
         return setup
+
+    def _orb_direct_breakout_allowed(self, setup):
+        if not ENABLE_ORB_DIRECT_BREAKOUT:
+            return False
+
+        data = setup.get("data", {})
+
+        if data.get("entry_model") != "BREAKOUT":
+            return False
+
+        if data.get("score", 0) < ORB_DIRECT_BREAKOUT_MIN_SCORE:
+            return False
+
+        if not ORB_DIRECT_BREAKOUT_REQUIRE_SMC:
+            return True
+
+        smc_reasons = data.get("smc", [])
+
+        if not smc_reasons:
+            return False
+
+        signal = data.get("signal")
+
+        has_displacement = "displacement" in smc_reasons
+
+        if signal == "BUY":
+            has_structure = "bullish_bos" in smc_reasons
+        elif signal == "SELL":
+            has_structure = "bearish_bos" in smc_reasons
+        else:
+            has_structure = False
+
+        return has_displacement and has_structure
+
+    def _apply_orb_direct_extra_sl(self, setup):
+        data = setup.get("data", {})
+
+        if data.get("orb_direct_extra_sl_applied"):
+            return
+
+        sl_reference = data.get("sl_reference")
+        signal = data.get("signal")
+
+        if sl_reference is None:
+            return
+
+        if signal == "BUY":
+            data["sl_reference"] = round(
+                sl_reference - ORB_DIRECT_BREAKOUT_EXTRA_SL_PRICE,
+                2,
+            )
+
+        elif signal == "SELL":
+            data["sl_reference"] = round(
+                sl_reference + ORB_DIRECT_BREAKOUT_EXTRA_SL_PRICE,
+                2,
+            )
+
+        data["orb_direct_extra_sl_applied"] = True
+        data["orb_direct_extra_sl_price"] = ORB_DIRECT_BREAKOUT_EXTRA_SL_PRICE
+
+        reason = data.get("reason", "N/A")
+        data["reason"] = (
+            f"{reason} | ORB_DIRECT_BREAKOUT: extra SL "
+            f"{ORB_DIRECT_BREAKOUT_EXTRA_SL_PRICE}"
+        )
 
     def process_setups(self, df, price, atr):
         executable = []
@@ -209,6 +281,11 @@ class ExecutionEngine:
                             )
                             continue
 
+                        if self._orb_direct_breakout_allowed(setup):
+                            self._apply_orb_direct_extra_sl(setup)
+                            self._mark_ready(setup, executable)
+                            continue
+
                         if confirm_breakout_hold(df, signal, orb_low, atr):
                             self._mark_ready(setup, executable)
                         else:
@@ -258,6 +335,11 @@ class ExecutionEngine:
                                 setup,
                                 f"ORB BUY invalidated | close back below breakout level {round(orb_high, 2)}",
                             )
+                            continue
+
+                        if self._orb_direct_breakout_allowed(setup):
+                            self._apply_orb_direct_extra_sl(setup)
+                            self._mark_ready(setup, executable)
                             continue
 
                         if confirm_breakout_hold(df, signal, orb_high, atr):

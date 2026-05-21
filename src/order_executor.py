@@ -1,3 +1,5 @@
+import time
+
 import MetaTrader5 as mt5
 
 from config.settings import (
@@ -5,6 +7,17 @@ from config.settings import (
     MAX_SLIPPAGE,
     ENABLE_PRICE_DRIFT_GUARD,
     MAX_ENTRY_PRICE_DRIFT,
+    ENABLE_HIGH_SLIPPAGE_RETRACEMENT,
+    HIGH_SLIPPAGE_RETRACEMENT_PRICE,
+    HIGH_SLIPPAGE_EXTRA_SL_PRICE,
+    HIGH_SLIPPAGE_WAIT_TIMEOUT_SECONDS,
+    HIGH_SLIPPAGE_WAIT_POLL_SECONDS,
+    ENABLE_MOMENTUM_CONTINUATION_ON_PRICE_DRIFT,
+    MOMENTUM_CONTINUATION_MAX_DRIFT_PRICE,
+    MOMENTUM_CONTINUATION_MIN_RR,
+    FVG_CE_MITIGATION_ALLOW_MOMENTUM_DRIFT,
+    ENABLE_BREAKER_BLOCK_EXTRA_SL,
+    BREAKER_BLOCK_EXTRA_SL_PRICE,
 )
 from src.notifier import send_telegram_message
 from src.trade_tracker import register_executed_trade
@@ -36,6 +49,229 @@ def get_supported_filling_modes(symbol):
     return modes
 
 
+def get_current_request_price(symbol, signal):
+    tick = mt5.symbol_info_tick(symbol)
+
+    if tick is None:
+        return None
+
+    if signal == "BUY":
+        return tick.ask
+
+    if signal == "SELL":
+        return tick.bid
+
+    return None
+
+
+def calculate_adverse_drift(signal, expected_price, current_price):
+    if signal == "BUY":
+        return current_price - expected_price
+
+    if signal == "SELL":
+        return expected_price - current_price
+
+    return None
+
+
+def get_high_slippage_target(signal, current_price):
+    if signal == "BUY":
+        return round(current_price - HIGH_SLIPPAGE_RETRACEMENT_PRICE, 2)
+
+    if signal == "SELL":
+        return round(current_price + HIGH_SLIPPAGE_RETRACEMENT_PRICE, 2)
+
+    return None
+
+
+def is_retracement_reached(signal, current_price, target_price):
+    if signal == "BUY":
+        return current_price <= target_price
+
+    if signal == "SELL":
+        return current_price >= target_price
+
+    return False
+
+
+def adjust_sl_after_retracement(signal, original_entry, original_sl, new_entry):
+    original_stop_distance = abs(original_entry - original_sl)
+    new_stop_distance = original_stop_distance + HIGH_SLIPPAGE_EXTRA_SL_PRICE
+
+    if signal == "BUY":
+        return round(new_entry - new_stop_distance, 2)
+
+    if signal == "SELL":
+        return round(new_entry + new_stop_distance, 2)
+
+    return original_sl
+
+
+def wait_for_high_slippage_retracement(
+    signal,
+    trade_plan,
+    symbol,
+    current_price,
+    slippage,
+):
+    expected_price = trade_plan["entry_price"]
+    original_sl = trade_plan["stop_loss"]
+    target_price = get_high_slippage_target(signal, current_price)
+
+    send_telegram_message(
+        f"⏳ High Slippage Retracement Mode\n"
+        f"Symbol: {symbol}\n"
+        f"Signal: {signal}\n"
+        f"Expected: {expected_price}\n"
+        f"Current: {round(current_price, 2)}\n"
+        f"Slippage: {round(slippage, 2)}\n\n"
+        f"Waiting for target: {target_price}\n"
+        f"SL will be moved {HIGH_SLIPPAGE_EXTRA_SL_PRICE} USD farther."
+    )
+
+    start_time = time.time()
+
+    while time.time() - start_time <= HIGH_SLIPPAGE_WAIT_TIMEOUT_SECONDS:
+        latest_price = get_current_request_price(symbol, signal)
+
+        if latest_price is None:
+            time.sleep(HIGH_SLIPPAGE_WAIT_POLL_SECONDS)
+            continue
+
+        if is_retracement_reached(signal, latest_price, target_price):
+            adjusted_plan = trade_plan.copy()
+            adjusted_plan["entry_price"] = round(latest_price, 2)
+            adjusted_plan["stop_loss"] = adjust_sl_after_retracement(
+                signal=signal,
+                original_entry=expected_price,
+                original_sl=original_sl,
+                new_entry=latest_price,
+            )
+            adjusted_plan["reason"] = (
+                f"{trade_plan.get('reason', '')} | HIGH_SLIPPAGE_RETRACEMENT"
+            )
+            adjusted_plan["comment"] = trade_plan.get("comment", "HighSlipRetrace")[:31]
+
+            send_telegram_message(
+                f"✅ High Slippage Retracement Reached\n"
+                f"Symbol: {symbol}\n"
+                f"Signal: {signal}\n"
+                f"Target: {target_price}\n"
+                f"Current: {round(latest_price, 2)}\n"
+                f"New SL: {adjusted_plan['stop_loss']}"
+            )
+
+            return adjusted_plan
+
+        time.sleep(HIGH_SLIPPAGE_WAIT_POLL_SECONDS)
+
+    send_telegram_message(
+        f"⌛ High Slippage Retracement Expired\n"
+        f"Symbol: {symbol}\n"
+        f"Signal: {signal}\n"
+        f"Expected: {expected_price}\n"
+        f"Initial Current: {round(current_price, 2)}\n"
+        f"Target was: {target_price}\n\n"
+        f"No trade executed."
+    )
+
+    return None
+
+
+def calculate_rr(signal, entry, sl, tp):
+    try:
+        if tp in [None, 0, 0.0]:
+            return None
+
+        if signal == "BUY":
+            risk = entry - sl
+            reward = tp - entry
+        elif signal == "SELL":
+            risk = sl - entry
+            reward = entry - tp
+        else:
+            return None
+
+        if risk <= 0:
+            return None
+
+        return round(reward / risk, 2)
+
+    except Exception:
+        return None
+
+
+def rebase_trade_plan_for_momentum(signal, trade_plan, current_price):
+    original_entry = trade_plan["entry_price"]
+    original_sl = trade_plan["stop_loss"]
+    original_tp = trade_plan["take_profit"]
+
+    stop_distance = abs(original_entry - original_sl)
+    target_distance = abs(original_entry - original_tp)
+
+    adjusted_plan = trade_plan.copy()
+    adjusted_plan["entry_price"] = round(current_price, 2)
+
+    if signal == "BUY":
+        adjusted_plan["stop_loss"] = round(current_price - stop_distance, 2)
+        adjusted_plan["take_profit"] = round(current_price + target_distance, 2)
+
+    elif signal == "SELL":
+        adjusted_plan["stop_loss"] = round(current_price + stop_distance, 2)
+        adjusted_plan["take_profit"] = round(current_price - target_distance, 2)
+
+    adjusted_plan["reason"] = (
+        f"{trade_plan.get('reason', '')} | MOMENTUM_CONTINUATION_AFTER_PRICE_DRIFT"
+    )
+    adjusted_plan["comment"] = trade_plan.get("comment", "MomentumDrift")[:31]
+
+    return adjusted_plan
+
+
+def is_fvg_ce_mitigation_trade(trade_plan):
+    strategy = str(trade_plan.get("strategy", "")).upper()
+    entry_model = str(trade_plan.get("entry_model", "")).upper()
+
+    return strategy == "FVG_CE_MITIGATION" or "FVG_CE" in entry_model
+
+
+def is_breaker_block_trade(trade_plan):
+    strategy = str(trade_plan.get("strategy", "")).upper()
+    entry_model = str(trade_plan.get("entry_model", "")).upper()
+
+    return strategy == "BREAKER_BLOCK" or "BREAKER" in entry_model
+
+
+def apply_breaker_block_extra_sl(signal, trade_plan):
+    if not ENABLE_BREAKER_BLOCK_EXTRA_SL:
+        return trade_plan
+
+    if not is_breaker_block_trade(trade_plan):
+        return trade_plan
+
+    adjusted_plan = trade_plan.copy()
+    original_sl = trade_plan["stop_loss"]
+
+    if signal == "BUY":
+        adjusted_plan["stop_loss"] = round(
+            original_sl - BREAKER_BLOCK_EXTRA_SL_PRICE,
+            2,
+        )
+
+    elif signal == "SELL":
+        adjusted_plan["stop_loss"] = round(
+            original_sl + BREAKER_BLOCK_EXTRA_SL_PRICE,
+            2,
+        )
+
+    adjusted_plan["reason"] = (
+        f"{trade_plan.get('reason', '')} | BREAKER_BLOCK_EXTRA_SL"
+    )
+    adjusted_plan["comment"] = trade_plan.get("comment", "BreakerSLBuffer")[:31]
+
+    return adjusted_plan
+
+
 def execute_trade(signal, trade_plan, symbol):
     if EXECUTION_MODE == "SIMULATION":
         print("\n[SIMULATION MODE]")
@@ -62,36 +298,124 @@ def execute_trade(signal, trade_plan, symbol):
         )
         return False
 
-    tick = mt5.symbol_info_tick(symbol)
+    request_price = get_current_request_price(symbol, signal)
 
-    if tick is None:
+    if request_price is None:
         error_message = f"❌ Order failed: no tick data for {symbol} | {mt5.last_error()}"
         print(error_message)
         send_telegram_message(error_message)
         return False
 
-    request_price = tick.ask if signal == "BUY" else tick.bid
     expected_price = trade_plan["entry_price"]
 
-    if signal == "BUY":
-        adverse_drift = request_price - expected_price
-    else:
-        adverse_drift = expected_price - request_price
+    adverse_drift = calculate_adverse_drift(
+        signal=signal,
+        expected_price=expected_price,
+        current_price=request_price,
+    )
 
-    if ENABLE_PRICE_DRIFT_GUARD and adverse_drift > MAX_ENTRY_PRICE_DRIFT:
-        error_message = (
-            f"🚫 Execution Blocked by Price Drift\n"
-            f"Symbol: {symbol}\n"
-            f"Signal: {signal}\n"
-            f"Expected Entry: {expected_price}\n"
-            f"Current Price: {round(request_price, 2)}\n"
-            f"Adverse Drift: {round(adverse_drift, 2)}\n"
-            f"Max Allowed: {MAX_ENTRY_PRICE_DRIFT}"
+    if (
+        ENABLE_PRICE_DRIFT_GUARD
+        and adverse_drift is not None
+        and adverse_drift > MAX_ENTRY_PRICE_DRIFT
+    ):
+        old_expected_price = expected_price
+
+        if (
+            ENABLE_MOMENTUM_CONTINUATION_ON_PRICE_DRIFT
+            and adverse_drift <= MOMENTUM_CONTINUATION_MAX_DRIFT_PRICE
+            and not (
+                is_fvg_ce_mitigation_trade(trade_plan)
+                and not FVG_CE_MITIGATION_ALLOW_MOMENTUM_DRIFT
+            )
+        ):
+            adjusted_trade_plan = rebase_trade_plan_for_momentum(
+                signal=signal,
+                trade_plan=trade_plan,
+                current_price=request_price,
+            )
+
+            rr = calculate_rr(
+                signal=signal,
+                entry=adjusted_trade_plan["entry_price"],
+                sl=adjusted_trade_plan["stop_loss"],
+                tp=adjusted_trade_plan["take_profit"],
+            )
+
+            if rr is None or rr < MOMENTUM_CONTINUATION_MIN_RR:
+                error_message = (
+                    f"🚫 Momentum Continuation Blocked\n"
+                    f"Symbol: {symbol}\n"
+                    f"Signal: {signal}\n"
+                    f"Expected Entry: {old_expected_price}\n"
+                    f"Current Price: {round(request_price, 2)}\n"
+                    f"Drift: {round(adverse_drift, 2)}\n"
+                    f"RR: {rr}\n"
+                    f"Min RR: {MOMENTUM_CONTINUATION_MIN_RR}"
+                )
+                print(error_message)
+                send_telegram_message(error_message)
+                return False
+
+            trade_plan = adjusted_trade_plan
+            expected_price = trade_plan["entry_price"]
+
+            send_telegram_message(
+                f"⚡ Momentum Continuation Accepted\n"
+                f"Symbol: {symbol}\n"
+                f"Signal: {signal}\n"
+                f"Old Entry: {old_expected_price}\n"
+                f"New Entry: {round(request_price, 2)}\n"
+                f"Drift: {round(adverse_drift, 2)}\n"
+                f"New SL: {trade_plan['stop_loss']}\n"
+                f"New TP: {trade_plan['take_profit']}\n"
+                f"RR: {rr}"
+            )
+
+        else:
+            error_message = (
+                f"🚫 Execution Blocked by Price Drift\n"
+                f"Symbol: {symbol}\n"
+                f"Signal: {signal}\n"
+                f"Expected Entry: {expected_price}\n"
+                f"Current Price: {round(request_price, 2)}\n"
+                f"Adverse Drift: {round(adverse_drift, 2)}\n"
+                f"Max Allowed: {MAX_ENTRY_PRICE_DRIFT}"
+            )
+            print(error_message)
+            send_telegram_message(error_message)
+            return False
+
+    pre_execution_slippage = abs(request_price - expected_price)
+
+    if ENABLE_HIGH_SLIPPAGE_RETRACEMENT and pre_execution_slippage > MAX_SLIPPAGE:
+        adjusted_trade_plan = wait_for_high_slippage_retracement(
+            signal=signal,
+            trade_plan=trade_plan,
+            symbol=symbol,
+            current_price=request_price,
+            slippage=pre_execution_slippage,
         )
 
-        print(error_message)
-        send_telegram_message(error_message)
-        return False
+        if adjusted_trade_plan is None:
+            return False
+
+        trade_plan = adjusted_trade_plan
+
+        request_price = get_current_request_price(symbol, signal)
+
+        if request_price is None:
+            error_message = (
+                f"❌ Order failed after retracement: no tick data for {symbol} | "
+                f"{mt5.last_error()}"
+            )
+            print(error_message)
+            send_telegram_message(error_message)
+            return False
+
+        expected_price = trade_plan["entry_price"]
+
+    trade_plan = apply_breaker_block_extra_sl(signal, trade_plan)
 
     base_request = {
         "action": mt5.TRADE_ACTION_DEAL,

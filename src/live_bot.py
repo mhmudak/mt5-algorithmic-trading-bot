@@ -68,6 +68,8 @@ from config.settings import (
     ENABLE_REVERSAL_ALERTS,
     REVERSAL_MIN_SCORE,
     TRADING_MODE,
+    ENABLE_RANGE_SWEEP_RECLAIM,
+    ENABLE_VWAP_RANGE_MEAN_REVERSION,
     ENABLE_FCR_M1_FVG,
     ENABLE_WAVETREND_PIVOT_M5,
     ENABLE_STRUCTURE_LIQUIDITY,
@@ -102,6 +104,7 @@ from config.settings import (
     ENABLE_SCALP_MODE,
     SCALP_STRATEGIES,
     SCALP_MIN_SCORE,
+    SCALP_MIN_RR,
     SCALP_FIXED_STOP_DISTANCE,
     SCALP_MIN_TARGET_DISTANCE,
     SCALP_MAX_TARGET_DISTANCE,
@@ -130,6 +133,14 @@ from config.settings import (
     ENABLE_SOFT_SMC_FOR_STRONG_SETUPS,
     SOFT_SMC_MIN_SCORE,
     SOFT_SMC_STRATEGIES,
+    ENABLE_WAVETREND_MOMENTUM_M5,
+    ENABLE_MICRO_SR_SWEEP_RECLAIM,
+    WAVETREND_MOMENTUM_MIN_RR,
+    ENABLE_M5_EXECUTION_CONFIRMATION,
+    M5_EXECUTION_CONFIRMATION_TIMEFRAME,
+    M5_EXECUTION_CONFIRMATION_BARS,
+    M5_EXECUTION_MIN_BODY_ATR,
+    M5_EXECUTION_CONFIRMATION_STRATEGIES,
 )
 
 from src.structure_liquidity_context import (
@@ -186,6 +197,10 @@ STRATEGY_SPECIFIC_CONFIRMED = {
     "MTF_SR_FVG_RECLAIM",
     "ORB_V00",
     "IFVG_RETEST_CONFLUENCE",
+    "RANGE_SWEEP_RECLAIM",
+    "VWAP_RANGE_MEAN_REVERSION",
+    "WAVETREND_MOMENTUM",
+    "MICRO_SR_SWEEP_RECLAIM",
 }
 
 def fetch_market_data():
@@ -236,6 +251,12 @@ def get_min_rr(strategy_name, entry_model=None, sl_model=None):
 
         return 1.2
 
+    if strategy_name == "RANGE_SWEEP_RECLAIM":
+        return 1.20
+
+    if strategy_name == "VWAP_RANGE_MEAN_REVERSION":
+        return 1.15
+
     rr_140 = {
         "FVG",
         "ORDER_BLOCK",
@@ -269,18 +290,21 @@ def get_min_rr(strategy_name, entry_model=None, sl_model=None):
     }
 
     if strategy_name in rr_140:
-        return 1.1
+        return 1.25
 
     if strategy_name in rr_130:
-        return 1.0
+        return 1.15
 
     if strategy_name in rr_125:
-        return 0.95
+        return 1.10
 
     if strategy_name in rr_110:
-        return 0.80
+        return 0.95
 
-    return 0.9
+    if strategy_name == "WAVETREND_MOMENTUM":
+        return WAVETREND_MOMENTUM_MIN_RR
+
+    return 1.00
 
 def calculate_rr_value(trade_plan):
     if not trade_plan:
@@ -302,6 +326,161 @@ def calculate_rr_value(trade_plan):
         return None
 
     return None
+
+def m5_execution_confirmation_ok(signal, strategy_name):
+    if not ENABLE_M5_EXECUTION_CONFIRMATION:
+        return True, "m5_execution_confirmation_disabled"
+
+    if strategy_name not in M5_EXECUTION_CONFIRMATION_STRATEGIES:
+        return True, "strategy_not_required_for_m5_confirmation"
+
+    rates = mt5.copy_rates_from_pos(
+        SYMBOL,
+        M5_EXECUTION_CONFIRMATION_TIMEFRAME,
+        0,
+        M5_EXECUTION_CONFIRMATION_BARS,
+    )
+
+    if rates is None or len(rates) < 10:
+        return False, "no_m5_execution_confirmation_data"
+
+    m5_df = pd.DataFrame(rates)
+    m5_df["time"] = pd.to_datetime(m5_df["time"], unit="s")
+    m5_df["ema_20"] = calculate_ema(m5_df, EMA_PERIOD)
+    m5_df["atr_14"] = calculate_atr(m5_df, ATR_PERIOD)
+
+    candle = m5_df.iloc[-2]
+    prev = m5_df.iloc[-3]
+
+    atr = candle["atr_14"]
+    body = abs(candle["close"] - candle["open"])
+    candle_range = candle["high"] - candle["low"]
+
+    if atr <= 0 or candle_range <= 0:
+        return False, "invalid_m5_confirmation_candle"
+
+    if body < atr * M5_EXECUTION_MIN_BODY_ATR:
+        return False, "m5_confirmation_body_too_small"
+
+    if signal == "BUY":
+        confirmed = (
+            candle["close"] > candle["open"]
+            and candle["close"] > candle["ema_20"]
+            and (
+                candle["close"] > prev["high"]
+                or candle["close"] >= candle["low"] + candle_range * 0.60
+            )
+        )
+
+        if confirmed:
+            return True, "m5_buy_execution_confirmed"
+
+        return False, "m5_buy_execution_not_confirmed"
+
+    if signal == "SELL":
+        confirmed = (
+            candle["close"] < candle["open"]
+            and candle["close"] < candle["ema_20"]
+            and (
+                candle["close"] < prev["low"]
+                or candle["close"] <= candle["high"] - candle_range * 0.60
+            )
+        )
+
+        if confirmed:
+            return True, "m5_sell_execution_confirmed"
+
+        return False, "m5_sell_execution_not_confirmed"
+
+    return False, "invalid_signal"
+
+def get_strategy_selection_priority(strategy_name, market_condition):
+    strategy_name = str(strategy_name or "").upper()
+    market_condition = str(market_condition or "").upper()
+
+    ranging_priority = {
+        "RANGE_SWEEP_RECLAIM": 10,
+        "VWAP_RANGE_MEAN_REVERSION": 9,
+        "FAILED_BREAKOUT_REVERSAL": 8,
+        "FAILED_FVG_REVERSAL": 7,
+        "LIQUIDITY_TRAP": 7,
+        "FRACTAL_SWEEP": 5,
+        "VWAP_RECLAIM": 5,
+        "SUPPLY_DEMAND_RETEST": 4,
+        "IFVG_RETEST_CONFLUENCE": 4,
+        "MTF_SR_FVG_RECLAIM": 3,
+        "BREAKER_BLOCK": 3,
+        "WAVETREND_PIVOT": 2,
+        "FCR_M1_FVG": 2,
+    }
+
+    default_priority = {
+        "HTF_TREND_PULLBACK": 5,
+        "OB_FVG_COMBO": 5,
+        "BREAKER_BLOCK": 4,
+        "ORDER_BLOCK": 4,
+        "FVG": 3,
+        "FVG_CE_MITIGATION": 3,
+        "LIQUIDITY_TRAP": 4,
+        "FAILED_BREAKOUT_REVERSAL": 4,
+        "FAILED_FVG_REVERSAL": 4,
+    }
+
+    if market_condition == "RANGING":
+        return ranging_priority.get(strategy_name, 0)
+
+    return default_priority.get(strategy_name, 0)
+
+
+def get_session_selection_adjustment(session_name):
+    session_name = str(session_name or "").upper()
+
+    if session_name == "OFF_HOURS":
+        return -6
+
+    if session_name in ["NEWYORK", "LONDON", "LONDON_NEWYORK", "NY_OVERLAP"]:
+        return 3
+
+    if session_name == "ASIA":
+        return -2
+
+    return 0
+
+
+def calculate_candidate_selection_rank(
+    candidate,
+    rr_value,
+    min_rr_required,
+    market_condition,
+):
+    score = candidate.get("score", 0)
+    strategy_name = candidate.get("strategy")
+    session_name = candidate.get("session")
+
+    strategy_priority = get_strategy_selection_priority(
+        strategy_name,
+        market_condition,
+    )
+
+    session_adjustment = get_session_selection_adjustment(session_name)
+
+    rr_extra = max(rr_value - min_rr_required, 0)
+    rr_bonus = min(rr_extra * 8, 12)
+
+    final_rank = round(
+        score + rr_bonus + strategy_priority + session_adjustment,
+        2,
+    )
+
+    return final_rank, {
+        "score": score,
+        "rr": rr_value,
+        "required_rr": min_rr_required,
+        "rr_bonus": round(rr_bonus, 2),
+        "strategy_priority": strategy_priority,
+        "session_adjustment": session_adjustment,
+        "final_rank": final_rank,
+    }
 
 def extra_entry_confirmation_ok(signal):
     if not REQUIRE_M5_CONFIRMATION_FOR_EXTRA:
@@ -624,6 +803,13 @@ def try_build_scalp_trade_plan(
     scalp_trade_plan["scalp_sl_model"] = "FIXED_SCALP_STOP"
     scalp_trade_plan["scalp_stop_distance"] = SCALP_FIXED_STOP_DISTANCE
     scalp_trade_plan["scalp_target_distance"] = round(target_distance, 2)
+
+    scalp_rr = calculate_rr_value(scalp_trade_plan)
+
+    if scalp_rr is None or scalp_rr < SCALP_MIN_RR:
+        return None
+
+    scalp_trade_plan["scalp_rr"] = scalp_rr
 
     scalp_trade_plan["reason"] = (
         f"{normal_trade_plan.get('reason', selected_signal_data.get('reason', 'N/A'))} "
@@ -1342,6 +1528,10 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_mtf_sr_fvg_reclaim import generate_signal as mtf_sr_fvg_reclaim_signal
     from src.strategies.strategy_orb_v00 import generate_signal as orb_v00_signal
     from src.strategies.strategy_ifvg_retest_confluence import generate_signal as ifvg_retest_confluence_signal
+    from src.strategies.strategy_range_sweep_reclaim import generate_signal as range_sweep_reclaim_signal
+    from src.strategies.strategy_vwap_range_mean_reversion import generate_signal as vwap_range_mean_reversion_signal
+    from src.strategies.strategy_wavetrend_momentum import generate_signal as wavetrend_momentum_signal
+    from src.strategies.strategy_micro_sr_sweep_reclaim import generate_signal as micro_sr_sweep_reclaim_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -1410,8 +1600,10 @@ def process_cycle(last_processed_candle_time):
             ("LVN_FVG_RECLAIM", lvn_fvg_reclaim_signal),
             ("FVG_CE_MITIGATION", fvg_ce_mitigation_signal),
             ("ORB_V00", orb_v00_signal),
+            ("MICRO_SR_SWEEP_RECLAIM", micro_sr_sweep_reclaim_signal),
             ("ORB", orb_signal),
             ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
+            ("WAVETREND_MOMENTUM", wavetrend_momentum_signal),
             ("FCR_M1_FVG", fcr_m1_fvg_signal),
             ("BREAKER_BLOCK", breaker_block_signal),
             ("MTF_OB_ENTRY", mtf_ob_entry_signal),
@@ -1438,9 +1630,11 @@ def process_cycle(last_processed_candle_time):
             ("FVG", fvg_signal),
             ("OB_FVG_COMBO", ob_fvg_combo_signal),
             ("RELIEF_RALLY", relief_rally_signal),
+            ("MICRO_SR_SWEEP_RECLAIM", micro_sr_sweep_reclaim_signal),
             ("HTF_FIB_CONFLUENCE", htf_fib_confluence_signal),
             ("MTF_SR_FVG_RECLAIM", mtf_sr_fvg_reclaim_signal),
             ("SUPPLY_DEMAND_RETEST", supply_demand_retest_signal),
+            ("WAVETREND_MOMENTUM", wavetrend_momentum_signal),
             ("WAVETREND_PIVOT", wavetrend_pivot_signal),
             ("STRUCTURE_LIQUIDITY", structure_liquidity_signal),
             ("LIQUIDITY_CANDLE", liquidity_candle_signal),
@@ -1450,7 +1644,10 @@ def process_cycle(last_processed_candle_time):
 
     elif market_condition == "RANGING":
         strategy_map = [
+            ("RANGE_SWEEP_RECLAIM", range_sweep_reclaim_signal),
+            ("VWAP_RANGE_MEAN_REVERSION", vwap_range_mean_reversion_signal),
             ("VWAP_RECLAIM", vwap_reclaim_signal),
+            ("MICRO_SR_SWEEP_RECLAIM", micro_sr_sweep_reclaim_signal),
             ("WAVETREND_PIVOT", wavetrend_pivot_signal),
             ("FRACTAL_SWEEP", fractal_sweep_signal),
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
@@ -1475,9 +1672,11 @@ def process_cycle(last_processed_candle_time):
             ("SNIPER_V2", sniper_signal),
         ]
 
+
     elif market_condition == "VOLATILE":
         strategy_map = [
             ("VWAP_RECLAIM", vwap_reclaim_signal),
+            ("MICRO_SR_SWEEP_RECLAIM", micro_sr_sweep_reclaim_signal),
             ("WAVETREND_PIVOT", wavetrend_pivot_signal),
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
             ("FRACTAL_SWEEP", fractal_sweep_signal),
@@ -1498,6 +1697,7 @@ def process_cycle(last_processed_candle_time):
             ("FVG_CE_MITIGATION", fvg_ce_mitigation_signal),
             ("ORB_V00", orb_v00_signal),
             ("ORB", orb_signal),
+            ("WAVETREND_MOMENTUM", wavetrend_momentum_signal),
             ("FCR_M1_FVG", fcr_m1_fvg_signal),
             ("LIQUIDITY_SWEEP", liquidity_sweep_signal),
             ("LIQUIDITY_CANDLE", liquidity_candle_signal),
@@ -1509,6 +1709,38 @@ def process_cycle(last_processed_candle_time):
     # =========================
     # STRATEGY TOGGLES
     # =========================
+    if not ENABLE_MICRO_SR_SWEEP_RECLAIM:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "MICRO_SR_SWEEP_RECLAIM"
+        ]
+        logger.info("[STRATEGY TOGGLE] MICRO_SR_SWEEP_RECLAIM disabled")
+
+    if not ENABLE_WAVETREND_MOMENTUM_M5:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "WAVETREND_MOMENTUM"
+        ]
+        logger.info("[STRATEGY TOGGLE] WAVETREND_MOMENTUM disabled")
+
+    if not ENABLE_RANGE_SWEEP_RECLAIM:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "RANGE_SWEEP_RECLAIM"
+        ]
+        logger.info("[STRATEGY TOGGLE] RANGE_SWEEP_RECLAIM disabled")
+
+    if not ENABLE_VWAP_RANGE_MEAN_REVERSION:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "VWAP_RANGE_MEAN_REVERSION"
+        ]
+        logger.info("[STRATEGY TOGGLE] VWAP_RANGE_MEAN_REVERSION disabled")
+
     if not ENABLE_IFVG_RETEST_CONFLUENCE:
         strategy_map = [
             (name, strat)
@@ -1820,6 +2052,8 @@ def process_cycle(last_processed_candle_time):
 
         candidates_to_check = top_candidates if ENABLE_CANDIDATE_FALLBACK else [top_candidates[0]]
 
+        ranked_candidates = []
+
         for candidate in candidates_to_check:
             candidate = apply_candidate_confluence(candidate.copy(), top_candidates)
 
@@ -1832,42 +2066,191 @@ def process_cycle(last_processed_candle_time):
                 atr=atr,
             )
 
-            if is_valid:
-                selected_candidate = validated_candidate
-                break
+            if not is_valid:
+                rejected_candidates.append(
+                    {
+                        "strategy": candidate.get("strategy"),
+                        "signal": candidate.get("signal"),
+                        "score": candidate.get("score"),
+                        "reason": rejection_reason,
+                    }
+                )
 
-            rejected_candidates.append(
-                {
-                    "strategy": candidate.get("strategy"),
-                    "signal": candidate.get("signal"),
-                    "score": candidate.get("score"),
-                    "reason": rejection_reason,
-                }
+                logger.info(
+                    f"[CANDIDATE REJECTED] "
+                    f"strategy={candidate.get('strategy')} "
+                    f"signal={candidate.get('signal')} "
+                    f"score={candidate.get('score')} "
+                    f"reason={rejection_reason}"
+                )
+
+                log_setup_event(
+                    setup_id=build_setup_id(
+                        candidate.get("strategy"),
+                        candidate.get("signal"),
+                        tick.time,
+                    ),
+                    event="CANDIDATE_REJECTED",
+                    strategy=candidate.get("strategy"),
+                    signal=candidate.get("signal"),
+                    entry_model=candidate.get("entry_model"),
+                    score=candidate.get("score"),
+                    session=session_name,
+                    market_condition=market_condition,
+                    reason=rejection_reason,
+                )
+
+                continue
+
+            candidate_signal = validated_candidate.get("signal")
+            candidate_strategy = validated_candidate.get("strategy", "UNKNOWN")
+
+            candidate_trade_plan = calculate_trade_plan(
+                df=df,
+                signal=candidate_signal,
+                tick=tick,
+                account_balance=account_info.balance,
+                signal_data=validated_candidate,
             )
+
+            if candidate_trade_plan is None:
+                rejection_reason = "trade_plan_failed"
+
+                rejected_candidates.append(
+                    {
+                        "strategy": candidate_strategy,
+                        "signal": candidate_signal,
+                        "score": validated_candidate.get("score"),
+                        "reason": rejection_reason,
+                    }
+                )
+
+                logger.info(
+                    f"[CANDIDATE REJECTED] "
+                    f"strategy={candidate_strategy} "
+                    f"signal={candidate_signal} "
+                    f"score={validated_candidate.get('score')} "
+                    f"reason={rejection_reason}"
+                )
+
+                continue
+
+            candidate_trade_plan["signal"] = candidate_signal
+
+            min_rr_required = get_min_rr(
+                candidate_strategy,
+                validated_candidate.get("entry_model"),
+                validated_candidate.get("sl_model"),
+            )
+
+            same_direction_count = count_same_direction_positions(SYMBOL, candidate_signal)
+
+            if same_direction_count >= 1 and ENABLE_EXTRA_RR_DISCOUNT:
+                min_rr_required = round(min_rr_required * EXTRA_RR_MULTIPLIER, 2)
+
+            rr_value = calculate_rr_value(candidate_trade_plan)
+
+            if rr_value is None or rr_value < min_rr_required:
+                rejection_reason = f"low_rr {rr_value}/{min_rr_required}"
+
+                rejected_candidates.append(
+                    {
+                        "strategy": candidate_strategy,
+                        "signal": candidate_signal,
+                        "score": validated_candidate.get("score"),
+                        "reason": rejection_reason,
+                    }
+                )
+
+                logger.info(
+                    f"[CANDIDATE REJECTED BY SMART SELECTION] "
+                    f"strategy={candidate_strategy} "
+                    f"signal={candidate_signal} "
+                    f"score={validated_candidate.get('score')} "
+                    f"rr={rr_value} required={min_rr_required}"
+                )
+
+                log_setup_event(
+                    setup_id=build_setup_id(
+                        candidate_strategy,
+                        candidate_signal,
+                        tick.time,
+                    ),
+                    event="CANDIDATE_REJECTED_LOW_RR",
+                    strategy=candidate_strategy,
+                    signal=candidate_signal,
+                    entry_model=validated_candidate.get("entry_model"),
+                    score=validated_candidate.get("score"),
+                    session=session_name,
+                    market_condition=market_condition,
+                    entry=candidate_trade_plan.get("entry_price"),
+                    sl=candidate_trade_plan.get("stop_loss"),
+                    tp=candidate_trade_plan.get("take_profit"),
+                    rr=rr_value,
+                    required_rr=min_rr_required,
+                    reason=rejection_reason,
+                )
+
+                continue
+
+            final_rank, rank_details = calculate_candidate_selection_rank(
+                candidate=validated_candidate,
+                rr_value=rr_value,
+                min_rr_required=min_rr_required,
+                market_condition=market_condition,
+            )
+
+            validated_candidate["selection_rr"] = rr_value
+            validated_candidate["selection_required_rr"] = min_rr_required
+            validated_candidate["selection_final_rank"] = final_rank
+            validated_candidate["selection_rank_details"] = rank_details
+
+            ranked_candidates.append(validated_candidate)
 
             logger.info(
-                f"[CANDIDATE REJECTED] "
-                f"strategy={candidate.get('strategy')} "
-                f"signal={candidate.get('signal')} "
-                f"score={candidate.get('score')} "
-                f"reason={rejection_reason}"
+                f"[SMART SELECTION CANDIDATE] "
+                f"strategy={candidate_strategy} "
+                f"signal={candidate_signal} "
+                f"score={rank_details['score']} "
+                f"rr={rank_details['rr']} "
+                f"required_rr={rank_details['required_rr']} "
+                f"rr_bonus={rank_details['rr_bonus']} "
+                f"priority={rank_details['strategy_priority']} "
+                f"session_adj={rank_details['session_adjustment']} "
+                f"final_rank={rank_details['final_rank']}"
             )
 
-            log_setup_event(
-                setup_id=build_setup_id(
-                    candidate.get("strategy"),
-                    candidate.get("signal"),
-                    tick.time,
-                ),
-                event="CANDIDATE_REJECTED",
-                strategy=candidate.get("strategy"),
-                signal=candidate.get("signal"),
-                entry_model=candidate.get("entry_model"),
-                score=candidate.get("score"),
-                session=session_name,
-                market_condition=market_condition,
-                reason=rejection_reason,
+        if ranked_candidates:
+            ranked_candidates = sorted(
+                ranked_candidates,
+                key=lambda item: item.get("selection_final_rank", 0),
+                reverse=True,
             )
+
+            selected_candidate = ranked_candidates[0]
+
+            if TELEGRAM_VERBOSE_SIGNALS:
+                ranking_text = "\n".join(
+                    [
+                        f"- {item.get('strategy')} {item.get('signal')} "
+                        f"score={item.get('score')} "
+                        f"rr={item.get('selection_rr')} "
+                        f"rank={item.get('selection_final_rank')}"
+                        for item in ranked_candidates[:5]
+                    ]
+                )
+
+                send_telegram_message(
+                    f"🧠 Smart Candidate Selection\n"
+                    f"Symbol: {SYMBOL}\n"
+                    f"Market: {market_condition}\n\n"
+                    f"Selected: {selected_candidate.get('strategy')} "
+                    f"{selected_candidate.get('signal')}\n"
+                    f"Final Rank: {selected_candidate.get('selection_final_rank')}\n"
+                    f"RR: {selected_candidate.get('selection_rr')} / "
+                    f"Required: {selected_candidate.get('selection_required_rr')}\n\n"
+                    f"Top candidates:\n{ranking_text}"
+                )
 
         if selected_candidate is None:
             signal = "NO_TRADE"
@@ -2577,7 +2960,7 @@ def process_cycle(last_processed_candle_time):
                         f"Entry: {scalp_trade_plan['entry_price']}\n"
                         f"SL: {scalp_trade_plan['stop_loss']}\n"
                         f"TP: {scalp_trade_plan['take_profit']}\n"
-                        f"RR: {scalp_trade_plan['scalp_rr']}\n"
+                        f"RR: {scalp_trade_plan.get('scalp_rr')}\n"
                         f"SL Model: {scalp_trade_plan['scalp_sl_model']}"
                     )
 
@@ -2977,6 +3360,32 @@ def process_cycle(last_processed_candle_time):
                 f"Market Condition: {market_condition}\n"
                 f"Expiry: {DELAYED_ENTRY_EXPIRY_MINUTES} minutes"
             )
+
+            return current_candle_time
+
+        # M5 confirmation for immediate execution only
+        m5_confirmed, m5_confirm_reason = m5_execution_confirmation_ok(
+            signal,
+            strategy_name,
+        )
+
+        if not m5_confirmed:
+            logger.info(
+                f"[M5 EXECUTION CONFIRMATION] Execution skipped | "
+                f"strategy={strategy_name} signal={signal} reason={m5_confirm_reason}"
+            )
+
+            send_telegram_message(
+                f"🚫 Execution Skipped by M5 Confirmation\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Strategy: {strategy_name}\n"
+                f"Signal: {signal}\n\n"
+                f"Reason: {m5_confirm_reason}"
+            )
+
+            if "best_setup" in locals():
+                best_setup["state"] = "WAITING"
+                best_setup["wait_reason"] = f"M5 execution confirmation pending: {m5_confirm_reason}"
 
             return current_candle_time
 
