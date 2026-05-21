@@ -3,6 +3,7 @@ import hashlib
 
 import MetaTrader5 as mt5
 from telethon import TelegramClient, events
+import time
 
 from config.settings import (
     ENABLE_TELEGRAM_SIGNAL_LISTENER,
@@ -164,7 +165,12 @@ async def main():
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("[TELEGRAM LISTENER] Stopped manually")
+    while True:
+        try:
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            logger.info("[TELEGRAM LISTENER] Stopped manually")
+            break
+        except Exception as e:
+            logger.error(f"[TELEGRAM LISTENER] Crashed, restarting in 10 seconds: {e}")
+            time.sleep(10)

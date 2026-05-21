@@ -1,3 +1,5 @@
+import time
+
 import MetaTrader5 as mt5
 
 from config.settings import (
@@ -13,6 +15,10 @@ from config.settings import (
     TELEGRAM_PRE_SIGNAL_LOT,
     ALLOW_TELEGRAM_SIGNAL_WITHOUT_TP,
     TELEGRAM_NO_TP_LOT,
+    ENABLE_TELEGRAM_WAIT_BETTER_ENTRY,
+    TELEGRAM_WAIT_BETTER_ENTRY_POLL_SECONDS,
+    TELEGRAM_WAIT_BETTER_ENTRY_MAX_PROFIT_MOVE,
+    TELEGRAM_WAIT_BETTER_ENTRY_TIMEOUT_SECONDS,
 )
 
 from src.execution import check_trade_guard
@@ -27,14 +33,21 @@ def _calculate_rr(signal, entry, sl, tp):
             return None
 
         if signal == "BUY":
-            return round((tp - entry) / (entry - sl), 2)
+            risk = entry - sl
+            reward = tp - entry
+        elif signal == "SELL":
+            risk = sl - entry
+            reward = entry - tp
+        else:
+            return None
 
-        if signal == "SELL":
-            return round((entry - tp) / (sl - entry), 2)
+        if risk <= 0:
+            return None
+
+        return round(reward / risk, 2)
+
     except Exception:
         return None
-
-    return None
 
 
 def _current_price(symbol, signal):
@@ -86,9 +99,6 @@ def _build_market_trade_plan(parsed, symbol, price):
 
     if rr is None:
         return None, "invalid_rr"
-
-    if rr < TELEGRAM_SIGNAL_MIN_RR:
-        return None, f"rr_too_low {rr}/{TELEGRAM_SIGNAL_MIN_RR}"
 
     return {
         "signal": signal,
@@ -166,6 +176,149 @@ def _build_pre_signal_trade_plan(parsed, symbol, price):
         "rr": rr,
         **_source_fields(parsed),
     }, "ok"
+
+
+def _profit_move_exceeded(signal, current_price, original_entry):
+    if signal == "BUY":
+        return current_price >= original_entry + TELEGRAM_WAIT_BETTER_ENTRY_MAX_PROFIT_MOVE
+
+    if signal == "SELL":
+        return current_price <= original_entry - TELEGRAM_WAIT_BETTER_ENTRY_MAX_PROFIT_MOVE
+
+    return True
+
+
+def _price_hit_stop_zone(signal, current_price, stop_loss):
+    if signal == "BUY":
+        return current_price <= stop_loss
+
+    if signal == "SELL":
+        return current_price >= stop_loss
+
+    return True
+
+
+def _wait_for_better_telegram_entry(direction, symbol, trade_plan):
+    if not ENABLE_TELEGRAM_WAIT_BETTER_ENTRY:
+        return None, "wait_better_entry_disabled"
+
+    original_entry = trade_plan["entry_price"]
+    stop_loss = trade_plan["stop_loss"]
+    take_profit = trade_plan["take_profit"]
+
+    if take_profit in [None, 0, 0.0]:
+        return None, "missing_tp_for_better_entry"
+
+    send_telegram_message(
+        f"⏳ Telegram Waiting for Better Entry\n"
+        f"Signal: {direction}\n"
+        f"Symbol: {symbol}\n"
+        f"Current Entry: {original_entry}\n"
+        f"SL: {stop_loss}\n"
+        f"TP: {take_profit}\n"
+        f"Current RR: {trade_plan.get('rr')}\n"
+        f"Required RR: {TELEGRAM_SIGNAL_MIN_RR}\n\n"
+        f"Checking every {TELEGRAM_WAIT_BETTER_ENTRY_POLL_SECONDS} seconds.\n"
+        f"Cancel if price moves {TELEGRAM_WAIT_BETTER_ENTRY_MAX_PROFIT_MOVE} USD in profit direction."
+    )
+
+    start_time = time.time()
+
+    while time.time() - start_time <= TELEGRAM_WAIT_BETTER_ENTRY_TIMEOUT_SECONDS:
+        time.sleep(TELEGRAM_WAIT_BETTER_ENTRY_POLL_SECONDS)
+
+        current_price, tick = _current_price(symbol, direction)
+
+        if current_price is None or tick is None:
+            continue
+
+        if _profit_move_exceeded(direction, current_price, original_entry):
+            send_telegram_message(
+                f"⌛ Telegram Better Entry Cancelled\n"
+                f"Reason: Price already moved in profit direction\n"
+                f"Signal: {direction}\n"
+                f"Symbol: {symbol}\n"
+                f"Original Entry: {original_entry}\n"
+                f"Current Price: {round(current_price, 2)}\n"
+                f"Max Profit Move: {TELEGRAM_WAIT_BETTER_ENTRY_MAX_PROFIT_MOVE}"
+            )
+            return None, "profit_move_exceeded_before_entry"
+
+        if _price_hit_stop_zone(direction, current_price, stop_loss):
+            send_telegram_message(
+                f"🚫 Telegram Better Entry Cancelled\n"
+                f"Reason: Price reached stop zone before entry\n"
+                f"Signal: {direction}\n"
+                f"Symbol: {symbol}\n"
+                f"Current Price: {round(current_price, 2)}\n"
+                f"SL: {stop_loss}"
+            )
+            return None, "price_reached_stop_zone"
+
+        rr = _calculate_rr(direction, current_price, stop_loss, take_profit)
+
+        if rr is None:
+            continue
+
+        if rr >= TELEGRAM_SIGNAL_MIN_RR:
+            adjusted_plan = trade_plan.copy()
+            adjusted_plan["entry_price"] = round(current_price, 2)
+            adjusted_plan["rr"] = rr
+            adjusted_plan["reason"] = (
+                f"{trade_plan.get('reason', '')} | TELEGRAM_BETTER_ENTRY"
+            )
+            adjusted_plan["comment"] = trade_plan.get("comment", "TG-BetterEntry")[:31]
+
+            send_telegram_message(
+                f"✅ Telegram Better Entry Found\n"
+                f"Signal: {direction}\n"
+                f"Symbol: {symbol}\n"
+                f"Old Entry: {original_entry}\n"
+                f"New Entry: {adjusted_plan['entry_price']}\n"
+                f"SL: {stop_loss}\n"
+                f"TP: {take_profit}\n"
+                f"RR: {rr}"
+            )
+
+            return adjusted_plan, "better_entry_found"
+
+    send_telegram_message(
+        f"⌛ Telegram Better Entry Expired\n"
+        f"Signal: {direction}\n"
+        f"Symbol: {symbol}\n"
+        f"Original Entry: {original_entry}\n"
+        f"Required RR: {TELEGRAM_SIGNAL_MIN_RR}\n"
+        f"No trade executed."
+    )
+
+    return None, "better_entry_timeout"
+
+
+def _prepare_auto_execute_trade_plan(direction, symbol, trade_plan):
+    rr = trade_plan.get("rr")
+
+    if rr is None:
+        rr = _calculate_rr(
+            direction,
+            trade_plan["entry_price"],
+            trade_plan["stop_loss"],
+            trade_plan["take_profit"],
+        )
+
+    if rr is not None and rr >= TELEGRAM_SIGNAL_MIN_RR:
+        trade_plan["rr"] = rr
+        return trade_plan, "rr_ok"
+
+    better_plan, reason = _wait_for_better_telegram_entry(
+        direction,
+        symbol,
+        trade_plan,
+    )
+
+    if better_plan is None:
+        return None, reason
+
+    return better_plan, reason
 
 
 def _find_open_trade_by_message(parsed):
@@ -291,8 +444,7 @@ def handle_parsed_telegram_signal(parsed):
         )
         return False, "no_tick_data"
 
-    # If edited message becomes full signal, update TP for existing no-TP trade.
-    if signal_type == "SIGNAL":
+    if signal_type == "SIGNAL" and TELEGRAM_SIGNAL_MODE == "AUTO_EXECUTE":
         updated, update_reason = _update_existing_trade_tp(parsed, symbol)
 
         if updated:
@@ -409,6 +561,31 @@ def handle_parsed_telegram_signal(parsed):
         return True, "awaiting_confirmation"
 
     if TELEGRAM_SIGNAL_MODE == "AUTO_EXECUTE":
+        trade_plan, prepare_reason = _prepare_auto_execute_trade_plan(
+            direction,
+            symbol,
+            trade_plan,
+        )
+
+        if trade_plan is None:
+            return False, prepare_reason
+
+        latest_price, latest_tick = _current_price(symbol, direction)
+
+        if latest_price is None or latest_tick is None:
+            return False, "no_tick_data_before_execution"
+
+        trade_allowed, guard_reason = check_trade_guard(direction, latest_tick)
+
+        if not trade_allowed:
+            send_telegram_message(
+                f"🚫 Telegram Signal Blocked Before Execution\n"
+                f"Reason: {guard_reason}\n"
+                f"Signal: {direction}\n"
+                f"Symbol: {symbol}"
+            )
+            return False, guard_reason
+
         send_telegram_message(
             f"🔥 Executing Telegram Signal\n"
             f"Signal: {direction}\n"
