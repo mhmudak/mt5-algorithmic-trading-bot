@@ -10,19 +10,19 @@ from src.logger import logger
 FCR_TIMEFRAME = mt5.TIMEFRAME_M5
 ENTRY_TIMEFRAME = mt5.TIMEFRAME_M1
 
-FCR_BARS = 60
-ENTRY_BARS = 90
+FCR_BARS = 48
+ENTRY_BARS = 75
 
 # FCR candle quality
-FCR_MIN_RANGE_ATR = 0.60
-FCR_MIN_BODY_ATR = 0.25
+FCR_MIN_RANGE_ATR = 0.40
+FCR_MIN_BODY_ATR = 0.1
 
 # M1 entry quality
-MIN_M1_BODY_ATR = 0.12
-MAX_EXTENSION_ATR = 1.60
+MIN_M1_BODY_ATR = 0.08
+MAX_EXTENSION_ATR = 2.20
 
 # FVG quality
-FVG_MIN_SIZE_ATR = 0.05
+FVG_MIN_SIZE_ATR = 0.03
 
 # Risk
 SL_ATR_BUFFER = 0.15
@@ -216,7 +216,7 @@ def generate_signal(df):
     extension = entry["close"] - fcr_high
     not_chasing = extension >= 0 and extension <= atr * MAX_EXTENSION_ATR
 
-    if broke_high and bullish_fvg and bullish_engulfing and bullish_reclaim and not_chasing:
+    if broke_high and bullish_fvg and bullish_reclaim and not_chasing:
         gap_bottom, gap_top, gap_size = bullish_fvg
 
         sl_reference = round(min(gap_bottom, c3["low"], entry["low"]) - sl_buffer, 2)
@@ -290,7 +290,7 @@ def generate_signal(df):
     extension = fcr_low - entry["close"]
     not_chasing = extension >= 0 and extension <= atr * MAX_EXTENSION_ATR
 
-    if broke_low and bearish_fvg and bearish_engulfing and bearish_reclaim and not_chasing:
+    if broke_low and bearish_fvg and bearish_reclaim and not_chasing:
         gap_bottom, gap_top, gap_size = bearish_fvg
 
         sl_reference = round(max(gap_top, c3["high"], entry["high"]) + sl_buffer, 2)

@@ -24,10 +24,10 @@ from src.strategy_debug import reject_strategy
 from src.logger import logger
 
 
-MIN_ATR_FOR_M5_SCALP = 0.8
-MIN_BODY_ATR_RATIO = 0.20
-MAX_MIDDLE_ZONE_ATR = 0.85
-MAX_LATE_ENTRY_ATR = 0.65
+MIN_ATR_FOR_M5_SCALP = 0.5
+MIN_BODY_ATR_RATIO = 0.12
+MAX_MIDDLE_ZONE_ATR = 1.20
+MAX_LATE_ENTRY_ATR = 1.00
 
 SL_ATR_BUFFER = 0.15
 MIN_SL_BUFFER = 0.8
@@ -117,6 +117,48 @@ def _dynamic_score(base_score, wt_cross, extreme_zone, body, atr, close_quality,
 
     return min(score, 99)
 
+def _recent_bullish_wt_cross(df, lookback=5):
+    recent = df.iloc[-lookback - 2:-1]
+
+    for i in range(1, len(recent)):
+        prev = recent.iloc[i - 1]
+        curr = recent.iloc[i]
+
+        if prev["wt1"] <= prev["wt2"] and curr["wt1"] > curr["wt2"]:
+            return True
+
+    return False
+
+
+def _recent_bearish_wt_cross(df, lookback=5):
+    recent = df.iloc[-lookback - 2:-1]
+
+    for i in range(1, len(recent)):
+        prev = recent.iloc[i - 1]
+        curr = recent.iloc[i]
+
+        if prev["wt1"] >= prev["wt2"] and curr["wt1"] < curr["wt2"]:
+            return True
+
+    return False
+
+
+def _recent_oversold(df, lookback=8):
+    recent = df.iloc[-lookback - 1:-1]
+
+    return (
+        recent["wt1"].min() <= WAVETREND_OVERSOLD + 10
+        or recent["wt2"].min() <= WAVETREND_OVERSOLD + 10
+    )
+
+
+def _recent_overbought(df, lookback=8):
+    recent = df.iloc[-lookback - 1:-1]
+
+    return (
+        recent["wt1"].max() >= WAVETREND_OVERBOUGHT - 10
+        or recent["wt2"].max() >= WAVETREND_OVERBOUGHT - 10
+    )
 
 def generate_signal(df):
     """
@@ -216,8 +258,8 @@ def generate_signal(df):
         and entry["close"] > entry["open"]
     )
 
-    bullish_cross = prev_wt1 <= prev_wt2 and wt1 > wt2
-    oversold = wt1 <= WAVETREND_OVERSOLD or wt2 <= WAVETREND_OVERSOLD
+    bullish_cross = _recent_bullish_wt_cross(m5_df, lookback=5)
+    oversold = _recent_oversold(m5_df, lookback=8)
 
     extension_from_support = entry["close"] - support_level
     not_late = extension_from_support <= atr * MAX_LATE_ENTRY_ATR
@@ -288,8 +330,8 @@ def generate_signal(df):
         and entry["close"] < entry["open"]
     )
 
-    bearish_cross = prev_wt1 >= prev_wt2 and wt1 < wt2
-    overbought = wt1 >= WAVETREND_OVERBOUGHT or wt2 >= WAVETREND_OVERBOUGHT
+    bearish_cross = _recent_bearish_wt_cross(m5_df, lookback=5)
+    overbought = _recent_overbought(m5_df, lookback=8)
 
     extension_from_resistance = resistance_level - entry["close"]
     not_late = extension_from_resistance <= atr * MAX_LATE_ENTRY_ATR
