@@ -45,6 +45,12 @@ TP_WORDS = [
     "هدف",
 ]
 
+ENTRY_WORDS = [
+    "entry",
+    "دخول",
+    "سعر الدخول",
+]
+
 LOW_RISK_WORDS = [
     "low lot",
     "low risk",
@@ -146,6 +152,50 @@ def is_news_or_market_commentary(text):
 def extract_numbers(text):
     return [float(item) for item in re.findall(r"\d+(?:\.\d+)?", text)]
 
+def parse_channel_update_message(text):
+    lowered = text.lower()
+
+    if "progress" in lowered and contains_any(text, GOLD_WORDS):
+        numbers = extract_numbers(text)
+
+        return {
+            "type": "UPDATE",
+            "action": "RUNNING_PROFIT",
+            "direction": detect_direction(text),
+            "symbol": "XAUUSD.s",
+            "move": numbers[0] if numbers else None,
+            "pips": numbers[-1] if numbers else None,
+            "raw_text": text,
+        }
+
+    tp_hit_match = re.search(r"tp\s*(\d+)\s*hit", lowered)
+
+    if tp_hit_match and contains_any(text, GOLD_WORDS):
+        numbers = extract_numbers(text)
+
+        return {
+            "type": "UPDATE",
+            "action": "TP_HIT",
+            "direction": detect_direction(text),
+            "symbol": "XAUUSD.s",
+            "tp_level": int(tp_hit_match.group(1)),
+            "price": numbers[-1] if numbers else None,
+            "raw_text": text,
+        }
+
+    if ("sl hit" in lowered or "stop loss" in lowered) and contains_any(text, GOLD_WORDS):
+        numbers = extract_numbers(text)
+
+        return {
+            "type": "UPDATE",
+            "action": "SL_HIT",
+            "direction": detect_direction(text),
+            "symbol": "XAUUSD.s",
+            "price": numbers[-1] if numbers else None,
+            "raw_text": text,
+        }
+
+    return None
 
 def detect_direction(text):
     lowered = text.lower()
@@ -193,42 +243,63 @@ def extract_tps(lines):
 def extract_entry_zone(text, direction):
     lines = [line.strip() for line in text.splitlines() if line.strip()]
 
-    signal_line = None
-
+    # 1. Standard format:
+    # Entry: 4503.775
     for line in lines:
         lower = line.lower()
+
+        if any(word in lower for word in ENTRY_WORDS):
+            numbers = extract_numbers(line)
+
+            if len(numbers) == 1:
+                return numbers[0], numbers[0]
+
+            if len(numbers) >= 2:
+                return min(numbers[0], numbers[1]), max(numbers[0], numbers[1])
+
+    # 2. Pre-signal format:
+    # Potential SELL below: 4503.775
+    for line in lines:
+        lower = line.lower()
+
+        if "potential" in lower and direction and direction.lower() in lower:
+            numbers = extract_numbers(line)
+
+            if numbers:
+                return numbers[-1], numbers[-1]
+
+    # 3. Old format:
+    # SELL GOLD 4500 - 4502
+    for line in lines:
+        lower = line.lower()
+        numbers = extract_numbers(line)
+
+        if not numbers:
+            continue
 
         if (
             ("gold" in lower or "xau" in lower or "ذهب" in lower or "دهب" in lower)
             and direction
             and direction.lower() in lower
         ):
-            signal_line = line
-            break
+            if len(numbers) == 1:
+                return numbers[0], numbers[0]
+
+            return min(numbers[0], numbers[1]), max(numbers[0], numbers[1])
 
         if direction == "BUY" and any(word in lower for word in BUY_WORDS):
-            signal_line = line
-            break
+            if len(numbers) == 1:
+                return numbers[0], numbers[0]
+
+            return min(numbers[0], numbers[1]), max(numbers[0], numbers[1])
 
         if direction == "SELL" and any(word in lower for word in SELL_WORDS):
-            signal_line = line
-            break
+            if len(numbers) == 1:
+                return numbers[0], numbers[0]
 
-    if not signal_line:
-        return None, None
+            return min(numbers[0], numbers[1]), max(numbers[0], numbers[1])
 
-    numbers = extract_numbers(signal_line)
-
-    if not numbers:
-        return None, None
-
-    if len(numbers) == 1:
-        return numbers[0], numbers[0]
-
-    entry_low = min(numbers[0], numbers[1])
-    entry_high = max(numbers[0], numbers[1])
-
-    return entry_low, entry_high
+    return None, None
 
 
 def has_entry_and_sl_structure(text):
@@ -308,7 +379,30 @@ def parse_telegram_signal(text):
             "reason": "empty_message",
         }
 
+    if is_news_or_market_commentary(text):
+        return {
+            "type": "IGNORE",
+            "reason": "news_or_market_commentary",
+            "raw_text": text,
+        }
+
+    channel_update = parse_channel_update_message(text)
+
+    if channel_update:
+        return channel_update
+
     direction = detect_direction(text)
+
+    # Ignore early warning messages.
+    # We execute only the final confirmed Signal message.
+    lowered = text.lower()
+    if "new signal coming" in lowered and "waiting for candle close" in lowered:
+        return {
+            "type": "PRE_SIGNAL",
+            "direction": direction,
+            "symbol": "XAUUSD.s",
+            "raw_text": text,
+        }
 
     is_possible_signal = (
         direction is not None
@@ -319,13 +413,6 @@ def parse_telegram_signal(text):
     )
 
     if not is_possible_signal:
-        if is_news_or_market_commentary(text):
-            return {
-                "type": "IGNORE",
-                "reason": "news_or_market_commentary",
-                "raw_text": text,
-            }
-
         management = parse_management_message(text)
 
         if management:
