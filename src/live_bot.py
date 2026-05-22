@@ -1103,6 +1103,10 @@ def validate_candidate_pre_execution(
             )
 
             if not allow_override:
+                logger.info(
+                    f"[CONTEXT OVERRIDE] denied | strategy={strategy_name} "
+                    f"signal={signal} context=MTF reason={override_reason}"
+                )
                 return False, candidate, f"mtf_conflict bias={mtf_bias}"
 
             candidate = apply_context_soft_override(candidate, override_reason)
