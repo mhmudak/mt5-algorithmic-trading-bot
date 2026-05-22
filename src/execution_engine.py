@@ -11,6 +11,10 @@ from config.settings import (
     ORB_DIRECT_BREAKOUT_MIN_SCORE,
     ORB_DIRECT_BREAKOUT_REQUIRE_SMC,
     ORB_DIRECT_BREAKOUT_EXTRA_SL_PRICE,
+    ENABLE_FVG_STAGED_RETRACE_ENTRIES,
+    FVG_STAGED_RETRACE_LEVELS,
+    FVG_STAGED_RETRACE_LOT_MULTIPLIERS,
+    FVG_STAGED_RETRACE_EXPIRY_MINUTES,
 )
 
 def get_recent_invalidated_setups(strategy=None, max_age_minutes=30):
@@ -86,6 +90,57 @@ class ExecutionEngine:
 
         if len(INVALIDATED_SETUPS) > MAX_INVALIDATED_SETUPS:
             del INVALIDATED_SETUPS[:-MAX_INVALIDATED_SETUPS]
+            
+    def _build_fvg_staged_entries(self, signal, zone_low, zone_high):
+        zone_size = zone_high - zone_low
+
+        if zone_size <= 0:
+            return []
+
+        stages = []
+
+        for index, depth in enumerate(FVG_STAGED_RETRACE_LEVELS):
+            if index < len(FVG_STAGED_RETRACE_LOT_MULTIPLIERS):
+                lot_multiplier = FVG_STAGED_RETRACE_LOT_MULTIPLIERS[index]
+            else:
+                lot_multiplier = round(1 / len(FVG_STAGED_RETRACE_LEVELS), 2)
+
+            if signal == "BUY":
+                target_price = zone_high - zone_size * depth
+            elif signal == "SELL":
+                target_price = zone_low + zone_size * depth
+            else:
+                continue
+
+            stages.append(
+                {
+                    "depth": depth,
+                    "depth_pct": int(depth * 100),
+                    "target_price": round(target_price, 2),
+                    "lot_multiplier": lot_multiplier,
+                    "executed": False,
+                    "executed_at": None,
+                }
+            )
+
+        return stages
+
+    def _mark_wait_fvg_staged_retrace(self, setup, zone_low, zone_high):
+        setup["state"] = "WAIT_FVG_STAGED_RETRACE"
+        setup["wait_reason"] = (
+            f"Waiting for FVG staged retrace entries | "
+            f"zone={round(zone_low, 2)}-{round(zone_high, 2)}"
+        )
+        setup["fvg_zone_low"] = round(zone_low, 2)
+        setup["fvg_zone_high"] = round(zone_high, 2)
+        setup["fvg_staged_entries"] = self._build_fvg_staged_entries(
+            setup.get("signal"),
+            zone_low,
+            zone_high,
+        )
+        setup["expires_at"] = datetime.utcnow() + timedelta(
+            minutes=FVG_STAGED_RETRACE_EXPIRY_MINUTES
+        )
 
     def register_setup(self, signal_data, current_price, atr):
         if self._is_duplicate(signal_data):
@@ -189,6 +244,7 @@ class ExecutionEngine:
                 "EXPIRED",
                 "WAIT_BETTER_ENTRY",
                 "WAIT_DELAYED_ENTRY",
+                "WAIT_FVG_STAGED_RETRACE",
                 "EXECUTION_FAILED",
                 "SKIPPED",
             ]:
@@ -232,10 +288,19 @@ class ExecutionEngine:
                     )
                     continue
                 
-                # The strategy already confirmed the retrace/reaction candle.
-                # Do not require the same rejection confirmation a second time.
+                # The strategy confirmed the FVG setup.
+                # Execution now waits for staged retrace levels inside the FVG zone.
                 if entry_model == "FVG_RETRACE_REACTION":
                     data["execution_confirmation"] = "strategy_confirmed_fvg_retrace_reaction"
+
+                    if ENABLE_FVG_STAGED_RETRACE_ENTRIES:
+                        self._mark_wait_fvg_staged_retrace(
+                            setup,
+                            zone_low,
+                            zone_high,
+                        )
+                        continue
+
                     self._mark_ready(setup, executable)
                     continue
 
@@ -434,6 +499,22 @@ class ExecutionEngine:
             if datetime.utcnow() > setup["expires_at"]:
                 setup["state"] = "EXPIRED"
                 setup["wait_reason"] = "Delayed entry setup expired"
+                continue
+
+            valid_setups.append(setup)
+
+        return valid_setups
+    
+    def get_wait_fvg_staged_retrace_setups(self):
+        valid_setups = []
+
+        for setup in self.active_setups:
+            if setup.get("state") != "WAIT_FVG_STAGED_RETRACE":
+                continue
+
+            if datetime.utcnow() > setup["expires_at"]:
+                setup["state"] = "EXPIRED"
+                setup["wait_reason"] = "FVG staged retrace setup expired"
                 continue
 
             valid_setups.append(setup)

@@ -108,6 +108,7 @@ from config.settings import (
     SCALP_FIXED_STOP_DISTANCE,
     SCALP_MIN_TARGET_DISTANCE,
     SCALP_MAX_TARGET_DISTANCE,
+    ENABLE_FVG_STAGED_RETRACE_ENTRIES,
     ENABLE_DELAYED_RETRACE_ENTRY,
     DELAYED_ENTRY_OFFSET_PRICE,
     DELAYED_ENTRY_EXPIRY_MINUTES,
@@ -290,21 +291,21 @@ def get_min_rr(strategy_name, entry_model=None, sl_model=None):
     }
 
     if strategy_name in rr_140:
-        return 1.25
-
-    if strategy_name in rr_130:
         return 1.15
 
+    if strategy_name in rr_130:
+        return 1.05
+
     if strategy_name in rr_125:
-        return 1.10
+        return 1.00
 
     if strategy_name in rr_110:
-        return 0.95
+        return 0.85
 
     if strategy_name == "WAVETREND_MOMENTUM":
         return WAVETREND_MOMENTUM_MIN_RR
 
-    return 1.00
+    return 0.95
 
 def calculate_rr_value(trade_plan):
     if not trade_plan:
@@ -1384,6 +1385,200 @@ def process_wait_delayed_entry_setups(df, tick, account_info, market_condition, 
 
     return False
 
+def round_lot_for_symbol(symbol, volume):
+    symbol_info = mt5.symbol_info(symbol)
+
+    if symbol_info is None:
+        return round(volume, 2)
+
+    min_volume = symbol_info.volume_min
+    step = symbol_info.volume_step
+
+    rounded = round(round(volume / step) * step, 2)
+
+    if rounded < min_volume:
+        return 0.0
+
+    return rounded
+
+
+def fvg_stage_reached(signal, current_price, target_price):
+    if signal == "BUY":
+        return current_price <= target_price
+
+    if signal == "SELL":
+        return current_price >= target_price
+
+    return False
+
+
+def process_fvg_staged_retrace_entries(df, tick, account_info, market_condition, session_name):
+    staged_setups = execution_engine.get_wait_fvg_staged_retrace_setups()
+
+    if not staged_setups:
+        return False
+
+    executed_any = False
+
+    for setup in staged_setups:
+        setup_data = setup["data"]
+        signal = setup_data.get("signal")
+        strategy_name = setup_data.get("strategy")
+
+        if strategy_name != "FVG":
+            continue
+
+        if signal not in ["BUY", "SELL"]:
+            continue
+
+        current_price = tick.ask if signal == "BUY" else tick.bid
+
+        for stage in setup.get("fvg_staged_entries", []):
+            if stage.get("executed"):
+                continue
+
+            target_price = stage.get("target_price")
+
+            if target_price is None:
+                continue
+
+            if not fvg_stage_reached(signal, current_price, target_price):
+                continue
+
+            trade_plan = calculate_trade_plan(
+                df=df,
+                signal=signal,
+                tick=tick,
+                account_balance=account_info.balance,
+                signal_data=setup_data,
+            )
+
+            if trade_plan is None:
+                logger.info(
+                    f"[FVG STAGED] Trade plan failed | "
+                    f"signal={signal} stage={stage.get('depth_pct')}%"
+                )
+                continue
+
+            stage_lot = round_lot_for_symbol(
+                SYMBOL,
+                trade_plan["lot"] * stage.get("lot_multiplier", 1.0),
+            )
+
+            if stage_lot <= 0:
+                logger.info(
+                    f"[FVG STAGED] Stage lot below broker minimum | "
+                    f"stage={stage.get('depth_pct')}%"
+                )
+                continue
+
+            trade_plan["lot"] = stage_lot
+            trade_plan["strategy"] = strategy_name
+            trade_plan["entry_model"] = f"FVG_STAGE_{stage.get('depth_pct')}PCT_RETRACE"
+            trade_plan["score"] = setup_data.get("score", 0)
+            trade_plan["session"] = setup_data.get("session", session_name)
+            trade_plan["market_condition"] = market_condition
+            trade_plan["setup_id"] = setup_data.get("setup_id", "N/A")
+            trade_plan["reason"] = (
+                f"{setup_data.get('reason', 'N/A')} | "
+                f"FVG_STAGED_RETRACE depth={stage.get('depth_pct')}% "
+                f"target={target_price}"
+            )
+
+            rr_value = calculate_rr_value(trade_plan)
+            min_rr_required = get_min_rr(
+                strategy_name,
+                setup_data.get("entry_model"),
+                setup_data.get("sl_model"),
+            )
+
+            if rr_value is None or rr_value < min_rr_required:
+                logger.info(
+                    f"[FVG STAGED] RR invalid | "
+                    f"rr={rr_value} required={min_rr_required} "
+                    f"stage={stage.get('depth_pct')}%"
+                )
+                continue
+
+            trade_allowed, guard_reason = check_trade_guard(signal, tick)
+
+            if not trade_allowed:
+                logger.info(
+                    f"[FVG STAGED] Guard blocked | "
+                    f"reason={guard_reason} stage={stage.get('depth_pct')}%"
+                )
+                continue
+
+            send_telegram_message(
+                f"🔥 FVG Staged Entry Triggered\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Strategy: {strategy_name}\n"
+                f"Signal: {signal}\n"
+                f"Stage: {stage.get('depth_pct')}%\n"
+                f"Target: {target_price}\n"
+                f"Current: {round(current_price, 2)}\n"
+                f"Entry: {trade_plan['entry_price']}\n"
+                f"SL: {trade_plan['stop_loss']}\n"
+                f"TP: {trade_plan['take_profit']}\n"
+                f"RR: {rr_value} / Required: {min_rr_required}\n"
+                f"Lot: {trade_plan['lot']}"
+            )
+
+            log_setup_event(
+                setup_id=setup_data.get("setup_id"),
+                event="FVG_STAGED_ENTRY_ATTEMPT",
+                strategy=strategy_name,
+                signal=signal,
+                entry_model=trade_plan.get("entry_model"),
+                score=setup_data.get("score", 0),
+                session=setup_data.get("session", session_name),
+                market_condition=market_condition,
+                entry=trade_plan["entry_price"],
+                sl=trade_plan["stop_loss"],
+                tp=trade_plan["take_profit"],
+                rr=rr_value,
+                required_rr=min_rr_required,
+                reason=trade_plan.get("reason"),
+                extra={
+                    "stage_depth_pct": stage.get("depth_pct"),
+                    "stage_target_price": target_price,
+                    "stage_lot": trade_plan.get("lot"),
+                },
+            )
+
+            execution_result = execute_trade(signal, trade_plan, SYMBOL)
+
+            if execution_result:
+                stage["executed"] = True
+                stage["executed_at"] = datetime.utcnow().isoformat()
+                executed_any = True
+
+                log_setup_event(
+                    setup_id=setup_data.get("setup_id"),
+                    event="FVG_STAGED_ENTRY_EXECUTED",
+                    strategy=strategy_name,
+                    signal=signal,
+                    entry_model=trade_plan.get("entry_model"),
+                    score=setup_data.get("score", 0),
+                    session=setup_data.get("session", session_name),
+                    market_condition=market_condition,
+                    entry=trade_plan["entry_price"],
+                    sl=trade_plan["stop_loss"],
+                    tp=trade_plan["take_profit"],
+                    rr=rr_value,
+                    required_rr=min_rr_required,
+                    reason=trade_plan.get("reason"),
+                    extra={
+                        "stage_depth_pct": stage.get("depth_pct"),
+                        "stage_target_price": target_price,
+                    },
+                )
+
+        if all(stage.get("executed") for stage in setup.get("fvg_staged_entries", [])):
+            execution_engine.mark_executed(setup)
+
+    return executed_any
+
 def process_cycle(last_processed_candle_time):
     global last_signal, reversal_count
 
@@ -1425,6 +1620,20 @@ def process_cycle(last_processed_candle_time):
     manage_positions(SYMBOL)
     update_trade_lifecycle(SYMBOL)
     rebuild_dashboard()
+
+    # =========================
+    # FVG STAGED RETRACE ENTRY CHECK
+    # Runs every loop, not only on a new M15 candle.
+    # =========================
+    if ENABLE_FVG_STAGED_RETRACE_ENTRIES:
+        if process_fvg_staged_retrace_entries(
+            df=df,
+            tick=tick,
+            account_info=account_info,
+            market_condition="PENDING",
+            session_name="PENDING",
+        ):
+            return current_candle_time
 
     # =========================
     # WAIT FOR BETTER ENTRY CHECK

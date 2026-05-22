@@ -720,6 +720,21 @@ DELAYED_ENTRY_OFFSET_BY_MARKET = {
 }
 
 # =========================
+# FVG Staged Retrace Entries
+# =========================
+ENABLE_FVG_STAGED_RETRACE_ENTRIES = True
+
+# Entry depths inside the FVG zone
+# BUY: 20%, 35%, 80% from top toward bottom
+# SELL: 20%, 35%, 80% from bottom toward top
+FVG_STAGED_RETRACE_LEVELS = [0.20, 0.39, 0.80]
+
+# How to split the original trade lot across the 3 entries
+FVG_STAGED_RETRACE_LOT_MULTIPLIERS = [0.34, 0.33, 0.33]
+
+FVG_STAGED_RETRACE_EXPIRY_MINUTES = 15
+
+# =========================
 # MTF_SR_FVG_RECLAIM
 # =========================
 ENABLE_MTF_SR_FVG_RECLAIM = True
