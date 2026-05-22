@@ -19,6 +19,10 @@ from config.settings import (
     TELEGRAM_WAIT_BETTER_ENTRY_POLL_SECONDS,
     TELEGRAM_WAIT_BETTER_ENTRY_MAX_PROFIT_MOVE,
     TELEGRAM_WAIT_BETTER_ENTRY_TIMEOUT_SECONDS,
+    ENABLE_TELEGRAM_PARTIAL_TP_MANAGER,
+    TELEGRAM_PARTIAL_TP_CLOSE_PCTS,
+    TELEGRAM_RUNNER_REMAINING_PCT,
+    TELEGRAM_RUNNER_DISTANCE_PRICE,
 )
 
 from src.execution import check_trade_guard
@@ -49,6 +53,14 @@ def _calculate_rr(signal, entry, sl, tp):
     except Exception:
         return None
 
+def _runner_take_profit(signal, entry_price):
+    if signal == "BUY":
+        return round(entry_price + TELEGRAM_RUNNER_DISTANCE_PRICE, 2)
+
+    if signal == "SELL":
+        return round(entry_price - TELEGRAM_RUNNER_DISTANCE_PRICE, 2)
+
+    return None
 
 def _current_price(symbol, signal):
     tick = mt5.symbol_info_tick(symbol)
@@ -87,7 +99,10 @@ def _source_fields(parsed):
 def _build_market_trade_plan(parsed, symbol, price):
     signal = parsed["direction"]
     sl = parsed["sl"]
-    tp = parsed["tp1"]
+    tps = parsed.get("tps", [])
+
+    if not tps:
+        return None, "missing_tps"
 
     lot = (
         TELEGRAM_SIGNAL_LOW_RISK_LOT
@@ -95,7 +110,14 @@ def _build_market_trade_plan(parsed, symbol, price):
         else TELEGRAM_SIGNAL_DEFAULT_LOT
     )
 
-    rr = _calculate_rr(signal, price, sl, tp)
+    if ENABLE_TELEGRAM_PARTIAL_TP_MANAGER and len(tps) >= 1:
+        broker_tp = _runner_take_profit(signal, price)
+        target_mode = "telegram_partial_tp_runner"
+    else:
+        broker_tp = parsed["tp1"]
+        target_mode = "telegram_tp1"
+
+    rr = _calculate_rr(signal, price, sl, broker_tp)
 
     if rr is None:
         return None, "invalid_rr"
@@ -104,7 +126,7 @@ def _build_market_trade_plan(parsed, symbol, price):
         "signal": signal,
         "entry_price": round(price, 2),
         "stop_loss": round(sl, 2),
-        "take_profit": round(tp, 2),
+        "take_profit": round(broker_tp, 2),
         "lot": lot,
         "risk_mode": "telegram_signal",
         "score": 0,
@@ -114,6 +136,13 @@ def _build_market_trade_plan(parsed, symbol, price):
         "session": "TELEGRAM",
         "entry_model": "TELEGRAM_MARKET_SIGNAL",
         "rr": rr,
+        "telegram_target_mode": target_mode,
+        "telegram_partial_tp_enabled": ENABLE_TELEGRAM_PARTIAL_TP_MANAGER,
+        "telegram_tps": [round(tp, 2) for tp in tps],
+        "telegram_partial_close_pcts": TELEGRAM_PARTIAL_TP_CLOSE_PCTS,
+        "telegram_runner_remaining_pct": TELEGRAM_RUNNER_REMAINING_PCT,
+        "telegram_runner_distance_price": TELEGRAM_RUNNER_DISTANCE_PRICE,
+        "telegram_runner_tp": round(broker_tp, 2),
         **_source_fields(parsed),
     }, "ok"
 
@@ -541,7 +570,9 @@ def handle_parsed_telegram_signal(parsed):
             f"Symbol: {symbol}\n"
             f"Entry: {trade_plan['entry_price']}\n"
             f"SL: {trade_plan['stop_loss']}\n"
-            f"TP: {trade_plan['take_profit']}\n"
+            f"Broker TP / Runner TP: {trade_plan['take_profit']}\n"
+            f"Telegram TPs: {trade_plan.get('telegram_tps')}\n"
+            f"Partial TP Mode: {trade_plan.get('telegram_partial_tp_enabled')}\n"
             f"RR: {trade_plan.get('rr')}\n"
             f"Lot: {trade_plan['lot']}"
         )
@@ -554,7 +585,9 @@ def handle_parsed_telegram_signal(parsed):
             f"Symbol: {symbol}\n"
             f"Entry: {trade_plan['entry_price']}\n"
             f"SL: {trade_plan['stop_loss']}\n"
-            f"TP: {trade_plan['take_profit']}\n"
+            f"Broker TP / Runner TP: {trade_plan['take_profit']}\n"
+            f"Telegram TPs: {trade_plan.get('telegram_tps')}\n"
+            f"Partial TP Mode: {trade_plan.get('telegram_partial_tp_enabled')}\n"
             f"RR: {trade_plan.get('rr')}\n"
             f"Lot: {trade_plan['lot']}"
         )
@@ -592,9 +625,11 @@ def handle_parsed_telegram_signal(parsed):
             f"Symbol: {symbol}\n"
             f"Entry: {trade_plan['entry_price']}\n"
             f"SL: {trade_plan['stop_loss']}\n"
-            f"TP: {trade_plan['take_profit']}\n"
+            f"Broker TP: {trade_plan['take_profit']}\n"
             f"RR: {trade_plan.get('rr')}\n"
-            f"Lot: {trade_plan['lot']}"
+            f"Lot: {trade_plan['lot']}\n"
+            f"Partial TP Mode: {trade_plan.get('telegram_partial_tp_enabled')}\n"
+            f"Telegram TPs: {trade_plan.get('telegram_tps')}"
         )
 
         execution_result = execute_trade(direction, trade_plan, symbol)

@@ -160,7 +160,7 @@ def register_executed_trade(symbol, signal, trade_plan, result):
         trade_role = "EXTRA"
         main_position_id = existing_main_id
 
-    trades[position_id] = _build_trade_record(
+    trade_record = _build_trade_record(
         position_id=position_id,
         main_position_id=main_position_id,
         trade_role=trade_role,
@@ -183,6 +183,41 @@ def register_executed_trade(symbol, signal, trade_plan, result):
         reason=trade_plan.get("reason", "N/A"),
         tp_buffer=trade_plan.get("tp_buffer", 0.0),
     )
+
+    # Preserve Telegram metadata for edited-message matching and partial TP management.
+    for key in [
+        "source_name",
+        "source_chat",
+        "source_message_id",
+        "source_event_type",
+        "telegram_target_mode",
+        "telegram_partial_tp_enabled",
+        "telegram_tps",
+        "telegram_partial_close_pcts",
+        "telegram_runner_remaining_pct",
+        "telegram_runner_distance_price",
+        "telegram_runner_tp",
+    ]:
+        if key in trade_plan:
+            trade_record[key] = trade_plan.get(key)
+
+    if trade_record.get("telegram_partial_tp_enabled"):
+        trade_record["telegram_tp_stages"] = [
+            {
+                "index": index + 1,
+                "tp": float(tp),
+                "close_pct": float(
+                    trade_record.get("telegram_partial_close_pcts", [])[index]
+                )
+                if index < len(trade_record.get("telegram_partial_close_pcts", []))
+                else 0.0,
+                "done": False,
+                "closed_volume": 0.0,
+            }
+            for index, tp in enumerate(trade_record.get("telegram_tps", []))
+        ]
+
+    trades[position_id] = trade_record
 
     save_trades(trades)
 

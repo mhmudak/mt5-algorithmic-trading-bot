@@ -70,11 +70,11 @@ NEWS_BLACKOUT_WINDOWS = [
 ENABLE_TRADING_TIME_BLACKOUT = False
 
 TRADING_BLACKOUT_WINDOWS = [
-    {
-        "name": "Low liquidity / high slippage window",
-        "start": "03:00",
-        "end": "04:00",
-    },
+    # {
+    #     "name": "Low liquidity / high slippage window",
+    #     "start": "03:00",
+    #     "end": "04:00",
+    # },
 ]
 
 # =========================
@@ -149,7 +149,7 @@ MAX_SLIPPAGE = 0.3
 COOLDOWN_MINUTES = 1
 
 ENABLE_HIGH_SLIPPAGE_RETRACEMENT = True
-HIGH_SLIPPAGE_RETRACEMENT_PRICE = 10.0
+HIGH_SLIPPAGE_RETRACEMENT_PRICE = 14.0
 HIGH_SLIPPAGE_EXTRA_SL_PRICE = 3.0
 HIGH_SLIPPAGE_WAIT_TIMEOUT_SECONDS = 1800
 HIGH_SLIPPAGE_WAIT_POLL_SECONDS = 5
@@ -625,7 +625,7 @@ TELEGRAM_SIGNAL_MODE = "AUTO_EXECUTE"
 
 TELEGRAM_SIGNAL_SYMBOL = "XAUUSD.s"
 
-ALLOW_TELEGRAM_PRE_SIGNAL_ENTRY = False
+ALLOW_TELEGRAM_PRE_SIGNAL_ENTRY = True
 TELEGRAM_PRE_SIGNAL_EMERGENCY_SL_PRICE = 12.0
 TELEGRAM_PRE_SIGNAL_EMERGENCY_TP_PRICE = 8.0
 TELEGRAM_PRE_SIGNAL_LOT = 0.01
@@ -660,12 +660,12 @@ TELEGRAM_SIGNAL_SOURCES = [
         "enabled": True,
         "parser_profile": "STEVE",
     },
-    # {
-    #     "name": "Nazeh_VIP",
-    #     "chat": 2629691581,
-    #     "enabled": True,
-    #     "parser_profile": "NAZEH",
-    # },
+    {
+        "name": "Win Signals",
+        "chat": 3776322153,
+        "enabled": True,
+        "parser_profile": "WIN_SIGNALS",
+    },
 ]
 
 ENABLE_TELEGRAM_WAIT_BETTER_ENTRY = True
@@ -949,3 +949,12 @@ M5_EXECUTION_CONFIRMATION_STRATEGIES = [
     "FAILED_BREAKOUT_REVERSAL",
     "WAVETREND_MOMENTUM",
 ]
+
+# =========================
+# Telegram Partial TP Management
+# =========================
+ENABLE_TELEGRAM_PARTIAL_TP_MANAGER = True
+
+TELEGRAM_PARTIAL_TP_CLOSE_PCTS = [0.25, 0.25, 0.25]
+TELEGRAM_RUNNER_REMAINING_PCT = 0.25
+TELEGRAM_RUNNER_DISTANCE_PRICE = 70.0
