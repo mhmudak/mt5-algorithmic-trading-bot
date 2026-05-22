@@ -71,6 +71,13 @@ class ExecutionEngine:
         setup["state"] = "WAITING"
         setup["wait_reason"] = reason
 
+    def mark_invalidated(self, setup, reason):
+        self._mark_invalidated(setup, reason)
+
+    def mark_expired(self, setup, reason):
+        setup["state"] = "EXPIRED"
+        setup["wait_reason"] = reason
+
     def _mark_invalidated(self, setup, reason):
         setup["state"] = "INVALIDATED"
         setup["wait_reason"] = reason
@@ -452,7 +459,14 @@ class ExecutionEngine:
 
         return executable
 
-    def mark_wait_better_entry(self, setup, min_rr_required, current_rr, expiry_minutes):
+    def mark_wait_better_entry(
+        self,
+        setup,
+        min_rr_required,
+        current_rr,
+        expiry_minutes,
+        reference_price=None,
+    ):
         setup["state"] = "WAIT_BETTER_ENTRY"
         setup["wait_reason"] = (
             f"Waiting for better RR | current={current_rr} "
@@ -460,6 +474,7 @@ class ExecutionEngine:
         )
         setup["better_entry_min_rr"] = min_rr_required
         setup["better_entry_initial_rr"] = current_rr
+        setup["wait_reference_price"] = reference_price
         setup["better_entry_started_at"] = datetime.utcnow()
         setup["expires_at"] = datetime.utcnow() + timedelta(minutes=expiry_minutes)
 
