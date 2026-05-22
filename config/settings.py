@@ -70,11 +70,11 @@ NEWS_BLACKOUT_WINDOWS = [
 ENABLE_TRADING_TIME_BLACKOUT = False
 
 TRADING_BLACKOUT_WINDOWS = [
-    {
-        "name": "Low liquidity / high slippage window",
-        "start": "03:00",
-        "end": "04:00",
-    },
+    # {
+    #     "name": "Low liquidity / high slippage window",
+    #     "start": "03:00",
+    #     "end": "04:00",
+    # },
 ]
 
 # =========================
@@ -477,7 +477,7 @@ SESSION_NEWYORK_END = 21
 # =========================
 # WaveTrend Pivot M5 Strategy
 # =========================
-ENABLE_WAVETREND_PIVOT_M5 = True # may turn it off
+ENABLE_WAVETREND_PIVOT_M5 = False # may turn it off
 WAVETREND_PIVOT_TIMEFRAME = mt5.TIMEFRAME_M5
 WAVETREND_PIVOT_BARS = 600
 
@@ -728,7 +728,7 @@ MTF_SR_FVG_RECLAIM_BASE_MIN_SCORE = 93
 # =========================
 # Elliott / Fibonacci Context
 # =========================
-ENABLE_ELLIOTT_FIB_CONTEXT = False # may turn it off
+ENABLE_ELLIOTT_FIB_CONTEXT = True # may turn it off
 ELLIOTT_FIB_CONTEXT_BOOST = 3
 ELLIOTT_FIB_CONFLICT_PENALTY = 2
 
@@ -761,7 +761,7 @@ PROTECTED_REENTRY_STRATEGIES = [
 # =========================
 # Time Context Engine
 # =========================
-ENABLE_TIME_CONTEXT_ENGINE = False # may turn it off
+ENABLE_TIME_CONTEXT_ENGINE = True # may turn it off
 
 TIME_CONTEXT_WINDOWS = [
     {
