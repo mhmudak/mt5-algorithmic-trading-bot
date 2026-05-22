@@ -177,7 +177,7 @@ COOLDOWN_AFTER_SL_MINUTES = 4
 # Same Direction Entries
 # =========================
 ALLOW_SAME_DIRECTION_ENTRIES = True
-MAX_SAME_DIRECTION_TRADES = 3  # main + extras = total max open same-side trades
+MAX_SAME_DIRECTION_TRADES = 4  # main + extras = total max open same-side trades
 
 # =========================
 # Runtime / Safety
@@ -554,7 +554,7 @@ FAILED_BREAKOUT_REVERSAL_BASE_MIN_SCORE = 92
 # Wait For Better Entry
 # =========================
 ENABLE_WAIT_FOR_BETTER_ENTRY = True
-BETTER_ENTRY_EXPIRY_MINUTES = 15
+BETTER_ENTRY_EXPIRY_MINUTES = 25
 
 BETTER_ENTRY_STRATEGIES = [
     "FVG_CE_MITIGATION",
@@ -677,8 +677,8 @@ TELEGRAM_WAIT_BETTER_ENTRY_TIMEOUT_SECONDS = 1800
 # Delayed Retrace Entry
 # =========================
 ENABLE_DELAYED_RETRACE_ENTRY = True
-DELAYED_ENTRY_OFFSET_PRICE = 5.5
-DELAYED_ENTRY_EXPIRY_MINUTES = 15
+DELAYED_ENTRY_OFFSET_PRICE = 3.5
+DELAYED_ENTRY_EXPIRY_MINUTES = 25
 
 DELAYED_ENTRY_SKIP_IF_RR_ABOVE = 1.5
 DELAYED_ENTRY_CANCEL_IF_PROFIT_MISSED = 5.0
@@ -732,7 +732,7 @@ FVG_STAGED_RETRACE_LEVELS = [0.20, 0.39, 0.80]
 # How to split the original trade lot across the 3 entries
 FVG_STAGED_RETRACE_LOT_MULTIPLIERS = [0.34, 0.33, 0.33]
 
-FVG_STAGED_RETRACE_EXPIRY_MINUTES = 15
+FVG_STAGED_RETRACE_EXPIRY_MINUTES = 25
 
 # =========================
 # MTF_SR_FVG_RECLAIM
