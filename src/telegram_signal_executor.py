@@ -23,6 +23,8 @@ from config.settings import (
     TELEGRAM_PARTIAL_TP_CLOSE_PCTS,
     TELEGRAM_RUNNER_REMAINING_PCT,
     TELEGRAM_RUNNER_DISTANCE_PRICE,
+    ENABLE_TELEGRAM_WAIT_FOR_ENTRY_RETRACE,
+    TELEGRAM_ENTRY_RETRACE_BUFFER_PRICE,
 )
 
 from src.execution import check_trade_guard
@@ -80,6 +82,103 @@ def _current_price(symbol, signal):
 def _is_price_inside_entry_zone(price, low, high):
     return low <= price <= high
 
+def _is_price_near_entry_zone(price, low, high):
+    return (
+        low - TELEGRAM_ENTRY_RETRACE_BUFFER_PRICE
+        <= price
+        <= high + TELEGRAM_ENTRY_RETRACE_BUFFER_PRICE
+    )
+
+
+def _tp1_reached_before_entry(direction, price, tps):
+    if not tps:
+        return False
+
+    tp1 = tps[0]
+
+    if direction == "BUY":
+        return price >= tp1
+
+    if direction == "SELL":
+        return price <= tp1
+
+    return False
+
+
+def _sl_reached_before_entry(direction, price, sl):
+    if sl is None:
+        return False
+
+    if direction == "BUY":
+        return price <= sl
+
+    if direction == "SELL":
+        return price >= sl
+
+    return False
+
+
+def _wait_for_entry_retrace(direction, symbol, entry_low, entry_high, sl=None, tps=None):
+    if not ENABLE_TELEGRAM_WAIT_FOR_ENTRY_RETRACE:
+        return None, None, "entry_retrace_wait_disabled"
+
+    send_telegram_message(
+        f"⏳ Telegram Waiting for Entry Retrace\n"
+        f"Signal: {direction}\n"
+        f"Symbol: {symbol}\n"
+        f"Entry Zone: {entry_low}-{entry_high}\n"
+        f"Buffer: {TELEGRAM_ENTRY_RETRACE_BUFFER_PRICE}\n"
+        f"Polling: {TELEGRAM_WAIT_BETTER_ENTRY_POLL_SECONDS}s\n"
+        f"Timeout: {TELEGRAM_WAIT_BETTER_ENTRY_TIMEOUT_SECONDS}s"
+    )
+
+    start_time = time.time()
+
+    while time.time() - start_time <= TELEGRAM_WAIT_BETTER_ENTRY_TIMEOUT_SECONDS:
+        time.sleep(TELEGRAM_WAIT_BETTER_ENTRY_POLL_SECONDS)
+
+        current_price, tick = _current_price(symbol, direction)
+
+        if current_price is None or tick is None:
+            continue
+
+        if _is_price_near_entry_zone(current_price, entry_low, entry_high):
+            send_telegram_message(
+                f"✅ Telegram Entry Retrace Reached\n"
+                f"Signal: {direction}\n"
+                f"Symbol: {symbol}\n"
+                f"Entry Zone: {entry_low}-{entry_high}\n"
+                f"Current Price: {round(current_price, 2)}"
+            )
+            return current_price, tick, "entry_retrace_reached"
+
+        if _tp1_reached_before_entry(direction, current_price, tps or []):
+            send_telegram_message(
+                f"⌛ Telegram Entry Retrace Cancelled\n"
+                f"Reason: TP1 reached before entry retrace\n"
+                f"Signal: {direction}\n"
+                f"Current Price: {round(current_price, 2)}"
+            )
+            return None, None, "tp1_reached_before_entry_retrace"
+
+        if _sl_reached_before_entry(direction, current_price, sl):
+            send_telegram_message(
+                f"🚫 Telegram Entry Retrace Cancelled\n"
+                f"Reason: SL zone reached before entry retrace\n"
+                f"Signal: {direction}\n"
+                f"Current Price: {round(current_price, 2)}"
+            )
+            return None, None, "sl_reached_before_entry_retrace"
+
+    send_telegram_message(
+        f"⌛ Telegram Entry Retrace Expired\n"
+        f"Signal: {direction}\n"
+        f"Symbol: {symbol}\n"
+        f"Entry Zone: {entry_low}-{entry_high}\n"
+        f"No trade executed."
+    )
+
+    return None, None, "entry_retrace_timeout"
 
 def _source_comment(parsed):
     return f"TG-{parsed.get('source_name', 'Trader')}"[:31]
@@ -539,19 +638,29 @@ def handle_parsed_telegram_signal(parsed):
         entry_low = parsed.get("entry_low")
         entry_high = parsed.get("entry_high")
 
-        if not _is_price_inside_entry_zone(price, entry_low, entry_high):
+        if not _is_price_near_entry_zone(price, entry_low, entry_high):
             distance = min(abs(price - entry_low), abs(price - entry_high))
 
-            if distance > TELEGRAM_SIGNAL_MAX_ENTRY_DISTANCE:
-                send_telegram_message(
-                    f"🚫 Telegram Signal Skipped\n"
-                    f"Reason: Price outside entry zone\n"
-                    f"Signal: {direction}\n"
-                    f"Current: {round(price, 2)}\n"
-                    f"Zone: {entry_low}-{entry_high}\n"
-                    f"Distance: {round(distance, 2)}"
-                )
-                return False, "price_outside_entry_zone"
+            send_telegram_message(
+                f"⏳ Telegram Signal Waiting for Entry\n"
+                f"Reason: Current price is outside entry zone\n"
+                f"Signal: {direction}\n"
+                f"Current: {round(price, 2)}\n"
+                f"Zone: {entry_low}-{entry_high}\n"
+                f"Distance: {round(distance, 2)}"
+            )
+
+            price, tick, wait_reason = _wait_for_entry_retrace(
+                direction=direction,
+                symbol=symbol,
+                entry_low=entry_low,
+                entry_high=entry_high,
+                sl=parsed.get("sl"),
+                tps=parsed.get("tps", []),
+            )
+
+            if price is None or tick is None:
+                return False, wait_reason
 
         trade_plan, reason = _build_market_trade_plan(parsed, symbol, price)
 
