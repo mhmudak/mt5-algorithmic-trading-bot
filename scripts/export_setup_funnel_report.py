@@ -72,7 +72,7 @@ def normalize_reason(reason):
     if "soft_smc_pass" in reason:
         return "SOFT_SMC_PASS"
 
-    if "smc_failed" in reason or "smc" in reason:
+    if "smc_failed" in reason:
         return "SMC_REJECTED"
 
     if "m5" in reason or "confirmation" in reason:
@@ -89,6 +89,21 @@ def normalize_reason(reason):
 
     if "sending order" in reason:
         return "ORDER_SENT"
+    
+    if "split_delayed_entry" in reason:
+        return "SPLIT_DELAYED_ENTRY"
+
+    if "confluence:" in reason:
+        return "SETUP_CONTEXT"
+
+    if "session:" in reason:
+        return "SETUP_CONTEXT"
+
+    if "macro:" in reason:
+        return "SETUP_CONTEXT"
+
+    if "smc:" in reason:
+        return "SETUP_CONTEXT"
 
     return "OTHER"
 
