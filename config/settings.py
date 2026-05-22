@@ -567,6 +567,17 @@ BETTER_ENTRY_STRATEGIES = [
     "FAILED_FVG_REVERSAL",
 ]
 
+# =========================
+# Pending Setup Validity Guard
+# =========================
+ENABLE_PENDING_SETUP_VALIDITY_GUARD = True
+
+# Cancel waiting if the move already travelled too far in the profit direction
+BETTER_ENTRY_CANCEL_IF_PROFIT_MISSED = 5.0
+
+# Small buffer used when checking structural invalidation closes
+PENDING_SETUP_INVALIDATION_CLOSE_BUFFER_PRICE = 0.50
+
 # Fast reversal setups should not wait too long
 BETTER_ENTRY_FAST_EXPIRY_MINUTES = 3
 
@@ -932,7 +943,7 @@ MICRO_SR_SWEEP_RECLAIM_BASE_MIN_SCORE = 91
 # =========================
 # M5 Execution Confirmation
 # =========================
-ENABLE_M5_EXECUTION_CONFIRMATION = True
+ENABLE_M5_EXECUTION_CONFIRMATION = False
 
 M5_EXECUTION_CONFIRMATION_TIMEFRAME = mt5.TIMEFRAME_M5
 M5_EXECUTION_CONFIRMATION_BARS = 80
@@ -941,13 +952,8 @@ M5_EXECUTION_MIN_BODY_ATR = 0.10
 M5_EXECUTION_CONFIRMATION_STRATEGIES = [
     "ORB",
     "ORB_V00",
-    "FVG",
-    "FVG_CE_MITIGATION",
-    "ORDER_BLOCK",
-    "BREAKER_BLOCK",
     "FAILED_FVG_REVERSAL",
     "FAILED_BREAKOUT_REVERSAL",
-    "WAVETREND_MOMENTUM",
 ]
 
 # =========================
@@ -961,3 +967,29 @@ TELEGRAM_RUNNER_DISTANCE_PRICE = 70.0
 
 ENABLE_TELEGRAM_WAIT_FOR_ENTRY_RETRACE = True
 TELEGRAM_ENTRY_RETRACE_BUFFER_PRICE = 0.25
+
+# =========================
+# Context Soft Override
+# =========================
+ENABLE_CONTEXT_SOFT_OVERRIDE = True # may turn it off
+
+CONTEXT_SOFT_OVERRIDE_MIN_SCORE = 98
+CONTEXT_SOFT_OVERRIDE_MIN_CONFLUENCE = 2
+CONTEXT_SOFT_OVERRIDE_REQUIRE_SMC = True
+
+ENABLE_MTF_SOFT_OVERRIDE = True
+ENABLE_HTF_BIAS_SOFT_OVERRIDE = True
+
+# Keep this False first because HTF liquidity rejection may be protective.
+ENABLE_HTF_LIQUIDITY_SOFT_OVERRIDE = False
+
+CONTEXT_SOFT_OVERRIDE_STRATEGIES = [
+    "FAILED_FVG_REVERSAL",
+    "FAILED_BREAKOUT_REVERSAL",
+    "LIQUIDITY_TRAP",
+    "BREAKER_BLOCK",
+    "FVG_CE_MITIGATION",
+    "ORB",
+    "ORB_V00",
+    "WAVETREND_MOMENTUM",
+]

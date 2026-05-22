@@ -143,6 +143,18 @@ from config.settings import (
     M5_EXECUTION_CONFIRMATION_BARS,
     M5_EXECUTION_MIN_BODY_ATR,
     M5_EXECUTION_CONFIRMATION_STRATEGIES,
+    ENABLE_PENDING_SETUP_VALIDITY_GUARD,
+    BETTER_ENTRY_CANCEL_IF_PROFIT_MISSED,
+    PENDING_SETUP_INVALIDATION_CLOSE_BUFFER_PRICE,
+    DELAYED_ENTRY_CANCEL_IF_PROFIT_MISSED,
+    ENABLE_CONTEXT_SOFT_OVERRIDE,
+    CONTEXT_SOFT_OVERRIDE_MIN_SCORE,
+    CONTEXT_SOFT_OVERRIDE_MIN_CONFLUENCE,
+    CONTEXT_SOFT_OVERRIDE_REQUIRE_SMC,
+    ENABLE_MTF_SOFT_OVERRIDE,
+    ENABLE_HTF_BIAS_SOFT_OVERRIDE,
+    ENABLE_HTF_LIQUIDITY_SOFT_OVERRIDE,
+    CONTEXT_SOFT_OVERRIDE_STRATEGIES,
 )
 
 from src.structure_liquidity_context import (
@@ -951,6 +963,68 @@ def apply_candidate_confluence(candidate, top_candidates):
 
     return candidate
 
+def has_directional_smc(candidate, signal):
+    smc_reasons = candidate.get("smc", []) or []
+
+    has_displacement = "displacement" in smc_reasons
+
+    if signal == "BUY":
+        has_structure = "bullish_bos" in smc_reasons
+    elif signal == "SELL":
+        has_structure = "bearish_bos" in smc_reasons
+    else:
+        has_structure = False
+
+    return has_displacement and has_structure
+
+
+def get_confluence_count(candidate):
+    confluence = candidate.get("confluence_strategies", []) or []
+    return len(set(confluence))
+
+
+def allow_context_soft_override(candidate, signal, context_type, context_reason):
+    if not ENABLE_CONTEXT_SOFT_OVERRIDE:
+        return False, "context_soft_override_disabled"
+
+    strategy_name = candidate.get("strategy", "UNKNOWN")
+    score = candidate.get("score", 0)
+
+    if strategy_name not in CONTEXT_SOFT_OVERRIDE_STRATEGIES:
+        return False, "strategy_not_allowed_for_context_override"
+
+    if score < CONTEXT_SOFT_OVERRIDE_MIN_SCORE:
+        return False, f"score_too_low_for_context_override {score}/{CONTEXT_SOFT_OVERRIDE_MIN_SCORE}"
+
+    confluence_count = get_confluence_count(candidate)
+
+    if confluence_count < CONTEXT_SOFT_OVERRIDE_MIN_CONFLUENCE:
+        return False, f"confluence_too_low_for_context_override {confluence_count}/{CONTEXT_SOFT_OVERRIDE_MIN_CONFLUENCE}"
+
+    if CONTEXT_SOFT_OVERRIDE_REQUIRE_SMC and not has_directional_smc(candidate, signal):
+        return False, "directional_smc_missing_for_context_override"
+
+    if context_type == "MTF" and not ENABLE_MTF_SOFT_OVERRIDE:
+        return False, "mtf_soft_override_disabled"
+
+    if context_type == "HTF_BIAS" and not ENABLE_HTF_BIAS_SOFT_OVERRIDE:
+        return False, "htf_bias_soft_override_disabled"
+
+    if context_type == "HTF_LIQUIDITY" and not ENABLE_HTF_LIQUIDITY_SOFT_OVERRIDE:
+        return False, "htf_liquidity_soft_override_disabled"
+
+    return True, (
+        f"{context_type}_SOFT_OVERRIDE "
+        f"score={score} confluence={confluence_count} reason={context_reason}"
+    )
+
+
+def apply_context_soft_override(candidate, override_reason):
+    reason = candidate.get("reason", "N/A")
+    candidate["reason"] = f"{reason} | {override_reason}"
+    candidate.setdefault("context_override_reasons", [])
+    candidate["context_override_reasons"].append(override_reason)
+    return candidate
 
 def validate_candidate_pre_execution(
     candidate,
@@ -1020,39 +1094,42 @@ def validate_candidate_pre_execution(
 
         mtf_conflict = mtf_bias is not None and mtf_bias != signal
 
-        mtf_override_strategies = [
-            "CRT_TBS",
-            "LIQUIDITY_TRAP",
-            "FRACTAL_SWEEP",
-            "FAILED_BREAKOUT_REVERSAL",
-            "FAILED_FVG_REVERSAL",
-        ]
+        if mtf_conflict:
+            allow_override, override_reason = allow_context_soft_override(
+                candidate=candidate,
+                signal=signal,
+                context_type="MTF",
+                context_reason=f"counter-bias {mtf_bias}",
+            )
 
-        allow_mtf_override = (
-            strategy_name in mtf_override_strategies
-            and score >= 98
-        )
+            if not allow_override:
+                return False, candidate, f"mtf_conflict bias={mtf_bias}"
 
-        if mtf_conflict and not allow_mtf_override:
-            return False, candidate, f"mtf_conflict bias={mtf_bias}"
-
-        if mtf_conflict and allow_mtf_override:
-            reason = candidate.get("reason", "N/A")
-            candidate["reason"] = f"{reason} | MTF override: counter-bias {mtf_bias}"
-            candidate.setdefault("mtf_reasons", [])
-            candidate["mtf_reasons"].append(f"mtf_override_{mtf_bias}")
+            candidate = apply_context_soft_override(candidate, override_reason)
 
     # =========================
     # HTF FILTER
     # =========================
     htf_context = get_htf_context()
-
+    
     if not htf_allows_signal(signal, htf_context, allow_neutral=True):
-        return (
-            False,
-            candidate,
-            f"htf_rejected bias={htf_context.get('bias') if htf_context else None}",
+        htf_bias = htf_context.get("bias") if htf_context else None
+
+        allow_override, override_reason = allow_context_soft_override(
+            candidate=candidate,
+            signal=signal,
+            context_type="HTF_BIAS",
+            context_reason=f"counter-bias {htf_bias}",
         )
+
+        if not allow_override:
+            return (
+                False,
+                candidate,
+                f"htf_rejected bias={htf_bias}",
+            )
+
+        candidate = apply_context_soft_override(candidate, override_reason)
 
     # =========================
     # HTF LIQUIDITY CONTEXT FILTER
@@ -1060,11 +1137,23 @@ def validate_candidate_pre_execution(
     liquidity_context = get_liquidity_context()
 
     if not liquidity_allows_signal(signal, liquidity_context, allow_neutral=True):
-        return (
-            False,
-            candidate,
-            f"htf_liquidity_rejected reason={liquidity_context.get('reason')}",
+        liquidity_reason = liquidity_context.get("reason") if liquidity_context else None
+
+        allow_override, override_reason = allow_context_soft_override(
+            candidate=candidate,
+            signal=signal,
+            context_type="HTF_LIQUIDITY",
+            context_reason=liquidity_reason,
         )
+
+        if not allow_override:
+            return (
+                False,
+                candidate,
+                f"htf_liquidity_rejected reason={liquidity_reason}",
+            )
+
+        candidate = apply_context_soft_override(candidate, override_reason)
 
     # =========================
     # NEWS FILTER
@@ -1075,6 +1164,195 @@ def validate_candidate_pre_execution(
         return False, candidate, f"news_blocked {news_reason}"
 
     return True, candidate, "passed"
+
+def get_current_execution_price(signal, tick):
+    if signal == "BUY":
+        return tick.ask
+
+    if signal == "SELL":
+        return tick.bid
+
+    return None
+
+
+def get_wait_reference_price(setup, signal, tick, df):
+    existing = setup.get("wait_reference_price")
+
+    if existing is not None:
+        return existing
+
+    data = setup.get("data", {})
+    fallback_values = [
+        data.get("entry_price"),
+        data.get("entry"),
+        data.get("close_price"),
+    ]
+
+    for value in fallback_values:
+        if value is not None:
+            setup["wait_reference_price"] = value
+            return value
+
+    price = get_current_execution_price(signal, tick)
+
+    if price is not None:
+        setup["wait_reference_price"] = price
+        return price
+
+    return df.iloc[-2]["close"]
+
+
+def get_structural_invalidation_level(signal, setup_data):
+    if signal == "BUY":
+        candidates = [
+            setup_data.get("fvg_bottom"),
+            setup_data.get("failed_fvg_bottom"),
+            setup_data.get("ob_low"),
+            setup_data.get("zone_low"),
+            setup_data.get("sweep_low"),
+            setup_data.get("liquidity_low"),
+            setup_data.get("recent_low"),
+        ]
+
+        valid = [float(item) for item in candidates if item is not None]
+
+        if not valid:
+            return None
+
+        return max(valid)
+
+    if signal == "SELL":
+        candidates = [
+            setup_data.get("fvg_top"),
+            setup_data.get("failed_fvg_top"),
+            setup_data.get("ob_high"),
+            setup_data.get("zone_high"),
+            setup_data.get("sweep_high"),
+            setup_data.get("liquidity_high"),
+            setup_data.get("recent_high"),
+        ]
+
+        valid = [float(item) for item in candidates if item is not None]
+
+        if not valid:
+            return None
+
+        return min(valid)
+
+    return None
+
+
+def pending_setup_still_valid(setup, df, tick, max_profit_missed):
+    if not ENABLE_PENDING_SETUP_VALIDITY_GUARD:
+        return True, "validity_guard_disabled", "continue"
+
+    setup_data = setup.get("data", {})
+    signal = setup_data.get("signal")
+    strategy_name = setup_data.get("strategy", "UNKNOWN")
+
+    if signal not in ["BUY", "SELL"]:
+        return False, "Invalid signal while waiting", "invalidated"
+
+    current_price = get_current_execution_price(signal, tick)
+
+    if current_price is None:
+        return False, "No current tick price while waiting", "expired"
+
+    last_closed = df.iloc[-2]
+    close_price = last_closed["close"]
+
+    sl_reference = setup_data.get("sl_reference")
+    tp_reference = setup_data.get("tp_reference")
+
+    reference_price = get_wait_reference_price(setup, signal, tick, df)
+
+    # 1. Cancel if SL zone is touched before the better/delayed entry
+    if sl_reference is not None:
+        if signal == "BUY" and current_price <= sl_reference:
+            return (
+                False,
+                f"{strategy_name} BUY waiting setup invalidated | price touched SL zone {round(sl_reference, 2)}",
+                "invalidated",
+            )
+
+        if signal == "SELL" and current_price >= sl_reference:
+            return (
+                False,
+                f"{strategy_name} SELL waiting setup invalidated | price touched SL zone {round(sl_reference, 2)}",
+                "invalidated",
+            )
+
+    # 2. Cancel if TP was already reached before entry
+    if tp_reference is not None:
+        if signal == "BUY" and current_price >= tp_reference:
+            return (
+                False,
+                f"{strategy_name} BUY waiting setup expired | TP reached before entry {round(tp_reference, 2)}",
+                "expired",
+            )
+
+        if signal == "SELL" and current_price <= tp_reference:
+            return (
+                False,
+                f"{strategy_name} SELL waiting setup expired | TP reached before entry {round(tp_reference, 2)}",
+                "expired",
+            )
+
+    # 3. Cancel if price already moved too far in profit direction
+    if signal == "BUY":
+        profit_missed = current_price - reference_price
+    else:
+        profit_missed = reference_price - current_price
+
+    if profit_missed >= max_profit_missed:
+        return (
+            False,
+            f"{strategy_name} waiting setup expired | move already missed {round(profit_missed, 2)} / max {max_profit_missed}",
+            "expired",
+        )
+
+    # 4. Cancel if structure is broken on a closed candle
+    invalidation_level = get_structural_invalidation_level(signal, setup_data)
+
+    if invalidation_level is not None:
+        buffer = PENDING_SETUP_INVALIDATION_CLOSE_BUFFER_PRICE
+
+        if signal == "BUY" and close_price < invalidation_level - buffer:
+            return (
+                False,
+                f"{strategy_name} BUY waiting setup invalidated | close below structure {round(invalidation_level, 2)}",
+                "invalidated",
+            )
+
+        if signal == "SELL" and close_price > invalidation_level + buffer:
+            return (
+                False,
+                f"{strategy_name} SELL waiting setup invalidated | close above structure {round(invalidation_level, 2)}",
+                "invalidated",
+            )
+
+    return True, "setup_still_valid", "continue"
+
+
+def handle_invalid_waiting_setup(setup, reason, action):
+    if action == "invalidated":
+        execution_engine.mark_invalidated(setup, reason)
+        icon = "🚫"
+        label = "Invalidated"
+    else:
+        execution_engine.mark_expired(setup, reason)
+        icon = "⌛"
+        label = "Expired"
+
+    setup_data = setup.get("data", {})
+
+    send_telegram_message(
+        f"{icon} Waiting Setup {label}\n"
+        f"Setup: {setup_data.get('setup_id', 'N/A')}\n"
+        f"Strategy: {setup_data.get('strategy')}\n"
+        f"Signal: {setup_data.get('signal')}\n"
+        f"Reason: {reason}"
+    )
 
 def process_wait_better_entry_setups(df, tick, account_info, market_condition, session_name):
     wait_setups = execution_engine.get_wait_better_entry_setups()
@@ -1102,6 +1380,21 @@ def process_wait_better_entry_setups(df, tick, account_info, market_condition, s
         )
 
         if signal not in ["BUY", "SELL"]:
+            continue
+        
+        still_valid, validity_reason, validity_action = pending_setup_still_valid(
+            setup=setup,
+            df=df,
+            tick=tick,
+            max_profit_missed=BETTER_ENTRY_CANCEL_IF_PROFIT_MISSED,
+        )
+
+        if not still_valid:
+            handle_invalid_waiting_setup(
+                setup=setup,
+                reason=validity_reason,
+                action=validity_action,
+            )
             continue
 
         trade_plan = calculate_trade_plan(
@@ -1227,6 +1520,21 @@ def process_wait_delayed_entry_setups(df, tick, account_info, market_condition, 
 
         if signal not in ["BUY", "SELL"] or target_entry is None:
             continue
+        
+        still_valid, validity_reason, validity_action = pending_setup_still_valid(
+            setup=setup,
+            df=df,
+            tick=tick,
+            max_profit_missed=DELAYED_ENTRY_CANCEL_IF_PROFIT_MISSED,
+        )
+
+        if not still_valid:
+            handle_invalid_waiting_setup(
+                setup=setup,
+                reason=validity_reason,
+                action=validity_action,
+            )
+            continue
 
         current_price = tick.ask if signal == "BUY" else tick.bid
 
@@ -1339,7 +1647,7 @@ def process_wait_delayed_entry_setups(df, tick, account_info, market_condition, 
             f"Actual Entry: {trade_plan['entry_price']}\n"
             f"SL: {trade_plan['stop_loss']}\n"
             f"TP: {trade_plan['take_profit']}\n"
-            f"RR: {rr_value} / Required: {min_rr_required}"
+            f"RR: {rr_value} / Required: {min_rr_required}\n"
             f"Confirmation: {confirmation_reason}\n"
         )
 
@@ -3230,11 +3538,14 @@ def process_cycle(last_processed_candle_time):
                     else BETTER_ENTRY_EXPIRY_MINUTES
                 )
 
+                reference_price = get_current_execution_price(signal, tick)
+
                 execution_engine.mark_wait_better_entry(
                     setup=best_setup,
                     min_rr_required=min_rr_required,
                     current_rr=rr_value,
                     expiry_minutes=better_entry_expiry,
+                    reference_price=reference_price,
                 )
 
                 send_telegram_message(
