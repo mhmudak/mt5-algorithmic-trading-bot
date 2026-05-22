@@ -436,6 +436,21 @@ def _update_existing_trade_tp(parsed, symbol):
 
 def handle_parsed_telegram_signal(parsed):
     signal_type = parsed.get("type")
+    
+    raw_text = str(parsed.get("raw_text", "")).lower()
+
+    if (
+        "new signal coming" in raw_text
+        or "waiting for candle close confirmation" in raw_text
+        or "trigger touched intrabar" in raw_text
+    ):
+        send_telegram_message(
+            f"⏳ Telegram Signal Ignored\n"
+            f"Reason: Waiting for candle close confirmation\n"
+            f"Source: {parsed.get('source_name')}\n\n"
+            f"No trade executed."
+        )
+        return True, "awaiting_candle_close_confirmation"
 
     if signal_type == "IGNORE":
         return False, parsed.get("reason", "ignored")

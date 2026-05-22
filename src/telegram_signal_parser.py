@@ -378,6 +378,19 @@ def parse_telegram_signal(text):
             "type": "IGNORE",
             "reason": "empty_message",
         }
+    
+    lowered = text.lower()
+
+    if (
+        "new signal coming" in lowered
+        or "waiting for candle close confirmation" in lowered
+        or "trigger touched intrabar" in lowered
+    ):
+        return {
+            "type": "IGNORE",
+            "reason": "awaiting_candle_close_confirmation",
+            "raw_text": text,
+        }
 
     if is_news_or_market_commentary(text):
         return {
@@ -464,6 +477,18 @@ def parse_telegram_signal(text):
         missing.append("tp")
 
     if missing:
+        if entry_low is not None and sl is None and not tps:
+            return {
+                "type": "PRE_SIGNAL",
+                "direction": direction,
+                "symbol": "XAUUSD.s",
+                "entry_low": entry_low,
+                "entry_high": entry_high,
+                "risk_note": risk_note,
+                "raw_text": text,
+                "reason": "entry_only_signal_without_sl_tp",
+            }
+        
         if missing == ["tp"] and entry_low is not None and sl is not None:
             return {
                 "type": "SIGNAL_NO_TP",
