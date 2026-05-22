@@ -30,6 +30,14 @@ from config.settings import (
     MAIN_RUNNER_EMERGENCY_TP_PRICE,
 )
 
+def is_telegram_trade(trade):
+    return (
+        trade.get("trade_role") == "TELEGRAM"
+        or str(trade.get("strategy", "")).upper().startswith("TELEGRAM")
+        or str(trade.get("entry_model", "")).upper().startswith("TELEGRAM")
+        or str(trade.get("risk_mode", "")).upper().startswith("TELEGRAM")
+        or trade.get("telegram_partial_tp_enabled") is True
+    )
 
 def manage_positions(symbol: str):
     positions = mt5.positions_get(symbol=symbol)
@@ -55,6 +63,7 @@ def manage_positions(symbol: str):
         return
 
     tracked_positions = []
+    stats_changed = False
 
     for position in positions:
         position_id = str(position.ticket)
@@ -69,12 +78,25 @@ def manage_positions(symbol: str):
                 f"[MANAGER] Position {position_id} is manual-imported, updating statistics only"
             )
             update_trade_statistics(position, trade, tick)
+            stats_changed = True
+            continue
+
+        if is_telegram_trade(trade):
+            logger.info(
+                f"[MANAGER] Position {position_id} is Telegram-managed, skipping normal MAIN/EXTRA manager"
+            )
+            update_trade_statistics(position, trade, tick)
+            stats_changed = True
             continue
 
         tracked_positions.append((position, trade))
 
     if not tracked_positions:
         logger.info("[MANAGER] No tracked open positions to manage")
+    
+        if stats_changed:
+            save_trades(trades)
+    
         return
 
     buy_positions = [
@@ -109,6 +131,12 @@ def manage_positions(symbol: str):
 
 
 def manage_direction_group(symbol, direction, group, tick, trades):
+    group = [
+        (position, trade)
+        for position, trade in group
+        if not is_telegram_trade(trade)
+    ]
+
     if not group:
         return
 

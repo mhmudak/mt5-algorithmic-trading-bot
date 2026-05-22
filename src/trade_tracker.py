@@ -13,8 +13,11 @@ from config.settings import (
 
 from src.account_context import get_account_file
 
+
 def get_tracker_file():
     return get_account_file("trades.json")
+
+
 TRACKED_LEVELS = [3, 5, 8, 12, 18, 28]
 
 cooldown_until = None
@@ -143,7 +146,61 @@ def _find_open_main_trade_id(trades, symbol, signal):
             and trade.get("trade_role") == "MAIN"
         ):
             return position_id
+
     return None
+
+
+def _is_telegram_trade_plan(trade_plan):
+    strategy_name = str(trade_plan.get("strategy", "")).upper()
+    entry_model = str(trade_plan.get("entry_model", "")).upper()
+    risk_mode = str(trade_plan.get("risk_mode", "")).upper()
+
+    return (
+        strategy_name.startswith("TELEGRAM")
+        or entry_model.startswith("TELEGRAM")
+        or risk_mode.startswith("TELEGRAM")
+        or trade_plan.get("telegram_partial_tp_enabled") is True
+    )
+
+
+def _copy_telegram_trade_metadata(trade_record, trade_plan):
+    for key in [
+        "risk_mode",
+        "source_name",
+        "source_chat",
+        "source_message_id",
+        "source_event_type",
+        "telegram_target_mode",
+        "telegram_partial_tp_enabled",
+        "telegram_tps",
+        "telegram_partial_close_pcts",
+        "telegram_runner_remaining_pct",
+        "telegram_runner_distance_price",
+        "telegram_runner_tp",
+    ]:
+        if key in trade_plan:
+            trade_record[key] = trade_plan.get(key)
+
+    if trade_record.get("telegram_partial_tp_enabled"):
+        close_pcts = trade_record.get("telegram_partial_close_pcts", [])
+        tps = trade_record.get("telegram_tps", [])
+
+        trade_record["telegram_tp_stages"] = [
+            {
+                "index": index + 1,
+                "tp": float(tp),
+                "close_pct": (
+                    float(close_pcts[index])
+                    if index < len(close_pcts)
+                    else 0.0
+                ),
+                "done": False,
+                "closed_volume": 0.0,
+            }
+            for index, tp in enumerate(tps)
+        ]
+
+    return trade_record
 
 
 def register_executed_trade(symbol, signal, trade_plan, result):
@@ -151,14 +208,18 @@ def register_executed_trade(symbol, signal, trade_plan, result):
 
     position_id = str(result.order if result.order else result.deal)
 
-    existing_main_id = _find_open_main_trade_id(trades, symbol, signal)
-
-    if existing_main_id is None:
-        trade_role = "MAIN"
+    if _is_telegram_trade_plan(trade_plan):
+        trade_role = "TELEGRAM"
         main_position_id = position_id
     else:
-        trade_role = "EXTRA"
-        main_position_id = existing_main_id
+        existing_main_id = _find_open_main_trade_id(trades, symbol, signal)
+
+        if existing_main_id is None:
+            trade_role = "MAIN"
+            main_position_id = position_id
+        else:
+            trade_role = "EXTRA"
+            main_position_id = existing_main_id
 
     trade_record = _build_trade_record(
         position_id=position_id,
@@ -184,38 +245,7 @@ def register_executed_trade(symbol, signal, trade_plan, result):
         tp_buffer=trade_plan.get("tp_buffer", 0.0),
     )
 
-    # Preserve Telegram metadata for edited-message matching and partial TP management.
-    for key in [
-        "source_name",
-        "source_chat",
-        "source_message_id",
-        "source_event_type",
-        "telegram_target_mode",
-        "telegram_partial_tp_enabled",
-        "telegram_tps",
-        "telegram_partial_close_pcts",
-        "telegram_runner_remaining_pct",
-        "telegram_runner_distance_price",
-        "telegram_runner_tp",
-    ]:
-        if key in trade_plan:
-            trade_record[key] = trade_plan.get(key)
-
-    if trade_record.get("telegram_partial_tp_enabled"):
-        trade_record["telegram_tp_stages"] = [
-            {
-                "index": index + 1,
-                "tp": float(tp),
-                "close_pct": float(
-                    trade_record.get("telegram_partial_close_pcts", [])[index]
-                )
-                if index < len(trade_record.get("telegram_partial_close_pcts", []))
-                else 0.0,
-                "done": False,
-                "closed_volume": 0.0,
-            }
-            for index, tp in enumerate(trade_record.get("telegram_tps", []))
-        ]
+    trade_record = _copy_telegram_trade_metadata(trade_record, trade_plan)
 
     trades[position_id] = trade_record
 
@@ -257,11 +287,13 @@ def update_trade_statistics(position, trade, tick):
     trade["max_profit_price"] = round(max(previous_max, price_profit), 2)
 
     reached_levels = trade.get("reached_levels", {})
+
     for level in TRACKED_LEVELS:
         if price_profit >= level:
             reached_levels[str(level)] = True
 
     trade["reached_levels"] = reached_levels
+
 
 def infer_close_reason_from_trade(trade, close_price, realized_profit):
     if trade is None:
@@ -292,11 +324,13 @@ def infer_close_reason_from_trade(trade, close_price, realized_profit):
 
     return "BREAKEVEN"
 
+
 def detect_close_details(position_id: str, trade=None):
     now = datetime.now()
     start = now - timedelta(days=7)
 
     deals = mt5.history_deals_get(start, now)
+
     if deals is None:
         return {
             "close_reason": None,
@@ -314,7 +348,8 @@ def detect_close_details(position_id: str, trade=None):
         }
 
     matching_deals = [
-        deal for deal in deals
+        deal
+        for deal in deals
         if getattr(deal, "position_id", None) == position_id_int
     ]
 
@@ -326,7 +361,8 @@ def detect_close_details(position_id: str, trade=None):
         }
 
     closing_deals = [
-        deal for deal in matching_deals
+        deal
+        for deal in matching_deals
         if getattr(deal, "entry", None) == mt5.DEAL_ENTRY_OUT
     ]
 
@@ -364,6 +400,7 @@ def detect_close_details(position_id: str, trade=None):
 
 def update_trade_lifecycle(symbol: str):
     trades = load_trades()
+
     if not trades:
         logger.info("[TRACKER] No tracked trades")
         return
@@ -387,11 +424,13 @@ def update_trade_lifecycle(symbol: str):
         tracked_remaining = float(trade.get("remaining_volume", 0.0))
         current_position = open_positions_map.get(position_id)
 
-        # Fully closed
         if current_position is None:
             if tracked_remaining > 0:
                 closed_now = tracked_remaining
-                trade["closed_volume"] = round(float(trade.get("closed_volume", 0.0)) + closed_now, 2)
+                trade["closed_volume"] = round(
+                    float(trade.get("closed_volume", 0.0)) + closed_now,
+                    2,
+                )
                 trade["remaining_volume"] = 0.0
                 trade["status"] = "CLOSED"
                 trade["close_time"] = datetime.now().isoformat()
@@ -403,15 +442,19 @@ def update_trade_lifecycle(symbol: str):
 
                 trade["close_reason"] = close_reason
                 trade["realized_profit"] = realized_profit
+
                 if realized_profit > 0:
                     trade["final_result"] = "WIN"
                 elif realized_profit < 0:
                     trade["final_result"] = "LOSS"
                 else:
                     trade["final_result"] = "BREAKEVEN"
+
                 changed = True
 
-                logger.info(f"[TRACKER] Trade fully closed {position_id} | reason={close_reason}")
+                logger.info(
+                    f"[TRACKER] Trade fully closed {position_id} | reason={close_reason}"
+                )
 
                 if close_reason in ["SL", "SL_LIKELY"]:
                     activate_cooldown()
@@ -458,14 +501,15 @@ def update_trade_lifecycle(symbol: str):
                         "closed_volume": trade.get("closed_volume", 0.0),
                     },
                 )
+
             continue
 
-        # Partial close
         current_volume = round(float(current_position.volume), 2)
 
         if current_volume < tracked_remaining:
             closed_now = round(tracked_remaining - current_volume, 2)
 
+            trade.setdefault("partial_closes", [])
             trade["partial_closes"].append(
                 {
                     "time": datetime.now().isoformat(),
@@ -474,7 +518,10 @@ def update_trade_lifecycle(symbol: str):
                 }
             )
 
-            trade["closed_volume"] = round(float(trade.get("closed_volume", 0.0)) + closed_now, 2)
+            trade["closed_volume"] = round(
+                float(trade.get("closed_volume", 0.0)) + closed_now,
+                2,
+            )
             trade["remaining_volume"] = current_volume
             changed = True
 
@@ -500,6 +547,7 @@ def sync_open_positions(symbol: str):
     trades = load_trades()
 
     positions = mt5.positions_get(symbol=symbol)
+
     if positions is None:
         logger.info(f"[TRACKER] No positions returned for sync on {symbol}")
         return
