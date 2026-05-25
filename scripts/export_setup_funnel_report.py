@@ -132,6 +132,18 @@ def build_report(file_path=None, exclude_manual=False):
     rejection_reason_counter = Counter()
     strategy_event_counter = defaultdict(Counter)
     reason_bucket_counter = Counter()
+    strategy_reason_bucket_counter = defaultdict(Counter)
+    blocking_reason_bucket_counter = Counter()
+    strategy_blocking_reason_bucket_counter = defaultdict(Counter)
+    
+    blocking_events = {
+        "CANDIDATE_REJECTED",
+        "RR_REJECTED",
+        "TRADE_BLOCKED",
+        "EXECUTION_FAILED",
+        "SMC_REJECTED",
+        "CONFIRMATION_REJECTED",
+    }
 
     executed = 0
     closed = 0
@@ -163,9 +175,18 @@ def build_report(file_path=None, exclude_manual=False):
             all_event_counter[event_name] += 1
 
             reason = event.get("reason")
+
             if reason:
-                rejection_reason_counter[str(reason)] += 1
-                reason_bucket_counter[normalize_reason(reason)] += 1
+                reason_text = str(reason)
+                reason_bucket = normalize_reason(reason_text)
+
+                rejection_reason_counter[reason_text] += 1
+                reason_bucket_counter[reason_bucket] += 1
+                strategy_reason_bucket_counter[strategy][reason_bucket] += 1
+
+                if event_name in blocking_events:
+                    blocking_reason_bucket_counter[reason_bucket] += 1
+                    strategy_blocking_reason_bucket_counter[strategy][reason_bucket] += 1
 
     if total_setups == 0:
         print("No matching setup audit data found.")
@@ -203,6 +224,27 @@ def build_report(file_path=None, exclude_manual=False):
     for reason, count in reason_bucket_counter.most_common():
         pct = round((count / max(1, sum(reason_bucket_counter.values()))) * 100, 2)
         print(f"{reason}: {count} ({pct}%)")
+        
+    print("\n--- Strategy x Reason Bucket ---")
+    for strategy, buckets in sorted(strategy_reason_bucket_counter.items()):
+        parts = [
+            f"{bucket}={count}"
+            for bucket, count in buckets.most_common()
+        ]
+    
+        print(f"{strategy}: " + ", ".join(parts))
+    
+    print("\n--- Blocking Reason Buckets Only ---")
+    for reason, count in blocking_reason_bucket_counter.most_common():
+        print(f"{reason}: {count}")
+
+    print("\n--- Strategy x Blocking Reason Bucket ---")
+    for strategy, buckets in sorted(strategy_blocking_reason_bucket_counter.items()):
+        parts = [
+            f"{bucket}={count}"
+            for bucket, count in buckets.most_common()
+        ]
+        print(f"{strategy}: " + ", ".join(parts))
     
     print("\n--- Top Reasons ---")
     for reason, count in rejection_reason_counter.most_common(25):
