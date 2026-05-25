@@ -28,9 +28,13 @@ def load_trades():
 
     if not tracker_file.exists():
         return {}
+    
+    if tracker_file.stat().st_size == 0:
+        logger.error("[TRACKER] trades.json is empty, resetting in memory")
+        return {}
 
     try:
-        with open(tracker_file, "r", encoding="utf-8") as f:
+        with open(tracker_file, "r", encoding="utf-8-sig") as f:
             return json.load(f)
     except Exception as e:
         logger.error(f"[TRACKER] Failed to load trades: {e}")
@@ -39,11 +43,16 @@ def load_trades():
 
 def save_trades(trades):
     tracker_file = get_tracker_file()
+    temp_path = tracker_file.with_suffix(tracker_file.suffix + ".tmp")
 
     try:
         tracker_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(tracker_file, "w", encoding="utf-8") as f:
+
+        with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(trades, f, indent=2, ensure_ascii=False)
+
+        temp_path.replace(tracker_file)
+
     except Exception as e:
         logger.error(f"[TRACKER] Failed to save trades: {e}")
 

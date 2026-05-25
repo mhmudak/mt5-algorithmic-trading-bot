@@ -51,6 +51,11 @@ from src.elliott_fib_context import (
     apply_elliott_fib_confirmation,
 )
 
+from src.blocked_setup_tracker import (
+    register_blocked_setup,
+    update_blocked_setup_outcomes,
+)
+
 from config.settings import (
     SYMBOL,
     TIMEFRAME,
@@ -101,6 +106,7 @@ from config.settings import (
     ENABLE_EXTREME_SWEEP_RECLAIM,
     BETTER_ENTRY_FAST_EXPIRY_MINUTES,
     BETTER_ENTRY_FAST_EXPIRY_STRATEGIES,
+    FAILED_FVG_REVERSAL_BETTER_ENTRY_EXPIRY_MINUTES,
     ALLOW_OPPOSITE_DIRECTION_TRADES,
     ENABLE_SCALP_MODE,
     SCALP_STRATEGIES,
@@ -979,8 +985,31 @@ def has_directional_smc(candidate, signal):
 
 
 def get_confluence_count(candidate):
-    confluence = candidate.get("confluence_strategies", []) or []
-    return len(set(confluence))
+    confluence = candidate.get("confluence_strategies")
+
+    if confluence:
+        return len(set(confluence))
+
+    confluence = candidate.get("confluence")
+
+    if confluence:
+        return len(set(confluence))
+
+    reason = str(candidate.get("reason", ""))
+
+    if "CONFLUENCE:" not in reason:
+        return 0
+
+    try:
+        confluence_part = reason.split("CONFLUENCE:", 1)[1].split("|", 1)[0]
+        strategies = [
+            item.strip()
+            for item in confluence_part.split(",")
+            if item.strip()
+        ]
+        return len(set(strategies))
+    except Exception:
+        return 0
 
 
 def allow_context_soft_override(candidate, signal, context_type, context_reason):
@@ -1357,6 +1386,15 @@ def handle_invalid_waiting_setup(setup, reason, action):
         f"Signal: {setup_data.get('signal')}\n"
         f"Reason: {reason}"
     )
+    
+def get_better_entry_expiry_minutes(strategy_name):
+    if strategy_name == "FAILED_FVG_REVERSAL":
+        return FAILED_FVG_REVERSAL_BETTER_ENTRY_EXPIRY_MINUTES
+
+    if strategy_name in BETTER_ENTRY_FAST_EXPIRY_STRATEGIES:
+        return BETTER_ENTRY_FAST_EXPIRY_MINUTES
+
+    return BETTER_ENTRY_EXPIRY_MINUTES
 
 def process_wait_better_entry_setups(df, tick, account_info, market_condition, session_name):
     wait_setups = execution_engine.get_wait_better_entry_setups()
@@ -1912,6 +1950,7 @@ def process_cycle(last_processed_candle_time):
         return last_processed_candle_time
 
     logger.info(f"MT5 time: {tick.time}")
+    update_blocked_setup_outcomes(SYMBOL, tick)
 
     account_info = mt5.account_info()
     if account_info is None:
@@ -2622,6 +2661,20 @@ def process_cycle(last_processed_candle_time):
                     market_condition=market_condition,
                     reason=rejection_reason,
                 )
+                
+                blocked_candidate = candidate.copy()
+                blocked_candidate["setup_id"] = build_setup_id(
+                    candidate.get("strategy"),
+                    candidate.get("signal"),
+                    tick.time,
+                )
+
+                register_blocked_setup(
+                    setup_data=blocked_candidate,
+                    reason=rejection_reason,
+                    event_name="CANDIDATE_REJECTED",
+                    tick=tick,
+                )
 
                 continue
 
@@ -2712,6 +2765,21 @@ def process_cycle(last_processed_candle_time):
                     rr=rr_value,
                     required_rr=min_rr_required,
                     reason=rejection_reason,
+                )
+                
+                blocked_candidate = validated_candidate.copy()
+                blocked_candidate["setup_id"] = build_setup_id(
+                    candidate_strategy,
+                    candidate_signal,
+                    tick.time,
+                )
+
+                register_blocked_setup(
+                    setup_data=blocked_candidate,
+                    reason=rejection_reason,
+                    event_name="CANDIDATE_REJECTED_LOW_RR",
+                    trade_plan=candidate_trade_plan,
+                    tick=tick,
                 )
 
                 continue
@@ -3234,6 +3302,22 @@ def process_cycle(last_processed_candle_time):
                 f"strategy={setup_strategy} signal={setup_signal} "
                 f"reason={final_liquidity_context.get('reason') if final_liquidity_context else None}"
             )
+            
+            final_htf_reason = (
+                locals().get("htf_liquidity_reason")
+                or locals().get("final_htf_liquidity_reason")
+                or locals().get("liquidity_reason")
+                or locals().get("htf_reason")
+                or "HTF swept highs and closed back inside"
+            )
+            
+            register_blocked_setup(
+                setup_data=selected_signal_data,
+                reason=f"htf_liquidity_rejected reason={final_htf_reason}",
+                event_name="CANDIDATE_REJECTED",
+                trade_plan=trade_plan if "trade_plan" in locals() else None,
+                tick=tick,
+            )
 
             send_telegram_message(
                 f"🚫 Ready Setup Rejected by Final HTF Liquidity\n"
@@ -3536,11 +3620,7 @@ def process_cycle(last_processed_candle_time):
                 and strategy_name in BETTER_ENTRY_STRATEGIES
                 and "best_setup" in locals()
             ):
-                better_entry_expiry = (
-                    BETTER_ENTRY_FAST_EXPIRY_MINUTES
-                    if strategy_name in BETTER_ENTRY_FAST_EXPIRY_STRATEGIES
-                    else BETTER_ENTRY_EXPIRY_MINUTES
-                )
+                better_entry_expiry = get_better_entry_expiry_minutes(strategy_name)
 
                 reference_price = get_current_execution_price(signal, tick)
 
@@ -3693,6 +3773,14 @@ def process_cycle(last_processed_candle_time):
             # =========================
             # FINAL BLOCKED MESSAGE
             # =========================
+            register_blocked_setup(
+                setup_data=selected_signal_data,
+                reason=guard_reason,
+                event_name="TRADE_BLOCKED",
+                trade_plan=trade_plan,
+                tick=tick,
+            )
+            
             log_setup_event(
                 setup_id=setup_id,
                 event="TRADE_BLOCKED",
