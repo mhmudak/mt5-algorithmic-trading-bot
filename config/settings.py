@@ -70,11 +70,16 @@ NEWS_BLACKOUT_WINDOWS = [
 ENABLE_TRADING_TIME_BLACKOUT = False
 
 TRADING_BLACKOUT_WINDOWS = [
-    # {
-    #     "name": "Low liquidity / high slippage window",
-    #     "start": "03:00",
-    #     "end": "04:00",
-    # },
+    {
+        "name": "Open Market",
+        "start": "00:00",
+        "end": "03:11",
+    },
+    {
+        "name": "Low liquidity / high slippage window",
+        "start": "03:00",
+        "end": "04:11",
+    },
 ]
 
 # =========================
@@ -477,7 +482,7 @@ SESSION_NEWYORK_END = 21
 # =========================
 # WaveTrend Pivot M5 Strategy
 # =========================
-ENABLE_WAVETREND_PIVOT_M5 = True # may turn it off
+ENABLE_WAVETREND_PIVOT_M5 = False # may turn it off
 WAVETREND_PIVOT_TIMEFRAME = mt5.TIMEFRAME_M5
 WAVETREND_PIVOT_BARS = 600
 
@@ -564,7 +569,7 @@ BETTER_ENTRY_STRATEGIES = [
     "OB_FVG_COMBO",
     "HTF_TREND_PULLBACK",
     "RELIEF_RALLY",
-    "FAILED_FVG_REVERSAL",
+    "FAILED_FVG_REVERSAL"
 ]
 
 # =========================
@@ -582,9 +587,10 @@ PENDING_SETUP_INVALIDATION_CLOSE_BUFFER_PRICE = 0.50
 BETTER_ENTRY_FAST_EXPIRY_MINUTES = 3
 
 BETTER_ENTRY_FAST_EXPIRY_STRATEGIES = [
-    "FAILED_FVG_REVERSAL",
     "FAILED_BREAKOUT_REVERSAL",
 ]
+
+FAILED_FVG_REVERSAL_BETTER_ENTRY_EXPIRY_MINUTES = 15
 
 ENABLE_FAILED_FVG_REVERSAL = True
 FAILED_FVG_REVERSAL_BASE_MIN_SCORE = 92
@@ -627,13 +633,7 @@ SCALP_MAX_TARGET_DISTANCE = 8.0
 # =========================
 # Telegram External Signal Trading
 # =========================
-ENABLE_TELEGRAM_SIGNAL_TRADING = False
-
-TELEGRAM_SIGNAL_MODE = "AUTO_EXECUTE"
-# ALERT_ONLY
-# CONFIRMATION
-# AUTO_EXECUTE
-
+ENABLE_TELEGRAM_SIGNAL_TRADING = True
 TELEGRAM_SIGNAL_SYMBOL = "XAUUSD.s"
 
 ALLOW_TELEGRAM_PRE_SIGNAL_ENTRY = True
@@ -761,7 +761,7 @@ ELLIOTT_FIB_CONFLICT_PENALTY = 2
 # =========================
 # Protected Re-Entry
 # =========================
-ENABLE_PROTECTED_REENTRY = True
+ENABLE_PROTECTED_REENTRY = True # may turn it off
 
 PROTECTED_REENTRY_MIN_PROFIT_PRICE = 6.0
 PROTECTED_REENTRY_LOOKBACK_MINUTES = 90
@@ -873,13 +873,13 @@ ORB_V00_BASE_MIN_SCORE = 92
 # =========================
 # IFVG_RETEST_CONFLUENCE
 # =========================
-ENABLE_IFVG_RETEST_CONFLUENCE = True # may turn it off
+ENABLE_IFVG_RETEST_CONFLUENCE = False # may turn it off
 IFVG_RETEST_CONFLUENCE_BASE_MIN_SCORE = 93
 
 # =========================
 # Soft SMC Pass
 # =========================
-ENABLE_SOFT_SMC_FOR_STRONG_SETUPS = True # may turn it off
+ENABLE_SOFT_SMC_FOR_STRONG_SETUPS = False # may turn it off
 SOFT_SMC_MIN_SCORE = 98
 
 SOFT_SMC_STRATEGIES = [
@@ -971,7 +971,7 @@ TELEGRAM_ENTRY_RETRACE_BUFFER_PRICE = 0.25
 # =========================
 # Context Soft Override
 # =========================
-ENABLE_CONTEXT_SOFT_OVERRIDE = True # may turn it off
+ENABLE_CONTEXT_SOFT_OVERRIDE = False # may turn it off
 
 CONTEXT_SOFT_OVERRIDE_MIN_SCORE = 98
 CONTEXT_SOFT_OVERRIDE_MIN_CONFLUENCE = 2

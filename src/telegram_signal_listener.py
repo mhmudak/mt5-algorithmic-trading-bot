@@ -33,6 +33,8 @@ def _message_hash(text):
 
 
 async def resolve_signal_sources(client):
+    SOURCE_BY_ENTITY_ID.clear()
+    
     """
     Resolve configured Telegram source channels/groups from the account dialogs.
 
@@ -142,6 +144,11 @@ async def main():
         TELEGRAM_USER_SESSION,
         TELEGRAM_API_ID,
         TELEGRAM_API_HASH,
+        connection_retries=None,
+        retry_delay=10,
+        auto_reconnect=True,
+        request_retries=5,
+        timeout=30,
     )
 
     await client.start()
@@ -150,17 +157,28 @@ async def main():
 
     @client.on(events.NewMessage(chats=resolved_chats))
     async def on_new_message(event):
-        await handle_signal_message(event, "NEW_MESSAGE")
+        try:
+            await handle_signal_message(event, "NEW_MESSAGE")
+        except Exception as e:
+            logger.error(f"[TELEGRAM LISTENER] Failed to handle new message: {e}")
 
     @client.on(events.MessageEdited(chats=resolved_chats))
     async def on_edited_message(event):
-        await handle_signal_message(event, "EDITED_MESSAGE")
+        try:
+            await handle_signal_message(event, "EDITED_MESSAGE")
+        except Exception as e:
+            logger.error(f"[TELEGRAM LISTENER] Failed to handle edited message: {e}")
 
     logger.info("[TELEGRAM LISTENER] Starting for resolved sources")
 
     try:
         await client.run_until_disconnected()
     finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
         mt5.shutdown()
 
 
@@ -168,9 +186,13 @@ if __name__ == "__main__":
     while True:
         try:
             asyncio.run(main())
+            logger.warning("[TELEGRAM LISTENER] Disconnected normally, reconnecting in 10 seconds")
+            time.sleep(10)
+
         except KeyboardInterrupt:
             logger.info("[TELEGRAM LISTENER] Stopped manually")
             break
+
         except Exception as e:
-            logger.error(f"[TELEGRAM LISTENER] Crashed, restarting in 10 seconds: {e}")
+            logger.error(f"[TELEGRAM LISTENER] Crashed/disconnected, restarting in 10 seconds: {e}")
             time.sleep(10)
