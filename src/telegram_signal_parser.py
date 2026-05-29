@@ -23,7 +23,7 @@ SELL_WORDS = [
 GOLD_WORDS = [
     "gold",
     "xau",
-    "xauusd.s",
+    "xauusd.m",
     "ذهب",
     "دهب",
 ]
@@ -360,7 +360,7 @@ def parse_telegram_signal(text):
         return {
             "type": "PRE_SIGNAL",
             "direction": direction,
-            "symbol": "XAUUSD.s",
+            "symbol": "XAUUSD.m",
             "risk_note": risk_note,
             "raw_text": text,
         }
@@ -381,7 +381,7 @@ def parse_telegram_signal(text):
             return {
                 "type": "SIGNAL_NO_TP",
                 "direction": direction,
-                "symbol": "XAUUSD.s",
+                "symbol": "XAUUSD.m",
                 "entry_low": entry_low,
                 "entry_high": entry_high,
                 "sl": sl,
@@ -393,7 +393,7 @@ def parse_telegram_signal(text):
         return {
             "type": "INCOMPLETE_SIGNAL",
             "direction": direction,
-            "symbol": "XAUUSD.s",
+            "symbol": "XAUUSD.m",
             "entry_low": entry_low,
             "entry_high": entry_high,
             "sl": sl,
@@ -406,7 +406,7 @@ def parse_telegram_signal(text):
     return {
         "type": "SIGNAL",
         "direction": direction,
-        "symbol": "XAUUSD.s",
+        "symbol": "XAUUSD.m",
         "entry_low": entry_low,
         "entry_high": entry_high,
         "sl": sl,
