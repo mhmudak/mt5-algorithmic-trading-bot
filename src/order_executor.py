@@ -1,6 +1,5 @@
 import time
 
-from src.logger import logger
 import MetaTrader5 as mt5
 
 from config.settings import (
@@ -19,9 +18,9 @@ from config.settings import (
     FVG_CE_MITIGATION_ALLOW_MOMENTUM_DRIFT,
     ENABLE_BREAKER_BLOCK_EXTRA_SL,
     BREAKER_BLOCK_EXTRA_SL_PRICE,
-    ENABLE_WAVETREND_STRICT_SL,
-    WAVETREND_MOMENTUM_MAX_STOP_DISTANCE,
 )
+from src.funded_safe_mode import validate_funded_safe_trade
+from src.logger import logger
 from src.notifier import send_telegram_message
 from src.trade_tracker import register_executed_trade
 
@@ -228,12 +227,6 @@ def rebase_trade_plan_for_momentum(signal, trade_plan, current_price):
     )
     adjusted_plan["comment"] = trade_plan.get("comment", "MomentumDrift")[:31]
 
-    adjusted_plan = apply_wavetrend_strict_sl(
-        signal=signal,
-        trade_plan=adjusted_plan,
-        entry_price=current_price,
-    )
-
     return adjusted_plan
 
 
@@ -249,45 +242,6 @@ def is_breaker_block_trade(trade_plan):
     entry_model = str(trade_plan.get("entry_model", "")).upper()
 
     return strategy == "BREAKER_BLOCK" or "BREAKER" in entry_model
-
-def is_wavetrend_momentum_trade(trade_plan):
-    strategy = str(trade_plan.get("strategy", "")).upper()
-    entry_model = str(trade_plan.get("entry_model", "")).upper()
-
-    return strategy == "WAVETREND_MOMENTUM" or "WAVETREND" in entry_model
-
-
-def apply_wavetrend_strict_sl(signal, trade_plan, entry_price=None):
-    if not ENABLE_WAVETREND_STRICT_SL:
-        return trade_plan
-
-    if not is_wavetrend_momentum_trade(trade_plan):
-        return trade_plan
-
-    adjusted_plan = trade_plan.copy()
-
-    entry = float(entry_price or adjusted_plan["entry_price"])
-    current_sl = float(adjusted_plan["stop_loss"])
-    max_stop = float(WAVETREND_MOMENTUM_MAX_STOP_DISTANCE)
-
-    if signal == "BUY":
-        capped_sl = round(entry - max_stop, 2)
-
-        if current_sl < capped_sl:
-            adjusted_plan["stop_loss"] = capped_sl
-
-    elif signal == "SELL":
-        capped_sl = round(entry + max_stop, 2)
-
-        if current_sl > capped_sl:
-            adjusted_plan["stop_loss"] = capped_sl
-
-    adjusted_plan["reason"] = (
-        f"{trade_plan.get('reason', '')} | WAVETREND_STRICT_SL"
-    )
-    adjusted_plan["comment"] = trade_plan.get("comment", "WTStrictSL")[:31]
-
-    return adjusted_plan
 
 
 def apply_breaker_block_extra_sl(signal, trade_plan):
@@ -320,6 +274,39 @@ def apply_breaker_block_extra_sl(signal, trade_plan):
     return adjusted_plan
 
 
+def block_high_slippage_trade(
+    symbol,
+    signal,
+    trade_plan,
+    expected_price,
+    current_price,
+    slippage,
+):
+    error_message = (
+        f"⛔ Trade Blocked: High Slippage\n"
+        f"Symbol: {symbol}\n"
+        f"Signal: {signal}\n"
+        f"Strategy: {trade_plan.get('strategy', 'UNKNOWN')}\n"
+        f"Expected: {expected_price}\n"
+        f"Current: {round(current_price, 2)}\n"
+        f"Slippage: {round(slippage, 2)}\n"
+        f"Max Allowed: {MAX_SLIPPAGE}\n"
+        f"Action: No trade executed"
+    )
+
+    print(error_message)
+    logger.warning(
+        f"[EXECUTION BLOCKED] High slippage | "
+        f"strategy={trade_plan.get('strategy', 'UNKNOWN')} "
+        f"signal={signal} expected={expected_price} "
+        f"current={current_price} "
+        f"slippage={round(slippage, 2)} max={MAX_SLIPPAGE}"
+    )
+    send_telegram_message(error_message)
+
+    return False
+
+
 def execute_trade(signal, trade_plan, symbol):
     if EXECUTION_MODE == "SIMULATION":
         print("\n[SIMULATION MODE]")
@@ -344,6 +331,25 @@ def execute_trade(signal, trade_plan, symbol):
             f"❌ Execution Failed\n"
             f"Reason: Unknown EXECUTION_MODE={EXECUTION_MODE}"
         )
+        return False
+
+    funded_allowed, funded_reason = validate_funded_safe_trade(
+        signal=signal,
+        trade_plan=trade_plan,
+        symbol=symbol,
+    )
+
+    if not funded_allowed:
+        error_message = (
+            f"🛡️ Funded Safe Mode Blocked Trade\n"
+            f"Symbol: {symbol}\n"
+            f"Signal: {signal}\n"
+            f"Strategy: {trade_plan.get('strategy', 'UNKNOWN')}\n"
+            f"Reason: {funded_reason}"
+        )
+        print(error_message)
+        logger.warning(f"[FUNDED SAFE MODE] {funded_reason}")
+        send_telegram_message(error_message)
         return False
 
     request_price = get_current_request_price(symbol, signal)
@@ -436,7 +442,17 @@ def execute_trade(signal, trade_plan, symbol):
 
     pre_execution_slippage = abs(request_price - expected_price)
 
-    if ENABLE_HIGH_SLIPPAGE_RETRACEMENT and pre_execution_slippage > MAX_SLIPPAGE:
+    if pre_execution_slippage > MAX_SLIPPAGE:
+        if not ENABLE_HIGH_SLIPPAGE_RETRACEMENT:
+            return block_high_slippage_trade(
+                symbol=symbol,
+                signal=signal,
+                trade_plan=trade_plan,
+                expected_price=expected_price,
+                current_price=request_price,
+                slippage=pre_execution_slippage,
+            )
+
         adjusted_trade_plan = wait_for_high_slippage_retracement(
             signal=signal,
             trade_plan=trade_plan,
@@ -464,13 +480,7 @@ def execute_trade(signal, trade_plan, symbol):
         expected_price = trade_plan["entry_price"]
 
     trade_plan = apply_breaker_block_extra_sl(signal, trade_plan)
-    
-    trade_plan = apply_wavetrend_strict_sl(
-        signal=signal,
-        trade_plan=trade_plan,
-        entry_price=trade_plan["entry_price"],
-    )
-    
+
     symbol_info = mt5.symbol_info(symbol)
 
     if symbol_info is None or symbol_info.point <= 0:
@@ -478,7 +488,7 @@ def execute_trade(signal, trade_plan, symbol):
         print(error_message)
         send_telegram_message(error_message)
         return False
-    
+
     deviation_points = max(1, int(round(MAX_SLIPPAGE / symbol_info.point)))
 
     base_request = {
@@ -489,7 +499,7 @@ def execute_trade(signal, trade_plan, symbol):
         "price": request_price,
         "sl": trade_plan["stop_loss"],
         "tp": trade_plan["take_profit"],
-        "deviation": 10,
+        "deviation": deviation_points,
         "magic": 123456,
         "comment": trade_plan.get("comment", "MhMudBot")[:31],
         "type_time": mt5.ORDER_TIME_GTC,
@@ -500,9 +510,6 @@ def execute_trade(signal, trade_plan, symbol):
     last_error_message = None
 
     for filling_mode in get_supported_filling_modes(symbol):
-        request = base_request.copy()
-        request["type_filling"] = filling_mode
-
         fresh_tick = mt5.symbol_info_tick(symbol)
 
         if fresh_tick is None:
@@ -513,36 +520,25 @@ def execute_trade(signal, trade_plan, symbol):
                 f"Reason: No fresh tick before order_send"
             )
             return False
-        
+
         expected_price = float(trade_plan["entry_price"])
         current_execution_price = fresh_tick.ask if signal == "BUY" else fresh_tick.bid
-        
+
         pre_send_slippage = abs(current_execution_price - expected_price)
-        
+
         if pre_send_slippage > MAX_SLIPPAGE:
-            logger.warning(
-                f"[EXECUTION BLOCKED] High pre-send slippage | "
-                f"strategy={trade_plan.get('strategy', 'UNKNOWN')} "
-                f"signal={signal} expected={expected_price} "
-                f"current={current_execution_price} "
-                f"slippage={round(pre_send_slippage, 2)} max={MAX_SLIPPAGE}"
+            return block_high_slippage_trade(
+                symbol=symbol,
+                signal=signal,
+                trade_plan=trade_plan,
+                expected_price=expected_price,
+                current_price=current_execution_price,
+                slippage=pre_send_slippage,
             )
-        
-            send_telegram_message(
-                f"⛔ Trade Blocked: High Slippage\n"
-                f"Symbol: {symbol}\n"
-                f"Signal: {signal}\n"
-                f"Strategy: {trade_plan.get('strategy', 'UNKNOWN')}\n"
-                f"Expected: {expected_price}\n"
-                f"Current: {round(current_execution_price, 2)}\n"
-                f"Slippage: {round(pre_send_slippage, 2)}\n"
-                f"Max Allowed: {MAX_SLIPPAGE}\n"
-                f"Action: No trade executed"
-            )
-        
-            return False
-        
+
+        request = base_request.copy()
         request["price"] = current_execution_price
+        request["type_filling"] = filling_mode
 
         result = mt5.order_send(request)
 
@@ -584,12 +580,13 @@ def execute_trade(signal, trade_plan, symbol):
     print(f"[EXECUTION] Executed: {executed_price}")
     print(f"[EXECUTION] Slippage: {slippage}")
     print(f"[EXECUTION] Filling Mode: {successful_filling_mode}")
+    print(f"[EXECUTION] Deviation Points: {deviation_points}")
     print("Order result:", result)
 
     if slippage > MAX_SLIPPAGE:
-        print("[WARNING] High slippage detected!")
+        print("[WARNING] High slippage detected after execution")
         send_telegram_message(
-            f"⚠️ High Slippage Detected\n"
+            f"⚠️ High Slippage After Execution\n"
             f"Symbol: {symbol}\n"
             f"Signal: {signal}\n"
             f"Expected: {expected_price}\n"

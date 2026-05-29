@@ -941,3 +941,40 @@ M5_EXECUTION_CONFIRMATION_STRATEGIES = [
     "FAILED_BREAKOUT_REVERSAL",
     "WAVETREND_MOMENTUM",
 ]
+
+# =========================
+# Funded Account Safe Mode
+# =========================
+ENABLE_FUNDED_SAFE_MODE = False
+
+# Compliance protection
+FUNDED_BLOCK_TELEGRAM_SIGNAL_TRADING = True
+FUNDED_REQUIRE_SL_AND_TP = True
+FUNDED_ALLOW_OPPOSITE_DIRECTION_TRADES = False
+
+# Exposure limits
+FUNDED_MAX_LOT_PER_TRADE = 0.1
+FUNDED_MAX_TOTAL_OPEN_LOT = 0.3
+FUNDED_MAX_OPEN_POSITIONS = 2
+
+# Execution quality
+FUNDED_MAX_SPREAD = 0.50
+FUNDED_BLOCK_HIGH_SLIPPAGE = True
+
+# Rollover protection
+FUNDED_BLOCK_ROLLOVER_TRADING = True
+FUNDED_ROLLOVER_WINDOWS = [
+    {
+        "name": "ROLLOVER_NIGHT",
+        "start": "23:55",
+        "end": "00:15",
+    },
+]
+
+# Drawdown protection
+FUNDED_MAX_FLOATING_LOSS_USD = 1000.0
+
+# Daily funded limits
+FUNDED_MAX_TRADES_PER_DAY = 6
+FUNDED_MAX_DAILY_VOLUME_LOT = 1.2
+FUNDED_MAX_DAILY_REALIZED_LOSS_USD = 1200.0
