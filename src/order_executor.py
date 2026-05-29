@@ -1,6 +1,7 @@
 import time
 
 from src.logger import logger
+from datetime import datetime
 import MetaTrader5 as mt5
 
 from config.settings import (
@@ -21,6 +22,8 @@ from config.settings import (
     BREAKER_BLOCK_EXTRA_SL_PRICE,
     ENABLE_WAVETREND_STRICT_SL,
     WAVETREND_MOMENTUM_MAX_STOP_DISTANCE,
+    ENABLE_ROLLOVER_TRADING_BLOCK,
+    ROLLOVER_BLOCK_WINDOWS,
 )
 from src.notifier import send_telegram_message
 from src.trade_tracker import register_executed_trade
@@ -319,6 +322,30 @@ def apply_breaker_block_extra_sl(signal, trade_plan):
 
     return adjusted_plan
 
+def _parse_time(value):
+    return datetime.strptime(value, "%H:%M").time()
+
+
+def _is_now_in_window(start, end):
+    now = datetime.now().time()
+    start_time = _parse_time(start)
+    end_time = _parse_time(end)
+
+    if start_time <= end_time:
+        return start_time <= now <= end_time
+
+    return now >= start_time or now <= end_time
+
+
+def is_rollover_trading_blocked():
+    if not ENABLE_ROLLOVER_TRADING_BLOCK:
+        return False, None
+
+    for window in ROLLOVER_BLOCK_WINDOWS:
+        if _is_now_in_window(window["start"], window["end"]):
+            return True, window.get("name", "ROLLOVER")
+
+    return False, None
 
 def execute_trade(signal, trade_plan, symbol):
     if EXECUTION_MODE == "SIMULATION":
@@ -344,6 +371,22 @@ def execute_trade(signal, trade_plan, symbol):
             f"❌ Execution Failed\n"
             f"Reason: Unknown EXECUTION_MODE={EXECUTION_MODE}"
         )
+        return False
+    
+    rollover_blocked, rollover_name = is_rollover_trading_blocked()
+
+    if rollover_blocked:
+        error_message = (
+            f"⛔ Trade Blocked: Rollover Window\n"
+            f"Symbol: {symbol}\n"
+            f"Signal: {signal}\n"
+            f"Strategy: {trade_plan.get('strategy', 'UNKNOWN')}\n"
+            f"Window: {rollover_name}\n"
+            f"Action: No trade executed"
+        )
+        print(error_message)
+        logger.warning(f"[ROLLOVER BLOCK] {rollover_name}")
+        send_telegram_message(error_message)
         return False
 
     request_price = get_current_request_price(symbol, signal)

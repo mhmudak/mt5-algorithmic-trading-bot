@@ -924,7 +924,7 @@ MICRO_SR_SWEEP_RECLAIM_BASE_MIN_SCORE = 91
 # =========================
 # M5 Execution Confirmation
 # =========================
-ENABLE_M5_EXECUTION_CONFIRMATION = True
+ENABLE_M5_EXECUTION_CONFIRMATION = True # may turn it off
 
 M5_EXECUTION_CONFIRMATION_TIMEFRAME = mt5.TIMEFRAME_M5
 M5_EXECUTION_CONFIRMATION_BARS = 80
@@ -940,4 +940,17 @@ M5_EXECUTION_CONFIRMATION_STRATEGIES = [
     "FAILED_FVG_REVERSAL",
     "FAILED_BREAKOUT_REVERSAL",
     "WAVETREND_MOMENTUM",
+]
+
+# =========================
+# Rollover Trading Protection
+# =========================
+ENABLE_ROLLOVER_TRADING_BLOCK = True
+
+ROLLOVER_BLOCK_WINDOWS = [
+    {
+        "name": "ROLLOVER_NIGHT",
+        "start": "23:55",
+        "end": "00:15",
+    },
 ]
