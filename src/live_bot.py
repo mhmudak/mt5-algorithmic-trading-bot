@@ -141,6 +141,8 @@ from config.settings import (
     M5_EXECUTION_CONFIRMATION_BARS,
     M5_EXECUTION_MIN_BODY_ATR,
     M5_EXECUTION_CONFIRMATION_STRATEGIES,
+    ENABLE_CONFLUENCE_FAMILY_COUNTING,
+    CONFLUENCE_FAMILY_MAP,
 )
 
 from src.structure_liquidity_context import (
@@ -912,6 +914,19 @@ def select_confirmed_ready_setup(ready_setups, df, selected_signal_data):
 
     return None, None, rejected_reasons
 
+def get_confluence_family(strategy_name):
+    strategy_key = str(strategy_name).upper()
+    return CONFLUENCE_FAMILY_MAP.get(strategy_key, strategy_key)
+
+
+def get_unique_confluence_families(strategies):
+    return list(
+        dict.fromkeys(
+            get_confluence_family(strategy)
+            for strategy in strategies
+        )
+    )
+
 def apply_candidate_confluence(candidate, top_candidates):
     if not ENABLE_SIGNAL_CONFLUENCE_GROUPING:
         return candidate
@@ -933,15 +948,31 @@ def apply_candidate_confluence(candidate, top_candidates):
     if len(confluence_strategies) <= 1:
         return candidate
 
+    if ENABLE_CONFLUENCE_FAMILY_COUNTING:
+        confluence_units = get_unique_confluence_families(confluence_strategies)
+    else:
+        confluence_units = confluence_strategies
+
+    if len(confluence_units) <= 1:
+        logger.info(
+            f"[CONFLUENCE] grouped but no independent family boost | "
+            f"signal={signal} strategies={confluence_strategies} "
+            f"families={confluence_units}"
+        )
+        return candidate
+
     confluence_boost = min(
-        (len(confluence_strategies) - 1) * CONFLUENCE_SCORE_BOOST_PER_STRATEGY,
+        (len(confluence_units) - 1) * CONFLUENCE_SCORE_BOOST_PER_STRATEGY,
         MAX_CONFLUENCE_SCORE_BOOST,
     )
 
     candidate["score"] = min(candidate.get("score", 0) + confluence_boost, 100)
     candidate["confluence_strategies"] = confluence_strategies
+    candidate["confluence_families"] = confluence_units
+    candidate["confluence_count"] = len(confluence_units)
 
     reason = candidate.get("reason", "N/A")
+
     if "CONFLUENCE:" not in reason:
         candidate["reason"] = (
             f"{reason} | CONFLUENCE: {','.join(confluence_strategies)}"
@@ -950,6 +981,7 @@ def apply_candidate_confluence(candidate, top_candidates):
     logger.info(
         f"[CONFLUENCE] signal={signal} "
         f"strategies={confluence_strategies} "
+        f"families={confluence_units} "
         f"boost={confluence_boost} "
         f"final_score={candidate['score']}"
     )
