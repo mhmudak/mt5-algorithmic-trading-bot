@@ -18,8 +18,6 @@ from config.settings import (
     MOMENTUM_CONTINUATION_MAX_DRIFT_PRICE,
     MOMENTUM_CONTINUATION_MIN_RR,
     FVG_CE_MITIGATION_ALLOW_MOMENTUM_DRIFT,
-    ENABLE_BREAKER_BLOCK_EXTRA_SL,
-    BREAKER_BLOCK_EXTRA_SL_PRICE,
     ENABLE_WAVETREND_STRICT_SL,
     WAVETREND_MOMENTUM_MAX_STOP_DISTANCE,
     ENABLE_ROLLOVER_TRADING_BLOCK,
@@ -246,13 +244,6 @@ def is_fvg_ce_mitigation_trade(trade_plan):
 
     return strategy == "FVG_CE_MITIGATION" or "FVG_CE" in entry_model
 
-
-def is_breaker_block_trade(trade_plan):
-    strategy = str(trade_plan.get("strategy", "")).upper()
-    entry_model = str(trade_plan.get("entry_model", "")).upper()
-
-    return strategy == "BREAKER_BLOCK" or "BREAKER" in entry_model
-
 def is_wavetrend_momentum_trade(trade_plan):
     strategy = str(trade_plan.get("strategy", "")).upper()
     entry_model = str(trade_plan.get("entry_model", "")).upper()
@@ -292,36 +283,6 @@ def apply_wavetrend_strict_sl(signal, trade_plan, entry_price=None):
 
     return adjusted_plan
 
-
-def apply_breaker_block_extra_sl(signal, trade_plan):
-    if not ENABLE_BREAKER_BLOCK_EXTRA_SL:
-        return trade_plan
-
-    if not is_breaker_block_trade(trade_plan):
-        return trade_plan
-
-    adjusted_plan = trade_plan.copy()
-    original_sl = trade_plan["stop_loss"]
-
-    if signal == "BUY":
-        adjusted_plan["stop_loss"] = round(
-            original_sl - BREAKER_BLOCK_EXTRA_SL_PRICE,
-            2,
-        )
-
-    elif signal == "SELL":
-        adjusted_plan["stop_loss"] = round(
-            original_sl + BREAKER_BLOCK_EXTRA_SL_PRICE,
-            2,
-        )
-
-    adjusted_plan["reason"] = (
-        f"{trade_plan.get('reason', '')} | BREAKER_BLOCK_EXTRA_SL"
-    )
-    adjusted_plan["comment"] = trade_plan.get("comment", "BreakerSLBuffer")[:31]
-
-    return adjusted_plan
-
 def _parse_time(value):
     return datetime.strptime(value, "%H:%M").time()
 
@@ -346,6 +307,7 @@ def is_rollover_trading_blocked():
             return True, window.get("name", "ROLLOVER")
 
     return False, None
+
 
 def execute_trade(signal, trade_plan, symbol):
     if EXECUTION_MODE == "SIMULATION":
@@ -505,8 +467,6 @@ def execute_trade(signal, trade_plan, symbol):
             return False
 
         expected_price = trade_plan["entry_price"]
-
-    trade_plan = apply_breaker_block_extra_sl(signal, trade_plan)
     
     trade_plan = apply_wavetrend_strict_sl(
         signal=signal,

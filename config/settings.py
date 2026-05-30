@@ -315,6 +315,20 @@ STOP_EXTRA_BUFFER_PRICE = 5.0   # move SL farther behind structure
 TP_EARLY_BUFFER_PRICE = 5.0     # take profit earlier before structure target
 
 # =========================
+# Strategy Extra SL Buffer
+# =========================
+ENABLE_STRATEGY_EXTRA_SL_BUFFER = True
+
+STRATEGY_EXTRA_SL_BUFFER_PRICE = {
+    "BREAKER_BLOCK": 3.0,
+    "ORB": 3.0,
+    "ORB_V00": 3.0,
+    "WAVETREND_MOMENTUM": 2.0,
+    "FAILED_FVG_REVERSAL": 2.0,
+    "FAILED_BREAKOUT_REVERSAL": 2.0,
+}
+
+# =========================
 # Sniper v2 Filters
 # =========================
 ENABLE_SNIPER_V2 = True
@@ -870,10 +884,6 @@ SOFT_SMC_STRATEGIES = [
     "WAVETREND_MOMENTUM",
 ]
 
-# BREAKER_BLOCK
-ENABLE_BREAKER_BLOCK_EXTRA_SL = True
-BREAKER_BLOCK_EXTRA_SL_PRICE = 3.0
-
 # =========================
 # Range / Consolidation Strategies
 # =========================
@@ -902,12 +912,11 @@ VWAP_RANGE_SL_BUFFER_PRICE = 1.50
 ENABLE_ORB_DIRECT_BREAKOUT = True
 ORB_DIRECT_BREAKOUT_MIN_SCORE = 98
 ORB_DIRECT_BREAKOUT_REQUIRE_SMC = True
-ORB_DIRECT_BREAKOUT_EXTRA_SL_PRICE = 3.0
+
 
 # WAVETREND_MOMENTUM_M5
 ENABLE_WAVETREND_MOMENTUM_M5 = True
 WAVETREND_MOMENTUM_BASE_MIN_SCORE = 91
-WAVETREND_MOMENTUM_EXTRA_SL_PRICE = 2.0
 WAVETREND_MOMENTUM_MIN_RR = 0.63
 
 # =========================

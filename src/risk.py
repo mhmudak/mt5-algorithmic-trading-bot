@@ -13,6 +13,8 @@ from config.settings import (
     MIN_TP_BUFFER_PRICE,
     MAX_TP_BUFFER_PRICE,
     LIQUIDITY_CANDLE_R_MULTIPLIER,
+    ENABLE_STRATEGY_EXTRA_SL_BUFFER,
+    STRATEGY_EXTRA_SL_BUFFER_PRICE,
 )
 
 
@@ -236,6 +238,26 @@ def _strategy_fallback_take_profit(
 
     return _rr_target(signal, entry_price, stop_distance, 1.5)
 
+def apply_strategy_extra_sl_buffer(signal, strategy_name, stop_loss, reason=""):
+    if not ENABLE_STRATEGY_EXTRA_SL_BUFFER:
+        return stop_loss, reason
+
+    strategy_key = str(strategy_name or "").upper()
+    extra_sl = float(STRATEGY_EXTRA_SL_BUFFER_PRICE.get(strategy_key, 0.0) or 0.0)
+
+    if extra_sl <= 0:
+        return stop_loss, reason
+
+    if signal == "BUY":
+        adjusted_sl = round(float(stop_loss) - extra_sl, 2)
+    elif signal == "SELL":
+        adjusted_sl = round(float(stop_loss) + extra_sl, 2)
+    else:
+        return stop_loss, reason
+
+    updated_reason = f"{reason} | STRATEGY_EXTRA_SL_BUFFER={extra_sl}"
+
+    return adjusted_sl, updated_reason
 
 def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
     if signal not in ["BUY", "SELL"]:
@@ -276,6 +298,18 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
 
     else:
         stop_loss = _fallback_atr_stop(signal, entry_price, atr)
+
+    if not _valid_stop_loss(signal, entry_price, stop_loss):
+        return None
+
+    reason = signal_data.get("reason", "") if signal_data else ""
+
+    stop_loss, reason = apply_strategy_extra_sl_buffer(
+        signal=signal,
+        strategy_name=strategy,
+        stop_loss=stop_loss,
+        reason=reason,
+    )
 
     if not _valid_stop_loss(signal, entry_price, stop_loss):
         return None
@@ -353,4 +387,5 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
         "recent_resistance": round(recent_resistance, 2),
         "recent_support": round(recent_support, 2),
         "atr": round(atr, 2),
+        "reason": reason,
     }

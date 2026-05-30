@@ -10,7 +10,6 @@ from config.settings import (
     ENABLE_ORB_DIRECT_BREAKOUT,
     ORB_DIRECT_BREAKOUT_MIN_SCORE,
     ORB_DIRECT_BREAKOUT_REQUIRE_SMC,
-    ORB_DIRECT_BREAKOUT_EXTRA_SL_PRICE,
 )
 
 def get_recent_invalidated_setups(strategy=None, max_age_minutes=30):
@@ -153,26 +152,7 @@ class ExecutionEngine:
         if sl_reference is None:
             return
 
-        if signal == "BUY":
-            data["sl_reference"] = round(
-                sl_reference - ORB_DIRECT_BREAKOUT_EXTRA_SL_PRICE,
-                2,
-            )
-
-        elif signal == "SELL":
-            data["sl_reference"] = round(
-                sl_reference + ORB_DIRECT_BREAKOUT_EXTRA_SL_PRICE,
-                2,
-            )
-
-        data["orb_direct_extra_sl_applied"] = True
-        data["orb_direct_extra_sl_price"] = ORB_DIRECT_BREAKOUT_EXTRA_SL_PRICE
-
-        reason = data.get("reason", "N/A")
-        data["reason"] = (
-            f"{reason} | ORB_DIRECT_BREAKOUT: extra SL "
-            f"{ORB_DIRECT_BREAKOUT_EXTRA_SL_PRICE}"
-        )
+        data["sl_reference"] = sl_reference
 
     def process_setups(self, df, price, atr):
         executable = []
