@@ -11,7 +11,7 @@ from src.logger import logger
 from src.notifier import send_telegram_message
 from src.order_executor import execute_trade
 from src.position_manager import manage_positions
-from src.risk import calculate_trade_plan
+from src.risk import calculate_trade_plan, get_strategy_extra_sl_buffer
 from src.setup_audit import log_setup_event
 from src.trade_tracker import (
     update_trade_lifecycle,
@@ -752,6 +752,9 @@ def try_build_scalp_trade_plan(
     if normal_tp is None:
         return None
 
+    extra_sl_buffer = get_strategy_extra_sl_buffer(strategy_name)
+    scalp_stop_distance = SCALP_FIXED_STOP_DISTANCE + extra_sl_buffer
+
     # =========================
     # Fixed scalp SL / capped TP
     # =========================
@@ -766,7 +769,7 @@ def try_build_scalp_trade_plan(
         if target_distance < SCALP_MIN_TARGET_DISTANCE:
             return None
 
-        stop_loss = entry_price - SCALP_FIXED_STOP_DISTANCE
+        stop_loss = entry_price - scalp_stop_distance
         take_profit = entry_price + target_distance
 
     elif signal == "SELL":
@@ -780,7 +783,7 @@ def try_build_scalp_trade_plan(
         if target_distance < SCALP_MIN_TARGET_DISTANCE:
             return None
 
-        stop_loss = entry_price + SCALP_FIXED_STOP_DISTANCE
+        stop_loss = entry_price + scalp_stop_distance
         take_profit = entry_price - target_distance
 
     else:
@@ -791,7 +794,7 @@ def try_build_scalp_trade_plan(
     scalp_trade_plan["entry_price"] = round(entry_price, 2)
     scalp_trade_plan["stop_loss"] = round(stop_loss, 2)
     scalp_trade_plan["take_profit"] = round(take_profit, 2)
-    scalp_trade_plan["stop_distance"] = round(SCALP_FIXED_STOP_DISTANCE, 2)
+    scalp_trade_plan["stop_distance"] = round(scalp_stop_distance, 2)
 
     scalp_trade_plan["strategy"] = strategy_name
     scalp_trade_plan["score"] = selected_signal_data.get("score", 0)
@@ -801,7 +804,9 @@ def try_build_scalp_trade_plan(
 
     scalp_trade_plan["is_scalp"] = True
     scalp_trade_plan["scalp_sl_model"] = "FIXED_SCALP_STOP"
-    scalp_trade_plan["scalp_stop_distance"] = SCALP_FIXED_STOP_DISTANCE
+    scalp_trade_plan["scalp_stop_distance"] = round(scalp_stop_distance, 2)
+    scalp_trade_plan["scalp_base_stop_distance"] = SCALP_FIXED_STOP_DISTANCE
+    scalp_trade_plan["scalp_extra_sl_buffer"] = round(extra_sl_buffer, 2)
     scalp_trade_plan["scalp_target_distance"] = round(target_distance, 2)
 
     scalp_rr = calculate_rr_value(scalp_trade_plan)
@@ -814,6 +819,8 @@ def try_build_scalp_trade_plan(
     scalp_trade_plan["reason"] = (
         f"{normal_trade_plan.get('reason', selected_signal_data.get('reason', 'N/A'))} "
         f"| SCALP_MODE: fixed SL={SCALP_FIXED_STOP_DISTANCE}, "
+        f"extra SL={round(extra_sl_buffer, 2)}, "
+        f"final SL distance={round(scalp_stop_distance, 2)}, "
         f"target={round(target_distance, 2)}"
     )
 

@@ -238,12 +238,15 @@ def _strategy_fallback_take_profit(
 
     return _rr_target(signal, entry_price, stop_distance, 1.5)
 
-def apply_strategy_extra_sl_buffer(signal, strategy_name, stop_loss, reason=""):
+def get_strategy_extra_sl_buffer(strategy_name):
     if not ENABLE_STRATEGY_EXTRA_SL_BUFFER:
-        return stop_loss, reason
+        return 0.0
 
     strategy_key = str(strategy_name or "").upper()
-    extra_sl = float(STRATEGY_EXTRA_SL_BUFFER_PRICE.get(strategy_key, 0.0) or 0.0)
+    return float(STRATEGY_EXTRA_SL_BUFFER_PRICE.get(strategy_key, 0.0) or 0.0)
+
+def apply_strategy_extra_sl_buffer(signal, strategy_name, stop_loss, reason=""):
+    extra_sl = get_strategy_extra_sl_buffer(strategy_name)
 
     if extra_sl <= 0:
         return stop_loss, reason
