@@ -9,7 +9,6 @@ from config.settings import (
     ATR_MAX,
     WT_CHANNEL_LENGTH,
     WT_AVERAGE_LENGTH,
-    WAVETREND_MOMENTUM_EXTRA_SL_PRICE,
 )
 
 from src.indicators import calculate_ema, calculate_atr
@@ -192,8 +191,6 @@ def generate_signal(df):
         # If micro SL is invalid, fallback to wider structure SL
         if sl_reference >= entry["close"]:
             sl_reference = round(structure_sl - sl_buffer, 2)
-        
-        sl_reference = round(sl_reference - WAVETREND_MOMENTUM_EXTRA_SL_PRICE, 2)
             
         stop_distance = entry["close"] - sl_reference
 
@@ -294,8 +291,6 @@ def generate_signal(df):
         # If micro SL is invalid, fallback to wider structure SL
         if sl_reference <= entry["close"]:
             sl_reference = round(structure_sl + sl_buffer, 2)
-            
-        sl_reference = round(sl_reference + WAVETREND_MOMENTUM_EXTRA_SL_PRICE, 2)
             
         stop_distance = sl_reference - entry["close"]
 
