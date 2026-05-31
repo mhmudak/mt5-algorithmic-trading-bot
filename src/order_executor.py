@@ -25,7 +25,7 @@ from config.settings import (
 )
 from src.notifier import send_telegram_message
 from src.trade_tracker import register_executed_trade
-
+from src.market_price import get_current_execution_price, get_execution_price
 
 def get_supported_filling_modes(symbol):
     symbol_info = mt5.symbol_info(symbol)
@@ -54,18 +54,7 @@ def get_supported_filling_modes(symbol):
 
 
 def get_current_request_price(symbol, signal):
-    tick = mt5.symbol_info_tick(symbol)
-
-    if tick is None:
-        return None
-
-    if signal == "BUY":
-        return tick.ask
-
-    if signal == "SELL":
-        return tick.bid
-
-    return None
+    return get_current_execution_price(symbol, signal)
 
 
 def calculate_adverse_drift(signal, expected_price, current_price):
@@ -518,7 +507,16 @@ def execute_trade(signal, trade_plan, symbol):
             return False
         
         expected_price = float(trade_plan["entry_price"])
-        current_execution_price = fresh_tick.ask if signal == "BUY" else fresh_tick.bid
+        current_execution_price = get_execution_price(signal, fresh_tick)
+        
+        if current_execution_price is None:
+            logger.error("[EXECUTION BLOCKED] Invalid execution price before order_send")
+            send_telegram_message(
+                f"⛔ Trade Blocked\n"
+                f"Symbol: {symbol}\n"
+                f"Reason: Invalid execution price before order_send"
+            )
+            return False
         
         pre_send_slippage = abs(current_execution_price - expected_price)
         

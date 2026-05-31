@@ -53,7 +53,10 @@ from src.elliott_fib_context import (
 from src.pending_better_entry import (
     get_ready_pending_better_entries,
     mark_pending_first_split_executed,
+    register_pending_better_entry,
 )
+
+from src.market_price import get_execution_price
 
 from config.settings import (
     SYMBOL,
@@ -241,6 +244,17 @@ def is_rr_valid(trade_plan, min_rr=1.2):
     except Exception:
         return False
 
+def get_current_execution_price(signal, tick):
+    if tick is None:
+        return None
+
+    if signal == "BUY":
+        return tick.ask
+
+    if signal == "SELL":
+        return tick.bid
+
+    return None
 
 def get_min_rr(strategy_name, entry_model=None, sl_model=None):
     if strategy_name == "BREAKER_BLOCK":
@@ -753,7 +767,9 @@ def try_build_scalp_trade_plan(
     if normal_trade_plan is None:
         return None
 
-    entry_price = tick.ask if signal == "BUY" else tick.bid
+    entry_price = get_execution_price(signal, tick)
+    if entry_price is None:
+        return None
     normal_tp = normal_trade_plan.get("take_profit")
 
     if normal_tp is None:
@@ -1029,7 +1045,10 @@ def validate_candidate_pre_execution(
         orb_low = candidate.get("orb_low")
         orb_high = candidate.get("orb_high")
 
-        current_price = tick.ask if signal == "BUY" else tick.bid
+        current_price = get_execution_price(signal, tick)
+
+        if current_price is None:
+            return False, candidate, "invalid_execution_price"
 
         if signal == "SELL" and orb_low is not None:
             if abs(current_price - orb_low) > atr * 0.6:
@@ -1270,7 +1289,9 @@ def process_wait_delayed_entry_setups(df, tick, account_info, market_condition, 
         if signal not in ["BUY", "SELL"] or target_entry is None:
             continue
 
-        current_price = tick.ask if signal == "BUY" else tick.bid
+        current_price = get_execution_price(signal, tick)
+        if current_price is None:
+            continue
 
         if signal == "BUY" and current_price > target_entry:
             logger.info(
@@ -3084,6 +3105,18 @@ def process_cycle(last_processed_candle_time):
                 and strategy_name in BETTER_ENTRY_STRATEGIES
                 and "best_setup" in locals()
             ):
+                pending_registered = register_pending_better_entry(
+                    symbol=SYMBOL,
+                    signal=signal,
+                    trade_plan=trade_plan,
+                    block_reason="LOW_RR",
+                    current_price=get_execution_price(signal, tick),
+                    required_rr=min_rr_required,
+                )
+
+                if pending_registered:
+                    return current_candle_time
+                
                 better_entry_expiry = (
                     BETTER_ENTRY_FAST_EXPIRY_MINUTES
                     if strategy_name in BETTER_ENTRY_FAST_EXPIRY_STRATEGIES

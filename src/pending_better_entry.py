@@ -14,10 +14,12 @@ from config.settings import (
     PENDING_BETTER_ENTRY_SPLIT_ENABLED,
     PENDING_BETTER_ENTRY_FIRST_SPLIT_PCT,
     PENDING_BETTER_ENTRY_MIN_ORIGINAL_RR,
+    PENDING_BETTER_ENTRY_LOW_RR_TARGET_RR,
 )
 from src.account_context import get_account_file
 from src.logger import logger
 from src.notifier import send_telegram_message
+from src.market_price import get_current_execution_price
 
 
 def get_pending_better_entry_file():
@@ -86,18 +88,7 @@ def calculate_rr(signal, entry, sl, tp):
 
 
 def get_current_price(symbol, signal):
-    tick = mt5.symbol_info_tick(symbol)
-
-    if tick is None:
-        return None
-
-    if signal == "BUY":
-        return float(tick.ask)
-
-    if signal == "SELL":
-        return float(tick.bid)
-
-    return None
+    return get_current_execution_price(symbol, signal)
 
 
 def build_better_entry_target(signal, entry_price, current_price):
@@ -121,6 +112,19 @@ def is_target_reached(signal, current_price, target_price):
 
     return False
 
+def build_low_rr_target(signal, sl, tp, required_rr):
+    if required_rr is None:
+        return None
+
+    required_rr = float(required_rr)
+
+    if signal == "BUY":
+        return round((tp + required_rr * sl) / (1 + required_rr), 2)
+
+    if signal == "SELL":
+        return round((tp + required_rr * sl) / (1 + required_rr), 2)
+
+    return None
 
 def register_pending_better_entry(
     *,
@@ -129,6 +133,7 @@ def register_pending_better_entry(
     trade_plan,
     block_reason,
     current_price=None,
+    required_rr=None,
 ):
     if not ENABLE_PENDING_BETTER_ENTRY_AFTER_BLOCK:
         return False
@@ -143,6 +148,9 @@ def register_pending_better_entry(
         return False
 
     entry_price = float(trade_plan.get("entry_price", 0.0) or 0.0)
+    
+    if entry_price <= 0:
+        return False
     
     original_sl = float(trade_plan.get("stop_loss", 0.0) or 0.0)
     original_tp = float(trade_plan.get("take_profit", 0.0) or 0.0)
@@ -162,14 +170,22 @@ def register_pending_better_entry(
             )
             return False
 
-    if entry_price <= 0:
-        return False
+    if block_reason == "LOW_RR" and required_rr is None:
+        required_rr = PENDING_BETTER_ENTRY_LOW_RR_TARGET_RR
 
-    target_price = build_better_entry_target(
-        signal=signal,
-        entry_price=entry_price,
-        current_price=current_price,
-    )
+    if block_reason == "LOW_RR":
+        target_price = build_low_rr_target(
+            signal=signal,
+            sl=original_sl,
+            tp=original_tp,
+            required_rr=required_rr,
+        )
+    else:
+        target_price = build_better_entry_target(
+            signal=signal,
+            entry_price=entry_price,
+            current_price=current_price,
+        )
 
     if target_price is None:
         return False
@@ -198,6 +214,7 @@ def register_pending_better_entry(
         "original_entry": round(entry_price, 2),
         "target_entry": target_price,
         "trade_plan": _json_safe(trade_plan),
+        "required_rr": required_rr,
     }
 
     save_pending_entries(entries)

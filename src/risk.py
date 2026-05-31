@@ -1,3 +1,5 @@
+from src.market_price import get_execution_price
+
 from config.settings import (
     POSITION_MODE,
     FIXED_LOT,
@@ -275,7 +277,10 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
     if atr <= 0:
         return None
 
-    entry_price = tick.ask if signal == "BUY" else tick.bid
+    entry_price = get_execution_price(signal, tick)
+
+    if entry_price is None:
+        return None
 
     recent_data = df.iloc[-(BREAKOUT_LOOKBACK + 1):-1]
     recent_resistance = recent_data["high"].max()
