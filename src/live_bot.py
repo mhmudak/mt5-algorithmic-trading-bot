@@ -159,6 +159,9 @@ from config.settings import (
     CONFLUENCE_FAMILY_MAP,
     ENABLE_M5_SCALP_CONFIRMATION_ENGINE,
     SCALP_BLOCK_OPPOSITE_POSITION,
+    ENABLE_CANDIDATE_LOW_RR_PARKING,
+    CANDIDATE_LOW_RR_PARKING_MIN_SCORE,
+    CANDIDATE_LOW_RR_PARKING_STRATEGIES,
 )
 
 from src.structure_liquidity_context import (
@@ -2317,6 +2320,35 @@ def process_cycle(last_processed_candle_time):
                     required_rr=min_rr_required,
                     reason=rejection_reason,
                 )
+                
+                if (
+                    ENABLE_CANDIDATE_LOW_RR_PARKING
+                    and candidate_strategy in CANDIDATE_LOW_RR_PARKING_STRATEGIES
+                    and float(validated_candidate.get("score", 0) or 0) >= CANDIDATE_LOW_RR_PARKING_MIN_SCORE
+                ):
+                    pending_plan = candidate_trade_plan.copy()
+                
+                    pending_plan["strategy"] = candidate_strategy
+                    pending_plan["signal"] = candidate_signal
+                    pending_plan["score"] = validated_candidate.get("score", 0)
+                    pending_plan["entry_model"] = validated_candidate.get("entry_model")
+                    pending_plan["reason"] = validated_candidate.get("reason", rejection_reason)
+                    pending_plan["session"] = session_name
+                    pending_plan["market_condition"] = market_condition
+                    pending_plan["setup_id"] = build_setup_id(
+                        candidate_strategy,
+                        candidate_signal,
+                        tick.time,
+                    )
+                
+                    register_pending_better_entry(
+                        symbol=SYMBOL,
+                        signal=candidate_signal,
+                        trade_plan=pending_plan,
+                        block_reason="LOW_RR",
+                        current_price=get_execution_price(candidate_signal, tick),
+                        required_rr=min_rr_required,
+                    )
 
                 continue
 

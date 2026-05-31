@@ -15,6 +15,8 @@ from config.settings import (
     PENDING_BETTER_ENTRY_FIRST_SPLIT_PCT,
     PENDING_BETTER_ENTRY_MIN_ORIGINAL_RR,
     PENDING_BETTER_ENTRY_LOW_RR_TARGET_RR,
+    CANDIDATE_LOW_RR_PARKING_MIN_ORIGINAL_RR,
+    CANDIDATE_LOW_RR_PARKING_MAX_RETRACE_PRICE,
 )
 from src.account_context import get_account_file
 from src.logger import logger
@@ -186,6 +188,24 @@ def register_pending_better_entry(
             entry_price=entry_price,
             current_price=current_price,
         )
+
+    if block_reason == "LOW_RR":
+        if original_rr is not None and original_rr < CANDIDATE_LOW_RR_PARKING_MIN_ORIGINAL_RR:
+            logger.info(
+                f"[PENDING BETTER ENTRY] Skipped low-RR setup | "
+                f"rr={original_rr} min={CANDIDATE_LOW_RR_PARKING_MIN_ORIGINAL_RR}"
+            )
+            return False
+    
+        retrace_distance = abs(entry_price - target_price)
+    
+        if retrace_distance > CANDIDATE_LOW_RR_PARKING_MAX_RETRACE_PRICE:
+            logger.info(
+                f"[PENDING BETTER ENTRY] Skipped low-RR setup | "
+                f"retrace_distance={round(retrace_distance, 2)} "
+                f"max={CANDIDATE_LOW_RR_PARKING_MAX_RETRACE_PRICE}"
+            )
+            return False
 
     if target_price is None:
         return False
