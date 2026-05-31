@@ -492,7 +492,7 @@ def execute_trade(signal, trade_plan, symbol):
         "price": request_price,
         "sl": trade_plan["stop_loss"],
         "tp": trade_plan["take_profit"],
-        "deviation": 10,
+        "deviation": deviation_points,
         "magic": 123456,
         "comment": trade_plan.get("comment", "MhMudBot")[:31],
         "type_time": mt5.ORDER_TIME_GTC,
@@ -542,6 +542,21 @@ def execute_trade(signal, trade_plan, symbol):
                 f"Max Allowed: {MAX_SLIPPAGE}\n"
                 f"Action: No trade executed"
             )
+            
+            try:
+                from src.pending_better_entry import register_pending_better_entry
+
+                register_pending_better_entry(
+                    symbol=symbol,
+                    signal=signal,
+                    trade_plan=trade_plan,
+                    block_reason="HIGH_SLIPPAGE",
+                    current_price=current_execution_price,
+                )
+            except Exception as e:
+                logger.error(
+                    f"[PENDING BETTER ENTRY] Failed to register high-slippage block: {e}"
+                )
         
             return False
         

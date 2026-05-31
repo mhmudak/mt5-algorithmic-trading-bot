@@ -50,6 +50,11 @@ from src.elliott_fib_context import (
     apply_elliott_fib_confirmation,
 )
 
+from src.pending_better_entry import (
+    get_ready_pending_better_entries,
+    mark_pending_first_split_executed,
+)
+
 from config.settings import (
     SYMBOL,
     TIMEFRAME,
@@ -1464,7 +1469,34 @@ def process_cycle(last_processed_candle_time):
     manage_positions(SYMBOL)
     update_trade_lifecycle(SYMBOL)
     rebuild_dashboard()
-
+    
+    # =========================
+    # PENDING BETTER ENTRY AFTER BLOCK CHECK
+    # Runs every loop, not only on a new M15 candle.
+    # =========================
+    ready_pending_entries = get_ready_pending_better_entries(SYMBOL)
+    
+    for ready_item in ready_pending_entries:
+        pending_trade_plan = ready_item["trade_plan"]
+        pending_signal = ready_item["signal"]
+        pending_id = ready_item["pending_id"]
+    
+        logger.info(
+            f"[PENDING BETTER ENTRY] Executing first split | "
+            f"id={pending_id} strategy={pending_trade_plan.get('strategy')} "
+            f"signal={pending_signal}"
+        )
+    
+        execution_result = execute_trade(
+            signal=pending_signal,
+            trade_plan=pending_trade_plan,
+            symbol=SYMBOL,
+        )
+    
+        if execution_result:
+            mark_pending_first_split_executed(pending_id)
+            return current_candle_time
+    
     # =========================
     # WAIT FOR BETTER ENTRY CHECK
     # Runs every loop, not only on a new M15 candle.
