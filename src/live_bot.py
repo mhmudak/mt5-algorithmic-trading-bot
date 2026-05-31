@@ -56,6 +56,12 @@ from src.pending_better_entry import (
     register_pending_better_entry,
 )
 
+from src.m5_scalp_confirmation_engine import (
+    register_m5_scalp_confirmation_setup,
+    get_ready_m5_scalp_setups,
+    mark_m5_scalp_executed,
+)
+
 from src.market_price import get_execution_price
 
 from config.settings import (
@@ -151,6 +157,8 @@ from config.settings import (
     M5_EXECUTION_CONFIRMATION_STRATEGIES,
     ENABLE_CONFLUENCE_FAMILY_COUNTING,
     CONFLUENCE_FAMILY_MAP,
+    ENABLE_M5_SCALP_CONFIRMATION_ENGINE,
+    SCALP_BLOCK_OPPOSITE_POSITION,
 )
 
 from src.structure_liquidity_context import (
@@ -1516,6 +1524,33 @@ def process_cycle(last_processed_candle_time):
     
         if execution_result:
             mark_pending_first_split_executed(pending_id)
+            return current_candle_time
+    
+    # =========================
+    # M5 SCALP CONFIRMATION CHECK
+    # Runs every loop, not only on a new M15 candle.
+    # =========================
+    ready_m5_scalps = get_ready_m5_scalp_setups(SYMBOL)
+
+    for ready_item in ready_m5_scalps:
+        m5_trade_plan = ready_item["trade_plan"]
+        m5_signal = ready_item["signal"]
+        pending_id = ready_item["pending_id"]
+
+        logger.info(
+            f"[M5 SCALP] Executing confirmed scalp | "
+            f"id={pending_id} strategy={m5_trade_plan.get('strategy')} "
+            f"signal={m5_signal}"
+        )
+
+        execution_result = execute_trade(
+            signal=m5_signal,
+            trade_plan=m5_trade_plan,
+            symbol=SYMBOL,
+        )
+
+        if execution_result:
+            mark_m5_scalp_executed(pending_id)
             return current_candle_time
     
     # =========================
@@ -3028,11 +3063,11 @@ def process_cycle(last_processed_candle_time):
             if scalp_trade_plan is not None:
                 scalp_allowed, scalp_guard_reason = check_trade_guard(signal, tick)
 
-                if scalp_allowed:
+                if scalp_allowed and SCALP_BLOCK_OPPOSITE_POSITION:
                     from src.position_guard import has_same_direction_position
-
+                
                     opposite = "SELL" if signal == "BUY" else "BUY"
-
+                
                     if has_same_direction_position(SYMBOL, opposite):
                         scalp_allowed = False
                         scalp_guard_reason = f"Opposite {opposite} position already exists."
@@ -3042,58 +3077,82 @@ def process_cycle(last_processed_candle_time):
                         f"[SCALP MODE] Blocked | "
                         f"strategy={strategy_name} reason={scalp_guard_reason}"
                     )
-
-                else:
-                    send_telegram_message(
-                        f"⚡ Scalp Mode Executing\n"
-                        f"Symbol: {SYMBOL}\n"
-                        f"Strategy: {strategy_name}\n"
-                        f"Signal: {signal}\n\n"
-                        f"Entry: {scalp_trade_plan['entry_price']}\n"
-                        f"SL: {scalp_trade_plan['stop_loss']}\n"
-                        f"TP: {scalp_trade_plan['take_profit']}\n"
-                        f"RR: {scalp_trade_plan.get('scalp_rr')}\n"
-                        f"SL Model: {scalp_trade_plan['scalp_sl_model']}"
-                    )
-
-                    log_setup_event(
-                        setup_id=selected_signal_data.get("setup_id"),
-                        event="SCALP_EXECUTION_ATTEMPT",
-                        strategy=strategy_name,
+                    return current_candle_time
+                
+                # =========================
+                # M5 SCALP CONFIRMATION MODE
+                # =========================
+                if ENABLE_M5_SCALP_CONFIRMATION_ENGINE:
+                    registered = register_m5_scalp_confirmation_setup(
+                        symbol=SYMBOL,
                         signal=signal,
-                        entry_model=scalp_trade_plan.get("entry_model"),
-                        score=score,
-                        session=session_name,
-                        market_condition=market_condition,
-                        entry=scalp_trade_plan["entry_price"],
-                        sl=scalp_trade_plan["stop_loss"],
-                        tp=scalp_trade_plan["take_profit"],
-                        reason=scalp_trade_plan.get("reason", "Scalp mode execution"),
-                        extra={
-                            "is_scalp": True,
-                            "scalp_sl_model": scalp_trade_plan.get("scalp_sl_model"),
-                            "scalp_stop_distance": scalp_trade_plan.get("scalp_stop_distance"),
-                            "scalp_target_distance": scalp_trade_plan.get("scalp_target_distance"),
-                        },
+                        scalp_trade_plan=scalp_trade_plan,
+                        source_reason="LOW_RR_SCALP_FALLBACK",
                     )
-
-                    execution_result = execute_trade(
-                        signal,
-                        scalp_trade_plan,
-                        SYMBOL,
-                    )
-
-                    if execution_result:
-                        if "best_setup" in locals():
-                            execution_engine.mark_executed(best_setup)
+                
+                    if registered:
                         return current_candle_time
-
-                    send_telegram_message(
-                        f"❌ Scalp Mode Execution Failed\n"
-                        f"Symbol: {SYMBOL}\n"
-                        f"Strategy: {strategy_name}\n"
-                        f"Signal: {signal}"
+                
+                    logger.info(
+                        f"[M5 SCALP] Registration refused | "
+                        f"strategy={strategy_name} signal={signal}"
                     )
+                    return current_candle_time
+                
+                # =========================
+                # IMMEDIATE SCALP EXECUTION
+                # Only runs when M5 scalp confirmation is disabled
+                # =========================
+                send_telegram_message(
+                    f"⚡ Scalp Mode Executing\n"
+                    f"Symbol: {SYMBOL}\n"
+                    f"Strategy: {strategy_name}\n"
+                    f"Signal: {signal}\n\n"
+                    f"Entry: {scalp_trade_plan['entry_price']}\n"
+                    f"SL: {scalp_trade_plan['stop_loss']}\n"
+                    f"TP: {scalp_trade_plan['take_profit']}\n"
+                    f"RR: {scalp_trade_plan.get('scalp_rr')}\n"
+                    f"SL Model: {scalp_trade_plan['scalp_sl_model']}"
+                )
+                
+                log_setup_event(
+                    setup_id=selected_signal_data.get("setup_id"),
+                    event="SCALP_EXECUTION_ATTEMPT",
+                    strategy=strategy_name,
+                    signal=signal,
+                    entry_model=scalp_trade_plan.get("entry_model"),
+                    score=score,
+                    session=session_name,
+                    market_condition=market_condition,
+                    entry=scalp_trade_plan["entry_price"],
+                    sl=scalp_trade_plan["stop_loss"],
+                    tp=scalp_trade_plan["take_profit"],
+                    reason=scalp_trade_plan.get("reason", "Scalp mode execution"),
+                    extra={
+                        "is_scalp": True,
+                        "scalp_sl_model": scalp_trade_plan.get("scalp_sl_model"),
+                        "scalp_stop_distance": scalp_trade_plan.get("scalp_stop_distance"),
+                        "scalp_target_distance": scalp_trade_plan.get("scalp_target_distance"),
+                    },
+                )
+
+                execution_result = execute_trade(
+                    signal,
+                    scalp_trade_plan,
+                    SYMBOL,
+                )
+
+                if execution_result:
+                    if "best_setup" in locals():
+                        execution_engine.mark_executed(best_setup)
+                    return current_candle_time
+
+                send_telegram_message(
+                    f"❌ Scalp Mode Execution Failed\n"
+                    f"Symbol: {SYMBOL}\n"
+                    f"Strategy: {strategy_name}\n"
+                    f"Signal: {signal}"
+                )
 
             # =========================
             # WAIT FOR BETTER ENTRY

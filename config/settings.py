@@ -673,6 +673,34 @@ SCALP_MIN_TARGET_DISTANCE = 4.0
 SCALP_MAX_TARGET_DISTANCE = 8.0
 
 # =========================
+# M5 Scalp Confirmation Engine
+# =========================
+SCALP_BLOCK_OPPOSITE_POSITION = False
+ENABLE_M5_SCALP_CONFIRMATION_ENGINE = True # it does not execute directly. It stores the scalp setup as pending. Then If the latest closed M5 candle confirms, then it executes. If M5 does not confirm, it keeps waiting until expiry.
+
+M5_SCALP_CONFIRMATION_TIMEFRAME = mt5.TIMEFRAME_M5
+M5_SCALP_CONFIRMATION_BARS = 80
+M5_SCALP_CONFIRMATION_EXPIRY_MINUTES = 15
+
+M5_SCALP_CONFIRMATION_MIN_BODY_ATR = 0.10
+M5_SCALP_CONFIRMATION_REQUIRE_EMA_ALIGNMENT = True
+
+M5_SCALP_CONFIRMATION_MIN_SCORE = 97
+M5_SCALP_CONFIRMATION_MIN_RR = 1.0
+
+M5_SCALP_CONFIRMATION_STRATEGIES = [
+    "FAILED_FVG_REVERSAL",
+    "FAILED_BREAKOUT_REVERSAL",
+    "FVG_CE_MITIGATION",
+    "BREAKER_BLOCK",
+    "ORB",
+    "ORB_V00",
+    "HTF_TREND_PULLBACK",
+    "WAVETREND_MOMENTUM",
+]
+
+
+# =========================
 # Telegram External Signal Trading
 # =========================
 ENABLE_TELEGRAM_SIGNAL_TRADING = False
