@@ -532,6 +532,10 @@ ENABLE_SIGNAL_CONFLUENCE_GROUPING = True
 CONFLUENCE_SCORE_BOOST_PER_STRATEGY = 2
 MAX_CONFLUENCE_SCORE_BOOST = 6
 
+CONFLUENCE_DUPLICATE_STRATEGY_GROUPS = [
+    ["ORB", "ORB_V00"],
+]
+
 # =========================
 # Candidate Selection / Fallback
 # =========================

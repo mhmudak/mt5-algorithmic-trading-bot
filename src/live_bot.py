@@ -141,6 +141,7 @@ from config.settings import (
     M5_EXECUTION_CONFIRMATION_BARS,
     M5_EXECUTION_MIN_BODY_ATR,
     M5_EXECUTION_CONFIRMATION_STRATEGIES,
+    CONFLUENCE_DUPLICATE_STRATEGY_GROUPS,
 )
 
 from src.structure_liquidity_context import (
@@ -905,22 +906,50 @@ def select_confirmed_ready_setup(ready_setups, df, selected_signal_data):
 
     return None, None, rejected_reasons
 
+def get_confluence_family_key(strategy_name):
+    strategy_key = str(strategy_name or "UNKNOWN").upper()
+
+    for index, group in enumerate(CONFLUENCE_DUPLICATE_STRATEGY_GROUPS):
+        normalized_group = [str(item).upper() for item in group]
+
+        if strategy_key in normalized_group:
+            return f"DUPLICATE_GROUP_{index}"
+
+    return strategy_key
+
+
+def build_deduplicated_confluence_strategies(candidate, top_candidates):
+    signal = candidate.get("signal")
+
+    ordered_candidates = [candidate] + [
+        item for item in top_candidates
+        if item.get("signal") == signal
+    ]
+
+    seen_families = set()
+    confluence_strategies = []
+
+    for item in ordered_candidates:
+        strategy_name = item.get("strategy", "UNKNOWN")
+        family_key = get_confluence_family_key(strategy_name)
+
+        if family_key in seen_families:
+            continue
+
+        seen_families.add(family_key)
+        confluence_strategies.append(strategy_name)
+
+    return confluence_strategies
+
 def apply_candidate_confluence(candidate, top_candidates):
     if not ENABLE_SIGNAL_CONFLUENCE_GROUPING:
         return candidate
 
     signal = candidate.get("signal")
 
-    same_direction_candidates = [
-        item for item in top_candidates
-        if item.get("signal") == signal
-    ]
-
-    confluence_strategies = list(
-        dict.fromkeys(
-            item.get("strategy", "UNKNOWN")
-            for item in same_direction_candidates
-        )
+    confluence_strategies = build_deduplicated_confluence_strategies(
+        candidate=candidate,
+        top_candidates=top_candidates,
     )
 
     if len(confluence_strategies) <= 1:
@@ -948,7 +977,6 @@ def apply_candidate_confluence(candidate, top_candidates):
     )
 
     return candidate
-
 
 def validate_candidate_pre_execution(
     candidate,
