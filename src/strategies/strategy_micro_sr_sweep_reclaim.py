@@ -19,6 +19,10 @@ MAX_SWEEP_ATR = 1.20
 MIN_RECLAIM_BODY_ATR = 0.15
 MIN_CLOSE_QUALITY = 0.55
 
+ENABLE_SOFT_RECLAIM_BODY_EXCEPTION = True
+SOFT_RECLAIM_BODY_ATR = 0.12
+SOFT_RECLAIM_MIN_CLOSE_QUALITY = 0.75
+
 SL_ATR_BUFFER = 0.20
 MIN_SL_BUFFER = 1.5
 MAX_SL_BUFFER = 5.0
@@ -112,12 +116,32 @@ def generate_signal(df):
     if candle_range <= 0:
         return reject_strategy("MICRO_SR_SWEEP_RECLAIM", "invalid_candle_range")
 
-    if body < atr * MIN_RECLAIM_BODY_ATR:
+    close_from_low = (entry["close"] - entry["low"]) / candle_range
+    close_from_high = (entry["high"] - entry["close"]) / candle_range
+
+    normal_body_ok = body >= atr * MIN_RECLAIM_BODY_ATR
+
+    soft_body_ok_for_sell = (
+        ENABLE_SOFT_RECLAIM_BODY_EXCEPTION
+        and body >= atr * SOFT_RECLAIM_BODY_ATR
+        and close_from_high >= SOFT_RECLAIM_MIN_CLOSE_QUALITY
+    )
+
+    soft_body_ok_for_buy = (
+        ENABLE_SOFT_RECLAIM_BODY_EXCEPTION
+        and body >= atr * SOFT_RECLAIM_BODY_ATR
+        and close_from_low >= SOFT_RECLAIM_MIN_CLOSE_QUALITY
+    )
+
+    if not normal_body_ok and not soft_body_ok_for_sell and not soft_body_ok_for_buy:
         return reject_strategy(
             "MICRO_SR_SWEEP_RECLAIM",
             "body_too_small",
             body=round(body, 2),
             required=round(atr * MIN_RECLAIM_BODY_ATR, 2),
+            soft_required=round(atr * SOFT_RECLAIM_BODY_ATR, 2),
+            close_from_high=round(close_from_high, 2),
+            close_from_low=round(close_from_low, 2),
         )
 
     recent_high, recent_low, micro_high, micro_low = _recent_levels(m5_df)
@@ -128,9 +152,6 @@ def generate_signal(df):
 
     sl_buffer = _sl_buffer(atr)
     target_distance = _target_distance(atr, structure_range)
-
-    close_from_low = (entry["close"] - entry["low"]) / candle_range
-    close_from_high = (entry["high"] - entry["close"]) / candle_range
 
     # =========================================================
     # SELL: sweep above micro resistance, close back below
@@ -143,8 +164,11 @@ def generate_signal(df):
         and sweep_depth <= atr * MAX_SWEEP_ATR
     )
 
+    bearish_body_ok = normal_body_ok or soft_body_ok_for_sell
+    
     bearish_reclaim = (
-        entry["close"] < entry["open"]
+        bearish_body_ok
+        and entry["close"] < entry["open"]
         and entry["close"] < micro_high
         and entry["close"] < prev["low"]
         and close_from_high >= MIN_CLOSE_QUALITY
@@ -210,8 +234,11 @@ def generate_signal(df):
         and sweep_depth <= atr * MAX_SWEEP_ATR
     )
 
+    bullish_body_ok = normal_body_ok or soft_body_ok_for_buy
+    
     bullish_reclaim = (
-        entry["close"] > entry["open"]
+        bullish_body_ok
+        and entry["close"] > entry["open"]
         and entry["close"] > micro_low
         and entry["close"] > prev["high"]
         and close_from_low >= MIN_CLOSE_QUALITY
