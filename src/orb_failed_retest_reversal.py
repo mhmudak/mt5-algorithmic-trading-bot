@@ -9,8 +9,6 @@ from config.settings import (
     ORB_FAILED_RETEST_OPPOSITE_SCALP_STRATEGIES,
     ORB_FAILED_RETEST_OPPOSITE_SCALP_EXPIRY_MINUTES,
     ORB_FAILED_RETEST_OPPOSITE_SCALP_MIN_SCORE,
-    ORB_FAILED_RETEST_OPPOSITE_SCALP_ZONE_WIDTH_PRICE,
-    ORB_FAILED_RETEST_OPPOSITE_SCALP_TRIGGER_BUFFER_PRICE,
     ORB_FAILED_RETEST_OPPOSITE_SCALP_FIXED_SL_PRICE,
     ORB_FAILED_RETEST_OPPOSITE_SCALP_FIXED_TP_PRICE,
     ORB_FAILED_RETEST_OPPOSITE_SCALP_LOT_MULTIPLIER,
@@ -98,7 +96,7 @@ def build_trigger_price(signal, trade_plan, signal_data, source_reason):
 
     # =========================
     # SMC FAILED
-    # Wait for price to move WITH the original setup direction by 3 USD.
+    # Price must first move WITH the original setup direction by 3 USD.
     #
     # Original SELL → price moves down → opposite BUY scalp.
     # Original BUY  → price moves up   → opposite SELL scalp.
@@ -129,25 +127,39 @@ def build_trigger_price(signal, trade_plan, signal_data, source_reason):
 
     # =========================
     # WAIT_RETEST NOT CONFIRMED
-    # Do NOT wait for retest zone.
-    # Execute opposite scalp from setup entry area, after M5 confirmation.
+    # Use the setup entry itself, not the retest zone.
+    #
+    # Original SELL → opposite BUY waits for price <= original entry.
+    # Original BUY  → opposite SELL waits for price >= original entry.
     # =========================
     if "ORB_RETEST_REJECTION_NOT_CONFIRMED" in source:
         if original_entry <= 0:
             return None, None
 
-        return round(original_entry, 2), "IMMEDIATE_ENTRY_TRIGGER"
+        return round(original_entry, 2), "SETUP_ENTRY_TRIGGER"
 
     return None, None
 
 
-def trigger_reached(trigger_model, original_signal, current_price, trigger_price):
+def trigger_reached(
+    trigger_model,
+    original_signal,
+    opposite_signal,
+    current_price,
+    trigger_price,
+):
     # =========================
     # WAIT_RETEST not confirmed
-    # No zone wait. Setup is already eligible.
+    # Execute opposite scalp at setup entry or better.
     # =========================
-    if trigger_model == "IMMEDIATE_ENTRY_TRIGGER":
-        return True
+    if trigger_model == "SETUP_ENTRY_TRIGGER":
+        if opposite_signal == "BUY":
+            return current_price <= trigger_price
+
+        if opposite_signal == "SELL":
+            return current_price >= trigger_price
+
+        return False
 
     # =========================
     # SMC_FAILED model
@@ -421,6 +433,7 @@ def get_ready_orb_failed_retest_opposite_scalps(symbol):
         if not trigger_reached(
             trigger_model=trigger_model,
             original_signal=original_signal,
+            opposite_signal=opposite,
             current_price=current_price,
             trigger_price=trigger_price,
         ):
