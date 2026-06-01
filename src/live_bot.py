@@ -50,6 +50,13 @@ from src.elliott_fib_context import (
     apply_elliott_fib_confirmation,
 )
 
+from src.orb_failed_retest_reversal import (
+    register_orb_failed_retest_opposite_scalp,
+    get_ready_orb_failed_retest_opposite_scalps,
+    mark_orb_failed_retest_opposite_scalp_executed,
+    protect_orb_failed_retest_opposite_scalps,
+)
+
 from config.settings import (
     SYMBOL,
     TIMEFRAME,
@@ -887,6 +894,34 @@ def select_confirmed_ready_setup(ready_setups, df, selected_signal_data):
             rejected_reasons.append(
                 f"{setup_strategy}:{setup_signal}:smc_failed"
             )
+
+            setup_trade_plan = (
+                setup.get("trade_plan")
+                or setup_data.get("trade_plan")
+            )
+
+            if setup_trade_plan is None:
+                logger.info(
+                    f"[ORB OPP SCALP] SMC failed but no trade_plan found | "
+                    f"strategy={setup_strategy} signal={setup_signal}"
+                )
+                continue
+
+            if setup_strategy in ["ORB", "ORB_V00"]:
+                registered = register_orb_failed_retest_opposite_scalp(
+                    symbol=SYMBOL,
+                    signal=setup_signal,
+                    trade_plan=setup_trade_plan,
+                    signal_data=setup_data,
+                    source_reason="SMC_FAILED",
+                )
+
+                if registered:
+                    logger.info(
+                        f"[ORB OPP SCALP] Registered from SMC failure | "
+                        f"strategy={setup_strategy} signal={setup_signal}"
+                    )
+
             continue
 
         if not smc_check["confirmed"] and soft_smc_allowed:
@@ -1453,6 +1488,31 @@ def process_cycle(last_processed_candle_time):
     manage_positions(SYMBOL)
     update_trade_lifecycle(SYMBOL)
     rebuild_dashboard()
+
+    protect_orb_failed_retest_opposite_scalps(SYMBOL)
+
+    ready_orb_opposite_scalps = get_ready_orb_failed_retest_opposite_scalps(SYMBOL)
+
+    for ready_item in ready_orb_opposite_scalps:
+        orb_opp_trade_plan = ready_item["trade_plan"]
+        orb_opp_signal = ready_item["signal"]
+        pending_id = ready_item["pending_id"]
+
+        logger.info(
+            f"[ORB OPP SCALP] Executing opposite scalp | "
+            f"id={pending_id} strategy={orb_opp_trade_plan.get('strategy')} "
+            f"signal={orb_opp_signal}"
+        )
+
+        execution_result = execute_trade(
+            signal=orb_opp_signal,
+            trade_plan=orb_opp_trade_plan,
+            symbol=SYMBOL,
+        )
+
+        if execution_result:
+            mark_orb_failed_retest_opposite_scalp_executed(pending_id)
+            return current_candle_time
 
     # =========================
     # WAIT FOR BETTER ENTRY CHECK
@@ -2640,6 +2700,19 @@ def process_cycle(last_processed_candle_time):
                 f"Type: {selected_signal_data.get('entry_model', 'N/A')}\n\n"
                 f"Reason: {waiting_reason or 'Execution engine did not confirm entry yet.'}"
             )
+            
+            if (
+                strategy_name in ["ORB", "ORB_V00"]
+                and selected_signal_data.get("entry_model") == "WAIT_RETEST"
+                and "retest rejection not confirmed" in str(waiting_reason or "").lower()
+            ):
+                register_orb_failed_retest_opposite_scalp(
+                    symbol=SYMBOL,
+                    signal=signal,
+                    trade_plan=trade_plan,
+                    signal_data=selected_signal_data,
+                    source_reason="ORB_RETEST_REJECTION_NOT_CONFIRMED",
+                )
 
         return current_candle_time
 
