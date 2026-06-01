@@ -50,6 +50,12 @@ from src.elliott_fib_context import (
     apply_elliott_fib_confirmation,
 )
 
+from src.sl_proximity_retrace_entry import (
+    register_sl_proximity_retrace_entry,
+    get_ready_sl_proximity_retrace_entries,
+    mark_sl_proximity_retrace_executed,
+)
+
 from src.pending_better_entry import (
     get_ready_pending_better_entries,
     mark_pending_first_split_executed,
@@ -1568,6 +1574,33 @@ def process_cycle(last_processed_candle_time):
             market_condition="PENDING",
             session_name="PENDING",
         ):
+            return current_candle_time
+
+    # =========================
+    # SL PROXIMITY RETRACE ENTRY CHECK
+    # Runs every loop, not only on a new M15 candle.
+    # =========================
+    ready_sl_retrace_entries = get_ready_sl_proximity_retrace_entries(SYMBOL)
+    
+    for ready_item in ready_sl_retrace_entries:
+        sl_retrace_trade_plan = ready_item["trade_plan"]
+        sl_retrace_signal = ready_item["signal"]
+        pending_id = ready_item["pending_id"]
+    
+        logger.info(
+            f"[SL PROXIMITY] Executing retrace entry | "
+            f"id={pending_id} strategy={sl_retrace_trade_plan.get('strategy')} "
+            f"signal={sl_retrace_signal}"
+        )
+    
+        execution_result = execute_trade(
+            signal=sl_retrace_signal,
+            trade_plan=sl_retrace_trade_plan,
+            symbol=SYMBOL,
+        )
+    
+        if execution_result:
+            mark_sl_proximity_retrace_executed(pending_id)
             return current_candle_time
 
     # =========================
@@ -3474,6 +3507,13 @@ def process_cycle(last_processed_candle_time):
 
             immediate_lot = trade_plan["lot"]
             delayed_lot = 0.0
+
+            if register_sl_proximity_retrace_entry(
+                symbol=SYMBOL,
+                signal=signal,
+                trade_plan=trade_plan,
+            ):
+                return current_candle_time
 
             if ENABLE_SPLIT_DELAYED_ENTRY:
                 immediate_lot, delayed_lot = split_lot_for_delayed_entry(
