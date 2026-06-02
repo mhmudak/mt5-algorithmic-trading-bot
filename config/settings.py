@@ -979,3 +979,14 @@ ROLLOVER_BLOCK_WINDOWS = [
         "end": "00:15",
     },
 ]
+
+# =========================
+# Execution Block Memory
+# =========================
+ENABLE_EXECUTION_BLOCK_MEMORY = True
+
+EXECUTION_BLOCK_MEMORY_EXPIRY_MINUTES = 90
+
+EXECUTION_BLOCK_MEMORY_REASONS = [
+    "HIGH_SLIPPAGE",
+]

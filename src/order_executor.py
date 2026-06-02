@@ -27,7 +27,7 @@ from config.settings import (
 )
 from src.notifier import send_telegram_message
 from src.trade_tracker import register_executed_trade
-
+from src.execution_block_memory import remember_blocked_setup
 
 def get_supported_filling_modes(symbol):
     symbol_info = mt5.symbol_info(symbol)
@@ -563,6 +563,18 @@ def execute_trade(signal, trade_plan, symbol):
         pre_send_slippage = abs(current_execution_price - expected_price)
         
         if pre_send_slippage > MAX_SLIPPAGE:
+            remember_blocked_setup(
+                setup_id=trade_plan.get("setup_id"),
+                symbol=symbol,
+                strategy=trade_plan.get("strategy", "UNKNOWN"),
+                signal=signal,
+                reason="HIGH_SLIPPAGE",
+                expected_price=expected_price,
+                current_price=round(current_execution_price, 2),
+                slippage=round(pre_send_slippage, 2),
+                max_allowed=MAX_SLIPPAGE,
+            )            
+            
             logger.warning(
                 f"[EXECUTION BLOCKED] High pre-send slippage | "
                 f"strategy={trade_plan.get('strategy', 'UNKNOWN')} "
@@ -581,6 +593,7 @@ def execute_trade(signal, trade_plan, symbol):
                 f"Slippage: {round(pre_send_slippage, 2)}\n"
                 f"Max Allowed: {MAX_SLIPPAGE}\n"
                 f"Action: No trade executed"
+                f"Action: This setup ID will not be executed again during memory window"
             )
         
             return False

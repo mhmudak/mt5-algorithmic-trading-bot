@@ -32,6 +32,7 @@ from src.reversal_checker import build_blocked_setup_reversal
 from src.external_macro_confirmation import apply_external_macro_confirmation
 from src.position_guard import count_same_direction_positions
 
+from src.execution_block_memory import is_setup_execution_blocked
 from src.execution_engine import ExecutionEngine
 execution_engine = ExecutionEngine()
 
@@ -400,6 +401,83 @@ def m5_execution_confirmation_ok(signal, strategy_name):
         return False, "m5_sell_execution_not_confirmed"
 
     return False, "invalid_signal"
+
+def get_trade_setup_id(trade_plan=None, signal_data=None, setup=None):
+    if trade_plan is not None:
+        setup_id = trade_plan.get("setup_id")
+        if setup_id:
+            return setup_id
+
+    if signal_data is not None:
+        setup_id = signal_data.get("setup_id")
+        if setup_id:
+            return setup_id
+
+    if setup is not None:
+        setup_id = setup.get("setup_id") or setup.get("id")
+        if setup_id:
+            return setup_id
+
+        setup_data = setup.get("data", {})
+        setup_id = setup_data.get("setup_id")
+        if setup_id:
+            return setup_id
+
+    return None
+
+
+def is_trade_blocked_by_execution_memory(
+    *,
+    trade_plan,
+    signal_data,
+    setup,
+    strategy_name,
+    signal,
+):
+    setup_id = get_trade_setup_id(
+        trade_plan=trade_plan,
+        signal_data=signal_data,
+        setup=setup,
+    )
+
+    blocked, block = is_setup_execution_blocked(setup_id)
+
+    if not blocked:
+        return False
+
+    logger.warning(
+        f"[EXECUTION MEMORY] Setup skipped | "
+        f"setup_id={setup_id} strategy={strategy_name} signal={signal} "
+        f"reason={block.get('reason')}"
+    )
+
+    send_telegram_message(
+        f"⛔ Setup Skipped by Execution Memory\n"
+        f"Symbol: {SYMBOL}\n"
+        f"Strategy: {strategy_name}\n"
+        f"Signal: {signal}\n"
+        f"Setup ID: {setup_id}\n"
+        f"Reason: previously blocked by {block.get('reason')}"
+    )
+
+    log_setup_event(
+        setup_id=setup_id,
+        event="EXECUTION_SKIPPED_PREVIOUS_HIGH_SLIPPAGE",
+        strategy=strategy_name,
+        signal=signal,
+        reason=f"previously blocked by {block.get('reason')}",
+        extra={
+            "memory_block": block,
+        },
+    )
+
+    if setup is not None and hasattr(execution_engine, "mark_execution_failed"):
+        execution_engine.mark_execution_failed(
+            setup,
+            f"Skipped by execution memory: {block.get('reason')}",
+        )
+
+    return True
 
 def get_strategy_selection_priority(strategy_name, market_condition):
     strategy_name = str(strategy_name or "").upper()
@@ -1349,6 +1427,15 @@ def process_wait_better_entry_setups(df, tick, account_info, market_condition, s
             logger.info(f"[BETTER ENTRY] Time blocked | {time_reason}")
             continue
 
+        if is_trade_blocked_by_execution_memory(
+            trade_plan=trade_plan,
+            signal_data=setup_data,
+            setup=setup,
+            strategy_name=strategy_name,
+            signal=signal,
+        ):
+            return True
+
         send_telegram_message(
             f"✅ Better Entry Ready #{setup_data.get('setup_id', 'N/A')}\n"
             f"Symbol: {SYMBOL}\n"
@@ -1366,8 +1453,14 @@ def process_wait_better_entry_setups(df, tick, account_info, market_condition, s
             execution_engine.mark_executed(setup)
             return True
 
-        setup["state"] = "EXECUTION_FAILED"
-        setup["wait_reason"] = "Better entry execution failed"
+        if hasattr(execution_engine, "mark_execution_failed"):
+            execution_engine.mark_execution_failed(
+                setup,
+                "Better entry execution failed",
+            )
+        else:
+            setup["state"] = "EXECUTION_FAILED"
+            setup["wait_reason"] = "Better entry execution failed"
 
         send_telegram_message(
             f"❌ Better Entry Execution Failed\n"
@@ -1377,7 +1470,7 @@ def process_wait_better_entry_setups(df, tick, account_info, market_condition, s
             f"Setup marked as failed to prevent repeated retries."
         )
 
-        return False
+        return True
 
     return False
 
@@ -1540,14 +1633,29 @@ def process_wait_delayed_entry_setups(df, tick, account_info, market_condition, 
             },
         )
 
+        if is_trade_blocked_by_execution_memory(
+            trade_plan=trade_plan,
+            signal_data=setup_data,
+            setup=setup,
+            strategy_name=strategy_name,
+            signal=signal,
+        ):
+            return True
+
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
 
         if execution_result:
             execution_engine.mark_executed(setup)
             return True
 
-        setup["state"] = "EXECUTION_FAILED"
-        setup["wait_reason"] = "Delayed entry execution failed"
+        if hasattr(execution_engine, "mark_execution_failed"):
+            execution_engine.mark_execution_failed(
+                setup,
+                "Delayed entry execution failed",
+            )
+        else:
+            setup["state"] = "EXECUTION_FAILED"
+            setup["wait_reason"] = "Delayed entry execution failed"
 
         send_telegram_message(
             f"❌ Delayed Entry Execution Failed\n"
@@ -3193,6 +3301,15 @@ def process_cycle(last_processed_candle_time):
                         },
                     )
 
+                    if is_trade_blocked_by_execution_memory(
+                        trade_plan=scalp_trade_plan,
+                        signal_data=selected_signal_data,
+                        setup=best_setup if "best_setup" in locals() else None,
+                        strategy_name=strategy_name,
+                        signal=signal,
+                    ):
+                        return current_candle_time
+
                     execution_result = execute_trade(
                         signal,
                         scalp_trade_plan,
@@ -3203,6 +3320,12 @@ def process_cycle(last_processed_candle_time):
                         if "best_setup" in locals():
                             execution_engine.mark_executed(best_setup)
                         return current_candle_time
+
+                    if "best_setup" in locals() and hasattr(execution_engine, "mark_execution_failed"):
+                        execution_engine.mark_execution_failed(
+                            best_setup,
+                            "Scalp execution failed",
+                        )
 
                     send_telegram_message(
                         f"❌ Scalp Mode Execution Failed\n"
@@ -3341,6 +3464,15 @@ def process_cycle(last_processed_candle_time):
                                     f"Reason: {reversal_data.get('reason')}"
                                 )
 
+                                if is_trade_blocked_by_execution_memory(
+                                    trade_plan=reversal_trade_plan,
+                                    signal_data=selected_signal_data,
+                                    setup=best_setup if "best_setup" in locals() else None,
+                                    strategy_name=reversal_trade_plan.get("strategy", strategy_name),
+                                    signal=reversal_signal,
+                                ):
+                                    return current_candle_time
+
                                 execution_result = execute_trade(
                                     reversal_signal,
                                     reversal_trade_plan,
@@ -3348,6 +3480,12 @@ def process_cycle(last_processed_candle_time):
                                 )
 
                                 if not execution_result:
+                                    if "best_setup" in locals() and hasattr(execution_engine, "mark_execution_failed"):
+                                        execution_engine.mark_execution_failed(
+                                            best_setup,
+                                            "Reversal execution failed",
+                                        )
+
                                     send_telegram_message(
                                         f"❌ Reversal Execution Failed\n"
                                         f"Symbol: {SYMBOL}\n"
@@ -3536,14 +3674,24 @@ def process_cycle(last_processed_candle_time):
                     },
                 )
 
+                if is_trade_blocked_by_execution_memory(
+                    trade_plan=immediate_trade_plan,
+                    signal_data=selected_signal_data,
+                    setup=best_setup,
+                    strategy_name=strategy_name,
+                    signal=signal,
+                ):
+                    return current_candle_time
+
                 execution_result = execute_trade(signal, immediate_trade_plan, SYMBOL)
 
                 if not execution_result:
-                    execution_engine.mark_execution_failed(
-                        best_setup,
-                        "Split immediate execution failed",
-                    )
-
+                    if hasattr(execution_engine, "mark_execution_failed"):
+                        execution_engine.mark_execution_failed(
+                            best_setup,
+                            "Split immediate execution failed",
+                        )
+                
                     log_setup_event(
                         setup_id=selected_signal_data.get("setup_id"),
                         event="EXECUTION_FAILED",
@@ -3558,16 +3706,16 @@ def process_cycle(last_processed_candle_time):
                         tp=immediate_trade_plan.get("take_profit"),
                         reason="Split immediate execution failed",
                     )
-
+                
                     send_telegram_message(
                         f"❌ Split Entry Immediate Execution Failed\n"
                         f"Symbol: {SYMBOL}\n"
                         f"Strategy: {strategy_name}\n"
                         f"Signal: {signal}\n"
                         f"Setup ID: {selected_signal_data.get('setup_id')}\n"
-                        f"Action: setup marked EXECUTION_FAILED and will not retry in this cycle"
+                        f"Action: setup marked EXECUTION_FAILED"
                     )
-
+                
                     return current_candle_time
 
             execution_engine.mark_wait_delayed_entry(
@@ -3654,11 +3802,44 @@ def process_cycle(last_processed_candle_time):
             },
         )
 
+        if is_trade_blocked_by_execution_memory(
+            trade_plan=trade_plan,
+            signal_data=selected_signal_data,
+            setup=best_setup,
+            strategy_name=strategy_name,
+            signal=signal,
+        ):
+            return current_candle_time
+
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
 
         if execution_result:
             execution_engine.mark_executed(best_setup)
         else:
+            if hasattr(execution_engine, "mark_execution_failed"):
+                execution_engine.mark_execution_failed(
+                    best_setup,
+                    "Normal execution failed",
+                )
+            else:
+                best_setup["state"] = "EXECUTION_FAILED"
+                best_setup["wait_reason"] = "Normal execution failed"
+
+            log_setup_event(
+                setup_id=selected_signal_data.get("setup_id"),
+                event="EXECUTION_FAILED",
+                strategy=strategy_name,
+                signal=signal,
+                entry_model=selected_signal_data.get("entry_model"),
+                score=score,
+                session=session_name,
+                market_condition=market_condition,
+                entry=trade_plan.get("entry_price"),
+                sl=trade_plan.get("stop_loss"),
+                tp=trade_plan.get("take_profit"),
+                reason="Normal execution failed",
+            )
+
             logger.error(
                 f"[EXECUTION FAILED] "
                 f"strategy={strategy_name} signal={signal} trade_plan={trade_plan}"
@@ -3668,11 +3849,12 @@ def process_cycle(last_processed_candle_time):
                 f"❌ Execution Failed\n"
                 f"Symbol: {SYMBOL}\n"
                 f"Signal: {signal}\n"
-                f"Strategy: {strategy_name}\n\n"
-                f"Reason: execute_trade() returned False. Check MT5/order_executor logs."
+                f"Strategy: {strategy_name}\n"
+                f"Setup ID: {selected_signal_data.get('setup_id')}\n\n"
+                f"Reason: execute_trade() returned False. Setup marked EXECUTION_FAILED."
             )
 
-    return current_candle_time
+            return current_candle_time
 
 
 def main():
