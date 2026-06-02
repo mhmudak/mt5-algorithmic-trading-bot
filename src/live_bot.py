@@ -148,6 +148,12 @@ from config.settings import (
     FINAL_HTF_LIQUIDITY_SOFT_OVERRIDE_MIN_RR,
     FINAL_HTF_LIQUIDITY_SOFT_OVERRIDE_SESSIONS,
     FINAL_HTF_LIQUIDITY_SOFT_OVERRIDE_ENTRY_KEYWORDS,
+    ENABLE_CONTINUATION_SAFETY_GUARD,
+    CONTINUATION_SAFETY_BLOCK_ORB_FAST_ON_ELLIOTT_FIB_CONFLICT,
+    CONTINUATION_SAFETY_ORB_FAST_MAX_RANGE_ATR_MULTIPLIER,
+    CONTINUATION_SAFETY_RETRACE_FIRST_STRATEGIES,
+    CONTINUATION_SAFETY_RETRACE_FIRST_ENTRY_MODELS,
+    CONTINUATION_SAFETY_MIN_IMMEDIATE_RR,
 )
 
 from src.structure_liquidity_context import (
@@ -1097,6 +1103,69 @@ def apply_candidate_confluence(candidate, top_candidates):
 
     return candidate
 
+def has_elliott_fib_directional_conflict(signal, signal_data):
+    reason = str(signal_data.get("reason", "") or "").lower()
+
+    if signal == "BUY" and "elliott_fib_conflict_sell" in reason:
+        return True
+
+    if signal == "SELL" and "elliott_fib_conflict_buy" in reason:
+        return True
+
+    return False
+
+
+def continuation_safety_rejects_candidate(candidate, signal, atr):
+    if not ENABLE_CONTINUATION_SAFETY_GUARD:
+        return False, None
+
+    strategy = str(candidate.get("strategy", "") or "").upper()
+    entry_model = str(candidate.get("entry_model", "") or "").upper()
+
+    # =========================
+    # ORB FAST_CONTINUATION safety
+    # =========================
+    if strategy in ["ORB", "ORB_V00"] and entry_model == "FAST_CONTINUATION":
+        if (
+            CONTINUATION_SAFETY_BLOCK_ORB_FAST_ON_ELLIOTT_FIB_CONFLICT
+            and has_elliott_fib_directional_conflict(signal, candidate)
+        ):
+            return True, "continuation_safety_elliott_fib_conflict"
+
+        orb_high = candidate.get("orb_high")
+        orb_low = candidate.get("orb_low")
+
+        if orb_high is not None and orb_low is not None and atr and atr > 0:
+            orb_width = abs(float(orb_high) - float(orb_low))
+            max_allowed_width = atr * CONTINUATION_SAFETY_ORB_FAST_MAX_RANGE_ATR_MULTIPLIER
+
+            if orb_width > max_allowed_width:
+                return (
+                    True,
+                    f"continuation_safety_orb_range_too_large width={round(orb_width, 2)} max={round(max_allowed_width, 2)}",
+                )
+
+    return False, None
+
+
+def continuation_requires_retrace_first(strategy_name, entry_model, rr_value):
+    if not ENABLE_CONTINUATION_SAFETY_GUARD:
+        return False
+
+    strategy_key = str(strategy_name or "").upper()
+    entry_key = str(entry_model or "").upper()
+
+    if strategy_key not in CONTINUATION_SAFETY_RETRACE_FIRST_STRATEGIES:
+        return False
+
+    if entry_key not in CONTINUATION_SAFETY_RETRACE_FIRST_ENTRY_MODELS:
+        return False
+
+    if rr_value is None:
+        return True
+
+    return float(rr_value) < CONTINUATION_SAFETY_MIN_IMMEDIATE_RR
+
 def validate_candidate_pre_execution(
     candidate,
     df,
@@ -1141,6 +1210,18 @@ def validate_candidate_pre_execution(
         if signal == "BUY" and orb_high is not None:
             if abs(current_price - orb_high) > atr * 0.6:
                 return False, candidate, "orb_too_extended_above_breakout"
+
+    # =========================
+    # CONTINUATION SAFETY GUARD
+    # =========================
+    continuation_rejected, continuation_reason = continuation_safety_rejects_candidate(
+        candidate=candidate,
+        signal=signal,
+        atr=atr,
+    )
+
+    if continuation_rejected:
+        return False, candidate, continuation_reason
 
     # =========================
     # SCORE FILTER
@@ -3487,6 +3568,57 @@ def process_cycle(last_processed_candle_time):
 
             immediate_lot = trade_plan["lot"]
             delayed_lot = 0.0
+            
+            continuation_retrace_first = continuation_requires_retrace_first(
+                strategy_name=strategy_name,
+                entry_model=selected_signal_data.get("entry_model"),
+                rr_value=rr_value,
+            )
+
+            if continuation_retrace_first:
+                execution_engine.mark_wait_delayed_entry(
+                    setup=best_setup,
+                    target_entry_price=delayed_target,
+                    expiry_minutes=DELAYED_ENTRY_EXPIRY_MINUTES,
+                )
+
+                log_setup_event(
+                    setup_id=selected_signal_data.get("setup_id"),
+                    event="CONTINUATION_RETRACE_FIRST",
+                    strategy=strategy_name,
+                    signal=signal,
+                    entry_model=selected_signal_data.get("entry_model"),
+                    score=score,
+                    session=session_name,
+                    market_condition=market_condition,
+                    entry=trade_plan.get("entry_price"),
+                    sl=trade_plan.get("stop_loss"),
+                    tp=trade_plan.get("take_profit"),
+                    rr=rr_value,
+                    reason=(
+                        f"Continuation safety: RR {rr_value} below "
+                        f"{CONTINUATION_SAFETY_MIN_IMMEDIATE_RR}, waiting retrace first"
+                    ),
+                    extra={
+                        "delayed_target": delayed_target,
+                        "immediate_lot": 0.0,
+                        "delayed_lot": trade_plan["lot"],
+                    },
+                )
+
+                send_telegram_message(
+                    f"⏳ Continuation Retrace-First Mode\n"
+                    f"Symbol: {SYMBOL}\n"
+                    f"Strategy: {strategy_name}\n"
+                    f"Signal: {signal}\n"
+                    f"Setup ID: {selected_signal_data.get('setup_id')}\n\n"
+                    f"RR: {rr_value} / Required Immediate: {CONTINUATION_SAFETY_MIN_IMMEDIATE_RR}\n"
+                    f"Current Entry: {trade_plan['entry_price']}\n"
+                    f"Waiting Target: {delayed_target}\n"
+                    f"Lot Waiting: {trade_plan['lot']}"
+                )
+
+                return current_candle_time
 
             if ENABLE_SPLIT_DELAYED_ENTRY:
                 immediate_lot, delayed_lot = split_lot_for_delayed_entry(
