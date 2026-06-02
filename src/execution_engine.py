@@ -435,3 +435,7 @@ class ExecutionEngine:
     def mark_executed(self, setup):
         setup["state"] = "EXECUTED"
         setup["wait_reason"] = None
+        
+    def mark_execution_failed(self, setup, reason):
+        setup["state"] = "EXECUTION_FAILED"
+        setup["wait_reason"] = reason
