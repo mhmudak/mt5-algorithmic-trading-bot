@@ -142,6 +142,12 @@ from config.settings import (
     M5_EXECUTION_MIN_BODY_ATR,
     M5_EXECUTION_CONFIRMATION_STRATEGIES,
     CONFLUENCE_DUPLICATE_STRATEGY_GROUPS,
+    ENABLE_FINAL_HTF_LIQUIDITY_SOFT_OVERRIDE,
+    FINAL_HTF_LIQUIDITY_SOFT_OVERRIDE_STRATEGIES,
+    FINAL_HTF_LIQUIDITY_SOFT_OVERRIDE_MIN_SCORE,
+    FINAL_HTF_LIQUIDITY_SOFT_OVERRIDE_MIN_RR,
+    FINAL_HTF_LIQUIDITY_SOFT_OVERRIDE_SESSIONS,
+    FINAL_HTF_LIQUIDITY_SOFT_OVERRIDE_ENTRY_KEYWORDS,
 )
 
 from src.structure_liquidity_context import (
@@ -906,6 +912,119 @@ def select_confirmed_ready_setup(ready_setups, df, selected_signal_data):
 
     return None, None, rejected_reasons
 
+def calculate_simple_rr(signal, entry, sl, tp):
+    try:
+        entry = float(entry)
+        sl = float(sl)
+        tp = float(tp)
+
+        if signal == "BUY":
+            risk = entry - sl
+            reward = tp - entry
+        elif signal == "SELL":
+            risk = sl - entry
+            reward = entry - tp
+        else:
+            return None
+
+        if risk <= 0 or reward <= 0:
+            return None
+
+        return round(reward / risk, 2)
+
+    except Exception:
+        return None
+
+
+def get_setup_rr_value(setup_data, signal):
+    rr = (
+        setup_data.get("rr")
+        or setup_data.get("risk_reward")
+        or setup_data.get("rr_value")
+    )
+
+    if rr is not None:
+        try:
+            return float(rr)
+        except Exception:
+            pass
+
+    entry = (
+        setup_data.get("entry_price")
+        or setup_data.get("entry")
+    )
+    sl = (
+        setup_data.get("stop_loss")
+        or setup_data.get("sl")
+    )
+    tp = (
+        setup_data.get("take_profit")
+        or setup_data.get("tp")
+    )
+
+    return calculate_simple_rr(signal, entry, sl, tp)
+
+
+def final_htf_liquidity_soft_override_allowed(
+    *,
+    setup_strategy,
+    setup_signal,
+    setup_score,
+    setup_data,
+    session_name,
+    liquidity_context,
+):
+    if not ENABLE_FINAL_HTF_LIQUIDITY_SOFT_OVERRIDE:
+        return False, "disabled"
+
+    strategy_key = str(setup_strategy or "").upper()
+
+    if strategy_key not in FINAL_HTF_LIQUIDITY_SOFT_OVERRIDE_STRATEGIES:
+        return False, "strategy_not_allowed"
+
+    try:
+        score = float(setup_score or 0)
+    except Exception:
+        score = 0
+
+    if score < FINAL_HTF_LIQUIDITY_SOFT_OVERRIDE_MIN_SCORE:
+        return False, "score_too_low"
+
+    entry_model = str(setup_data.get("entry_model", "") or "").upper()
+
+    if FINAL_HTF_LIQUIDITY_SOFT_OVERRIDE_ENTRY_KEYWORDS:
+        if not any(
+            keyword.upper() in entry_model
+            for keyword in FINAL_HTF_LIQUIDITY_SOFT_OVERRIDE_ENTRY_KEYWORDS
+        ):
+            return False, "entry_model_not_allowed"
+
+    active_session = str(
+        setup_data.get("session")
+        or session_name
+        or ""
+    ).upper()
+
+    if FINAL_HTF_LIQUIDITY_SOFT_OVERRIDE_SESSIONS:
+        if active_session not in FINAL_HTF_LIQUIDITY_SOFT_OVERRIDE_SESSIONS:
+            return False, "session_not_allowed"
+
+    rr_value = get_setup_rr_value(setup_data, setup_signal)
+
+    if rr_value is None:
+        return False, "rr_missing"
+
+    if rr_value < FINAL_HTF_LIQUIDITY_SOFT_OVERRIDE_MIN_RR:
+        return False, f"rr_too_low {rr_value}"
+
+    liquidity_reason = (
+        liquidity_context.get("reason")
+        if liquidity_context
+        else "N/A"
+    )
+
+    return True, f"score={score} rr={rr_value} reason={liquidity_reason}"
+
 def get_confluence_family_key(strategy_name):
     strategy_key = str(strategy_name or "UNKNOWN").upper()
 
@@ -1084,12 +1203,41 @@ def validate_candidate_pre_execution(
     # HTF LIQUIDITY CONTEXT FILTER
     # =========================
     liquidity_context = get_liquidity_context()
-
+    
     if not liquidity_allows_signal(signal, liquidity_context, allow_neutral=True):
-        return (
-            False,
-            candidate,
-            f"htf_liquidity_rejected reason={liquidity_context.get('reason')}",
+        soft_override_allowed, soft_override_reason = (
+            final_htf_liquidity_soft_override_allowed(
+                setup_strategy=candidate.get("strategy"),
+                setup_signal=signal,
+                setup_score=candidate.get("score"),
+                setup_data=candidate,
+                session_name=candidate.get("session"),
+                liquidity_context=liquidity_context,
+            )
+        )
+    
+        if not soft_override_allowed:
+            logger.info(
+                f"[HTF LIQUIDITY SOFT OVERRIDE] Candidate not allowed | "
+                f"strategy={candidate.get('strategy')} signal={signal} "
+                f"reason={soft_override_reason}"
+            )
+    
+            return (
+                False,
+                candidate,
+                f"htf_liquidity_rejected reason={liquidity_context.get('reason')}",
+            )
+    
+        candidate["reason"] = (
+            f"{candidate.get('reason', 'N/A')} | "
+            f"HTF_LIQUIDITY_SOFT_OVERRIDE: {soft_override_reason}"
+        )
+    
+        logger.info(
+            f"[HTF LIQUIDITY SOFT OVERRIDE] Candidate allowed | "
+            f"strategy={candidate.get('strategy')} signal={signal} "
+            f"{soft_override_reason}"
         )
 
     # =========================
@@ -2734,21 +2882,53 @@ def process_cycle(last_processed_candle_time):
         final_liquidity_context = get_liquidity_context()
 
         if not liquidity_allows_signal(setup_signal, final_liquidity_context, allow_neutral=True):
+            soft_override_allowed, soft_override_reason = (
+                final_htf_liquidity_soft_override_allowed(
+                    setup_strategy=setup_strategy,
+                    setup_signal=setup_signal,
+                    setup_score=setup_score,
+                    setup_data=setup_data,
+                    session_name=session_name,
+                    liquidity_context=final_liquidity_context,
+                )
+            )
+
+            if not soft_override_allowed:
+                logger.info(
+                    f"[FINAL HTF LIQUIDITY] Ready setup rejected | "
+                    f"strategy={setup_strategy} signal={setup_signal} "
+                    f"reason={final_liquidity_context.get('reason') if final_liquidity_context else None}"
+                )
+
+                send_telegram_message(
+                    f"🚫 Ready Setup Rejected by Final HTF Liquidity\n"
+                    f"Symbol: {SYMBOL}\n"
+                    f"Strategy: {setup_strategy}\n"
+                    f"Signal: {setup_signal}\n"
+                    f"Reason: {final_liquidity_context.get('reason') if final_liquidity_context else None}"
+                )
+
+                return current_candle_time
+
+            setup_data["reason"] = (
+                f"{setup_data.get('reason', 'N/A')} | "
+                f"FINAL_HTF_LIQUIDITY_SOFT_OVERRIDE: {soft_override_reason}"
+            )
+
             logger.info(
-                f"[FINAL HTF LIQUIDITY] Ready setup rejected | "
+                f"[FINAL HTF LIQUIDITY SOFT OVERRIDE] Ready setup allowed | "
                 f"strategy={setup_strategy} signal={setup_signal} "
-                f"reason={final_liquidity_context.get('reason') if final_liquidity_context else None}"
+                f"{soft_override_reason}"
             )
 
             send_telegram_message(
-                f"🚫 Ready Setup Rejected by Final HTF Liquidity\n"
+                f"⚠️ Final HTF Liquidity Soft Override\n"
                 f"Symbol: {SYMBOL}\n"
                 f"Strategy: {setup_strategy}\n"
                 f"Signal: {setup_signal}\n"
-                f"Reason: {final_liquidity_context.get('reason') if final_liquidity_context else None}"
+                f"Score: {setup_score}\n"
+                f"Reason: {soft_override_reason}"
             )
-
-            return current_candle_time
 
         news_blocked, news_reason = is_news_blackout_active()
 
@@ -3359,12 +3539,35 @@ def process_cycle(last_processed_candle_time):
                 execution_result = execute_trade(signal, immediate_trade_plan, SYMBOL)
 
                 if not execution_result:
+                    execution_engine.mark_execution_failed(
+                        best_setup,
+                        "Split immediate execution failed",
+                    )
+
+                    log_setup_event(
+                        setup_id=selected_signal_data.get("setup_id"),
+                        event="EXECUTION_FAILED",
+                        strategy=strategy_name,
+                        signal=signal,
+                        entry_model=selected_signal_data.get("entry_model"),
+                        score=score,
+                        session=session_name,
+                        market_condition=market_condition,
+                        entry=immediate_trade_plan.get("entry_price"),
+                        sl=immediate_trade_plan.get("stop_loss"),
+                        tp=immediate_trade_plan.get("take_profit"),
+                        reason="Split immediate execution failed",
+                    )
+
                     send_telegram_message(
                         f"❌ Split Entry Immediate Execution Failed\n"
                         f"Symbol: {SYMBOL}\n"
                         f"Strategy: {strategy_name}\n"
-                        f"Signal: {signal}"
+                        f"Signal: {signal}\n"
+                        f"Setup ID: {selected_signal_data.get('setup_id')}\n"
+                        f"Action: setup marked EXECUTION_FAILED and will not retry in this cycle"
                     )
+
                     return current_candle_time
 
             execution_engine.mark_wait_delayed_entry(
