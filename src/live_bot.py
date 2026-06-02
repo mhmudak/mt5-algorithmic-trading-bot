@@ -149,6 +149,16 @@ from config.settings import (
     FINAL_HTF_LIQUIDITY_SOFT_OVERRIDE_MIN_RR,
     FINAL_HTF_LIQUIDITY_SOFT_OVERRIDE_SESSIONS,
     FINAL_HTF_LIQUIDITY_SOFT_OVERRIDE_ENTRY_KEYWORDS,
+    ENABLE_CANDIDATE_REJECTION_RECOVERY,
+    CANDIDATE_REJECTION_RECOVERY_REQUIRE_M5_CONFIRMATION,
+    CANDIDATE_REJECTION_RECOVERY_MIN_RECOVERED_RR,
+)
+
+from src.candidate_rejection_recovery import (
+    register_rejected_candidate_for_recovery,
+    get_waiting_recovery_candidates,
+    mark_recovery_candidate_executed,
+    mark_recovery_candidate_failed,
 )
 
 from src.structure_liquidity_context import (
@@ -971,6 +981,17 @@ def select_confirmed_ready_setup(ready_setups, df, selected_signal_data):
             rejected_reasons.append(
                 f"{setup_strategy}:{setup_signal}:smc_failed"
             )
+            
+            register_rejected_candidate_for_recovery(
+                symbol=SYMBOL,
+                signal=setup_signal,
+                strategy=setup_strategy,
+                score=setup_data.get("score", 0),
+                reason_type="SMC_FAILED",
+                rejection_reason="smc_failed",
+                signal_data=setup_data,
+            )
+            
             continue
 
         if not smc_check["confirmed"] and soft_smc_allowed:
@@ -1668,6 +1689,253 @@ def process_wait_delayed_entry_setups(df, tick, account_info, market_condition, 
 
     return False
 
+def process_candidate_rejection_recovery_setups(
+    df,
+    tick,
+    account_info,
+    market_condition,
+    session_name,
+):
+    if not ENABLE_CANDIDATE_REJECTION_RECOVERY:
+        return False
+
+    recovery_items = get_waiting_recovery_candidates(SYMBOL)
+
+    if not recovery_items:
+        return False
+
+    for item in recovery_items:
+        recovery_id = item["recovery_id"]
+        setup_id = item.get("setup_id")
+        signal = item.get("signal")
+        strategy_name = item.get("strategy")
+        reason_type = item.get("reason_type")
+        signal_data = item.get("signal_data", {})
+
+        if signal not in ["BUY", "SELL"]:
+            continue
+
+        if reason_type == "SMC_FAILED":
+            try:
+                from src.smart_money_layer import smart_money_confirm
+
+                smc_check = smart_money_confirm(df, signal)
+
+                if not smc_check.get("confirmed"):
+                    logger.info(
+                        f"[CANDIDATE RECOVERY] SMC still failed | "
+                        f"id={recovery_id} strategy={strategy_name} signal={signal} "
+                        f"reason={smc_check.get('reasons')}"
+                    )
+                    continue
+
+            except Exception as e:
+                logger.error(f"[CANDIDATE RECOVERY] SMC check error: {e}")
+                continue
+
+        if reason_type == "HTF_LIQUIDITY_REJECTED":
+            liquidity_context = get_liquidity_context()
+
+            if not liquidity_allows_signal(signal, liquidity_context, allow_neutral=True):
+                logger.info(
+                    f"[CANDIDATE RECOVERY] HTF liquidity still rejects | "
+                    f"id={recovery_id} strategy={strategy_name} signal={signal} "
+                    f"reason={liquidity_context.get('reason') if liquidity_context else None}"
+                )
+                continue
+
+        if (
+            CANDIDATE_REJECTION_RECOVERY_REQUIRE_M5_CONFIRMATION
+            and signal in ["BUY", "SELL"]
+        ):
+            m5_confirmed, m5_reason = extra_entry_confirmation_ok(signal)
+
+            if not m5_confirmed:
+                logger.info(
+                    f"[CANDIDATE RECOVERY] M5 confirmation failed | "
+                    f"id={recovery_id} strategy={strategy_name} signal={signal} "
+                    f"reason={m5_reason}"
+                )
+                continue
+
+        trade_plan = calculate_trade_plan(
+            df=df,
+            signal=signal,
+            tick=tick,
+            account_balance=account_info.balance,
+            signal_data=signal_data,
+        )
+
+        if trade_plan is None:
+            logger.info(
+                f"[CANDIDATE RECOVERY] Trade plan invalid | "
+                f"id={recovery_id} strategy={strategy_name} signal={signal}"
+            )
+            continue
+
+        trade_plan["score"] = signal_data.get("score", item.get("score", 0))
+        trade_plan["strategy"] = strategy_name
+        trade_plan["market_condition"] = market_condition
+        trade_plan["reason"] = (
+            f"{signal_data.get('reason', 'N/A')} | "
+            f"CANDIDATE_REJECTION_RECOVERY: {reason_type}"
+        )
+        trade_plan["session"] = signal_data.get("session", session_name)
+        trade_plan["setup_id"] = setup_id
+
+        rr_value = calculate_rr_value(trade_plan)
+
+        min_rr = item.get("required_rr") or CANDIDATE_REJECTION_RECOVERY_MIN_RECOVERED_RR
+
+        try:
+            min_rr = float(min_rr)
+        except Exception:
+            min_rr = CANDIDATE_REJECTION_RECOVERY_MIN_RECOVERED_RR
+
+        if rr_value is None or rr_value < min_rr:
+            logger.info(
+                f"[CANDIDATE RECOVERY] RR not recovered | "
+                f"id={recovery_id} strategy={strategy_name} "
+                f"rr={rr_value} required={min_rr}"
+            )
+            continue
+
+        trade_allowed, guard_reason = check_trade_guard(signal, tick)
+
+        if not trade_allowed:
+            logger.info(
+                f"[CANDIDATE RECOVERY] Guard blocked | "
+                f"id={recovery_id} strategy={strategy_name} reason={guard_reason}"
+            )
+            continue
+
+        from src.position_guard import has_same_direction_position
+
+        opposite = "SELL" if signal == "BUY" else "BUY"
+
+        if has_same_direction_position(SYMBOL, opposite):
+            logger.info(
+                f"[CANDIDATE RECOVERY] Opposite position exists | "
+                f"id={recovery_id} opposite={opposite}"
+            )
+            continue
+
+        news_blocked, news_reason = is_news_blackout_active()
+
+        if news_blocked:
+            logger.info(
+                f"[CANDIDATE RECOVERY] News blocked | "
+                f"id={recovery_id} reason={news_reason}"
+            )
+            continue
+
+        time_blocked, time_reason = is_trading_blackout_active()
+
+        if time_blocked:
+            logger.info(
+                f"[CANDIDATE RECOVERY] Time blocked | "
+                f"id={recovery_id} reason={time_reason}"
+            )
+            continue
+
+        if is_trade_blocked_by_execution_memory(
+            trade_plan=trade_plan,
+            signal_data=signal_data,
+            setup=None,
+            strategy_name=strategy_name,
+            signal=signal,
+        ):
+            mark_recovery_candidate_failed(
+                recovery_id,
+                "Skipped by execution memory",
+            )
+            return True
+
+        send_telegram_message(
+            f"♻️ Candidate Recovery Executing\n"
+            f"Symbol: {SYMBOL}\n"
+            f"Strategy: {strategy_name}\n"
+            f"Signal: {signal}\n"
+            f"Reason: {reason_type}\n"
+            f"Setup ID: {setup_id}\n\n"
+            f"Entry: {trade_plan['entry_price']}\n"
+            f"SL: {trade_plan['stop_loss']}\n"
+            f"TP: {trade_plan['take_profit']}\n"
+            f"RR: {rr_value} / Required: {min_rr}"
+        )
+
+        log_setup_event(
+            setup_id=setup_id,
+            event="CANDIDATE_RECOVERY_EXECUTION_ATTEMPT",
+            strategy=strategy_name,
+            signal=signal,
+            entry_model=signal_data.get("entry_model"),
+            score=signal_data.get("score"),
+            session=session_name,
+            market_condition=market_condition,
+            entry=trade_plan.get("entry_price"),
+            sl=trade_plan.get("stop_loss"),
+            tp=trade_plan.get("take_profit"),
+            rr=rr_value,
+            reason=f"candidate recovery from {reason_type}",
+        )
+
+        execution_result = execute_trade(signal, trade_plan, SYMBOL)
+
+        if execution_result:
+            mark_recovery_candidate_executed(recovery_id)
+
+            log_setup_event(
+                setup_id=setup_id,
+                event="CANDIDATE_RECOVERY_EXECUTED",
+                strategy=strategy_name,
+                signal=signal,
+                entry_model=signal_data.get("entry_model"),
+                score=signal_data.get("score"),
+                session=session_name,
+                market_condition=market_condition,
+                entry=trade_plan.get("entry_price"),
+                sl=trade_plan.get("stop_loss"),
+                tp=trade_plan.get("take_profit"),
+                rr=rr_value,
+                reason=f"candidate recovery executed from {reason_type}",
+            )
+
+            return True
+
+        mark_recovery_candidate_failed(
+            recovery_id,
+            "execute_trade returned False",
+        )
+
+        log_setup_event(
+            setup_id=setup_id,
+            event="CANDIDATE_RECOVERY_EXECUTION_FAILED",
+            strategy=strategy_name,
+            signal=signal,
+            entry_model=signal_data.get("entry_model"),
+            score=signal_data.get("score"),
+            session=session_name,
+            market_condition=market_condition,
+            entry=trade_plan.get("entry_price"),
+            sl=trade_plan.get("stop_loss"),
+            tp=trade_plan.get("take_profit"),
+            rr=rr_value,
+            reason="execute_trade returned False",
+        )
+
+        send_telegram_message(
+            f"❌ Candidate Recovery Execution Failed\n"
+            f"Symbol: {SYMBOL}\n"
+            f"Strategy: {strategy_name}\n"
+            f"Signal: {signal}\n"
+            f"Setup ID: {setup_id}"
+        )
+
+        return True
+
+    return False
+
 def process_cycle(last_processed_candle_time):
     global last_signal, reversal_count
 
@@ -1730,6 +1998,20 @@ def process_cycle(last_processed_candle_time):
     # =========================
     if ENABLE_DELAYED_RETRACE_ENTRY:
         if process_wait_delayed_entry_setups(
+            df=df,
+            tick=tick,
+            account_info=account_info,
+            market_condition="PENDING",
+            session_name="PENDING",
+        ):
+            return current_candle_time
+
+    # =========================
+    # CANDIDATE REJECTION RECOVERY CHECK
+    # Runs every loop, not only on a new M15 candle.
+    # =========================
+    if ENABLE_CANDIDATE_REJECTION_RECOVERY:
+        if process_candidate_rejection_recovery_setups(
             df=df,
             tick=tick,
             account_info=account_info,
@@ -2474,6 +2756,18 @@ def process_cycle(last_processed_candle_time):
                     required_rr=min_rr_required,
                     reason=rejection_reason,
                 )
+                
+                register_rejected_candidate_for_recovery(
+                    symbol=SYMBOL,
+                    signal=candidate_signal,
+                    strategy=candidate_strategy,
+                    score=validated_candidate.get("score", 0),
+                    reason_type="LOW_RR",
+                    rejection_reason=rejection_reason,
+                    signal_data=validated_candidate,
+                    required_rr=min_rr_required,
+                    current_rr=rr_value,
+                )
 
                 continue
 
@@ -3002,10 +3296,25 @@ def process_cycle(last_processed_candle_time):
             )
 
             if not soft_override_allowed:
+                recovery_registered = register_rejected_candidate_for_recovery(
+                    symbol=SYMBOL,
+                    signal=setup_signal,
+                    strategy=setup_strategy,
+                    score=setup_score,
+                    reason_type="HTF_LIQUIDITY_REJECTED",
+                    rejection_reason=(
+                        final_liquidity_context.get("reason")
+                        if final_liquidity_context
+                        else "N/A"
+                    ),
+                    signal_data=setup_data,
+                )
+                
                 logger.info(
                     f"[FINAL HTF LIQUIDITY] Ready setup rejected | "
                     f"strategy={setup_strategy} signal={setup_signal} "
                     f"reason={final_liquidity_context.get('reason') if final_liquidity_context else None}"
+                    f"recovery_registered={recovery_registered}"
                 )
 
                 send_telegram_message(
@@ -3014,6 +3323,7 @@ def process_cycle(last_processed_candle_time):
                     f"Strategy: {setup_strategy}\n"
                     f"Signal: {setup_signal}\n"
                     f"Reason: {final_liquidity_context.get('reason') if final_liquidity_context else None}"
+                    f"Recovery Registered: {recovery_registered}"
                 )
 
                 return current_candle_time
