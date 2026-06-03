@@ -165,6 +165,7 @@ from src.candidate_rejection_recovery import (
     get_waiting_recovery_candidates,
     mark_recovery_candidate_executed,
     mark_recovery_candidate_failed,
+    mark_recovery_candidate_invalidated,
 )
 
 from src.structure_liquidity_context import (
@@ -1770,6 +1771,82 @@ def process_wait_delayed_entry_setups(df, tick, account_info, market_condition, 
 
     return False
 
+def get_recovery_reference_price(signal_data, keys):
+    for key in keys:
+        value = signal_data.get(key)
+
+        if value is None:
+            continue
+
+        try:
+            value = float(value)
+        except Exception:
+            continue
+
+        if value > 0:
+            return value
+
+    return None
+
+
+def get_current_recovery_price(signal, tick):
+    if tick is None:
+        return None
+
+    try:
+        if signal == "BUY":
+            return float(tick.ask)
+
+        if signal == "SELL":
+            return float(tick.bid)
+    except Exception:
+        return None
+
+    return None
+
+
+def recovery_original_setup_consumed(signal, current_price, signal_data):
+    original_tp = get_recovery_reference_price(
+        signal_data,
+        ["tp_reference", "take_profit", "target_price", "tp"],
+    )
+
+    original_sl = get_recovery_reference_price(
+        signal_data,
+        ["sl_reference", "stop_loss", "sl"],
+    )
+
+    if current_price is None:
+        return False, None
+
+    if signal == "BUY":
+        if original_tp is not None and current_price >= original_tp:
+            return (
+                True,
+                f"original_target_already_reached current={round(current_price, 2)} tp={round(original_tp, 2)}",
+            )
+
+        if original_sl is not None and current_price <= original_sl:
+            return (
+                True,
+                f"original_sl_already_reached current={round(current_price, 2)} sl={round(original_sl, 2)}",
+            )
+
+    if signal == "SELL":
+        if original_tp is not None and current_price <= original_tp:
+            return (
+                True,
+                f"original_target_already_reached current={round(current_price, 2)} tp={round(original_tp, 2)}",
+            )
+
+        if original_sl is not None and current_price >= original_sl:
+            return (
+                True,
+                f"original_sl_already_reached current={round(current_price, 2)} sl={round(original_sl, 2)}",
+            )
+
+    return False, None
+
 def process_candidate_rejection_recovery_setups(
     df,
     tick,
@@ -1794,6 +1871,45 @@ def process_candidate_rejection_recovery_setups(
         signal_data = item.get("signal_data", {})
 
         if signal not in ["BUY", "SELL"]:
+            continue
+        
+        current_recovery_price = get_current_recovery_price(signal, tick)
+
+        consumed, consumed_reason = recovery_original_setup_consumed(
+            signal=signal,
+            current_price=current_recovery_price,
+            signal_data=signal_data,
+        )
+
+        if consumed:
+            mark_recovery_candidate_invalidated(
+                recovery_id,
+                consumed_reason,
+            )
+
+            logger.info(
+                f"[CANDIDATE RECOVERY] Invalidated | "
+                f"id={recovery_id} strategy={strategy_name} signal={signal} "
+                f"reason={consumed_reason}"
+            )
+
+            log_setup_event(
+                setup_id=setup_id,
+                event="CANDIDATE_RECOVERY_INVALIDATED",
+                strategy=strategy_name,
+                signal=signal,
+                entry_model=signal_data.get("entry_model"),
+                score=signal_data.get("score"),
+                session=session_name,
+                market_condition=market_condition,
+                reason=consumed_reason,
+                extra={
+                    "recovery_id": recovery_id,
+                    "current_price": current_recovery_price,
+                    "reason_type": reason_type,
+                },
+            )
+
             continue
 
         if reason_type == "SMC_FAILED":

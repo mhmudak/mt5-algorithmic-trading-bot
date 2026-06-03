@@ -66,6 +66,8 @@ def cleanup_expired_recovery_candidates(entries):
     changed = False
 
     for recovery_id, item in list(entries.items()):
+        if item.get("status") != "WAITING_RECOVERY":
+            continue
         try:
             expires_at = datetime.fromisoformat(item["expires_at"])
         except Exception:
@@ -183,6 +185,17 @@ def mark_recovery_candidate_failed(recovery_id, reason):
 
     save_recovery_candidates(entries)
 
+def mark_recovery_candidate_invalidated(recovery_id, reason):
+    entries = load_recovery_candidates()
+
+    if recovery_id not in entries:
+        return
+
+    entries[recovery_id]["status"] = "INVALIDATED"
+    entries[recovery_id]["invalidated_at"] = datetime.now().isoformat()
+    entries[recovery_id]["invalidation_reason"] = reason
+
+    save_recovery_candidates(entries)
 
 def get_waiting_recovery_candidates(symbol):
     entries = load_recovery_candidates()
