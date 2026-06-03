@@ -128,7 +128,7 @@ AUTO_NEWS_KEYWORDS = [
 # Execution / Risk Settings
 # =========================
 POSITION_MODE = "fixed"   # "fixed" or "risk"
-FIXED_LOT = 0.08
+FIXED_LOT = 0.05
 RISK_PER_TRADE_PCT = 0.25
 
 # =========================
