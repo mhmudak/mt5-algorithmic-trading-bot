@@ -158,6 +158,19 @@ from config.settings import (
     CONTINUATION_SAFETY_RETRACE_FIRST_STRATEGIES,
     CONTINUATION_SAFETY_RETRACE_FIRST_ENTRY_MODELS,
     CONTINUATION_SAFETY_MIN_IMMEDIATE_RR,
+    ENABLE_MTF_CONFLICT_OPPORTUNITY_TRACKER,
+    ENABLE_MTF_CONFLICT_SOFT_EXECUTION,
+    MTF_CONFLICT_SOFT_EXECUTION_STRATEGIES,
+    MTF_CONFLICT_SOFT_EXECUTION_MIN_SCORE,
+    MTF_CONFLICT_USE_CALCULATED_TP_WHEN_NO_MTF_POSITION,
+    MTF_CONFLICT_SCALP_ONLY_WHEN_MTF_POSITION_EXISTS,
+    MTF_CONFLICT_COUNTER_SCALP_TP_PRICE,
+    MTF_CONFLICT_COUNTER_SCALP_SL_PRICE,
+    MTF_CONFLICT_COUNTER_SCALP_LOT_MULTIPLIER,
+    MTF_CONFLICT_REQUIRE_M5_CONFIRMATION,
+    MTF_CONFLICT_REQUIRE_SHADOW_TRADE_PLAN,
+    MTF_CONFLICT_REQUIRE_SHADOW_RR_FOR_NORMAL_EXECUTION,
+    MTF_CONFLICT_REQUIRE_SHADOW_RR_FOR_SCALP,
 )
 
 from src.candidate_rejection_recovery import (
@@ -166,6 +179,13 @@ from src.candidate_rejection_recovery import (
     mark_recovery_candidate_executed,
     mark_recovery_candidate_failed,
     mark_recovery_candidate_invalidated,
+)
+
+from src.mtf_conflict_opportunity_tracker import (
+    register_mtf_conflict_opportunity,
+    mark_mtf_conflict_opportunity_executed,
+    mark_mtf_conflict_opportunity_failed,
+    update_mtf_conflict_opportunities,
 )
 
 from src.structure_liquidity_context import (
@@ -1266,6 +1286,582 @@ def continuation_requires_retrace_first(strategy_name, entry_model, rr_value):
 
     return float(rr_value) < CONTINUATION_SAFETY_MIN_IMMEDIATE_RR
 
+def is_mtf_conflict_rejection(reason):
+    return str(reason or "").lower().startswith("mtf_conflict")
+
+
+def extract_mtf_bias_from_rejection(reason):
+    reason_text = str(reason or "")
+
+    if "bias=BUY" in reason_text:
+        return "BUY"
+
+    if "bias=SELL" in reason_text:
+        return "SELL"
+
+    return None
+
+
+def get_current_mtf_conflict_price(signal, tick):
+    if tick is None:
+        return None
+
+    try:
+        if signal == "BUY":
+            return float(tick.ask)
+
+        if signal == "SELL":
+            return float(tick.bid)
+    except Exception:
+        return None
+
+    return None
+
+
+def has_mtf_aligned_position(symbol, mtf_bias):
+    if mtf_bias not in ["BUY", "SELL"]:
+        return False
+
+    try:
+        from src.position_guard import has_same_direction_position
+
+        return has_same_direction_position(symbol, mtf_bias)
+    except Exception as e:
+        logger.error(f"[MTF CONFLICT] Failed to check MTF-aligned position: {e}")
+        return False
+
+
+def get_mtf_conflict_execution_mode(mtf_bias):
+    if has_mtf_aligned_position(SYMBOL, mtf_bias):
+        return "COUNTER_MTF_SCALP"
+
+    return "COUNTER_MTF_CALCULATED"
+
+
+def mtf_conflict_soft_execution_allowed(
+    *,
+    candidate,
+    signal,
+    mtf_bias,
+    shadow_trade_plan,
+    shadow_rr,
+    required_rr,
+    execution_mode,
+):
+    if not ENABLE_MTF_CONFLICT_SOFT_EXECUTION:
+        return False, "disabled"
+
+    strategy = str(candidate.get("strategy", "") or "").upper()
+
+    if strategy not in MTF_CONFLICT_SOFT_EXECUTION_STRATEGIES:
+        return False, "strategy_not_allowed"
+
+    try:
+        score = float(candidate.get("score", 0) or 0)
+    except Exception:
+        score = 0
+
+    if score < MTF_CONFLICT_SOFT_EXECUTION_MIN_SCORE:
+        return False, "score_too_low"
+
+    if signal not in ["BUY", "SELL"]:
+        return False, "invalid_signal"
+
+    if mtf_bias not in ["BUY", "SELL"]:
+        return False, "invalid_mtf_bias"
+
+    if signal == mtf_bias:
+        return False, "not_counter_mtf"
+
+    if MTF_CONFLICT_REQUIRE_SHADOW_TRADE_PLAN and shadow_trade_plan is None:
+        return False, "shadow_trade_plan_missing"
+
+    if execution_mode == "COUNTER_MTF_CALCULATED":
+        if not MTF_CONFLICT_USE_CALCULATED_TP_WHEN_NO_MTF_POSITION:
+            return False, "calculated_mode_disabled"
+
+        if MTF_CONFLICT_REQUIRE_SHADOW_RR_FOR_NORMAL_EXECUTION:
+            if shadow_rr is None or required_rr is None:
+                return False, "shadow_rr_missing"
+
+            if float(shadow_rr) < float(required_rr):
+                return False, f"shadow_rr_too_low {shadow_rr}/{required_rr}"
+
+    if execution_mode == "COUNTER_MTF_SCALP":
+        if not MTF_CONFLICT_SCALP_ONLY_WHEN_MTF_POSITION_EXISTS:
+            return False, "scalp_mode_disabled"
+
+        if MTF_CONFLICT_REQUIRE_SHADOW_RR_FOR_SCALP:
+            if shadow_rr is None or required_rr is None:
+                return False, "shadow_rr_missing_for_scalp"
+
+            if float(shadow_rr) < float(required_rr):
+                return False, f"shadow_rr_too_low_for_scalp {shadow_rr}/{required_rr}"
+
+    if MTF_CONFLICT_REQUIRE_M5_CONFIRMATION:
+        confirmed, confirm_reason = extra_entry_confirmation_ok(signal)
+
+        if not confirmed:
+            return False, f"m5_confirmation_failed {confirm_reason}"
+
+    return True, "allowed"
+
+
+def build_mtf_conflict_calculated_trade_plan(
+    *,
+    candidate,
+    signal,
+    shadow_trade_plan,
+    setup_id,
+):
+    if shadow_trade_plan is None:
+        return None, "shadow_trade_plan_missing"
+
+    trade_plan = shadow_trade_plan.copy()
+    trade_plan["setup_id"] = f"{setup_id}-MTFOVERRIDE"
+    trade_plan["strategy"] = "MTF_CONFLICT_SOFT_EXECUTION"
+    trade_plan["source_strategy"] = candidate.get("strategy")
+    trade_plan["signal"] = signal
+    trade_plan["entry_model"] = (
+        f"MTF_CONFLICT_CALCULATED_{candidate.get('entry_model', 'UNKNOWN')}"
+    )
+    trade_plan["comment"] = "MtfConflictCalc"
+    trade_plan["is_mtf_conflict_soft_execution"] = True
+    trade_plan["reason"] = (
+        f"{trade_plan.get('reason', candidate.get('reason', 'N/A'))} | "
+        f"MTF_CONFLICT_SOFT_EXECUTION calculated TP/SL"
+    )
+
+    return trade_plan, "ready"
+
+
+def build_mtf_conflict_scalp_trade_plan(
+    *,
+    candidate,
+    signal,
+    tick,
+    shadow_trade_plan,
+    setup_id,
+):
+    if shadow_trade_plan is None:
+        return None, "shadow_trade_plan_missing"
+
+    entry = get_current_mtf_conflict_price(signal, tick)
+
+    if entry is None:
+        return None, "invalid_entry"
+
+    entry = round(float(entry), 2)
+
+    if signal == "BUY":
+        sl = round(entry - MTF_CONFLICT_COUNTER_SCALP_SL_PRICE, 2)
+        tp = round(entry + MTF_CONFLICT_COUNTER_SCALP_TP_PRICE, 2)
+
+    elif signal == "SELL":
+        sl = round(entry + MTF_CONFLICT_COUNTER_SCALP_SL_PRICE, 2)
+        tp = round(entry - MTF_CONFLICT_COUNTER_SCALP_TP_PRICE, 2)
+
+    else:
+        return None, "invalid_signal"
+
+    original_lot = float(shadow_trade_plan.get("lot", 0.0) or 0.0)
+
+    if original_lot <= 0:
+        return None, "invalid_original_lot"
+
+    lot = round(original_lot * MTF_CONFLICT_COUNTER_SCALP_LOT_MULTIPLIER, 2)
+
+    if lot <= 0:
+        return None, "invalid_lot"
+
+    trade_plan = shadow_trade_plan.copy()
+    trade_plan["setup_id"] = f"{setup_id}-MTFSCALP"
+    trade_plan["strategy"] = "MTF_CONFLICT_COUNTER_SCALP"
+    trade_plan["source_strategy"] = candidate.get("strategy")
+    trade_plan["signal"] = signal
+    trade_plan["entry_model"] = (
+        f"MTF_CONFLICT_SCALP_{candidate.get('entry_model', 'UNKNOWN')}"
+    )
+    trade_plan["entry_price"] = entry
+    trade_plan["stop_loss"] = sl
+    trade_plan["take_profit"] = tp
+    trade_plan["stop_distance"] = MTF_CONFLICT_COUNTER_SCALP_SL_PRICE
+    trade_plan["lot"] = lot
+    trade_plan["comment"] = "MtfConflictScalp"
+    trade_plan["is_mtf_conflict_counter_scalp"] = True
+    trade_plan["reason"] = (
+        f"MTF conflict counter scalp | "
+        f"source={candidate.get('strategy')} | "
+        f"fixed_tp={MTF_CONFLICT_COUNTER_SCALP_TP_PRICE} | "
+        f"fixed_sl={MTF_CONFLICT_COUNTER_SCALP_SL_PRICE}"
+    )
+
+    return trade_plan, "ready"
+
+def get_mtf_conflict_setup_id(candidate, signal, tick):
+    existing_setup_id = candidate.get("setup_id")
+
+    if existing_setup_id:
+        return existing_setup_id
+
+    strategy = candidate.get("strategy", "MTF")
+    tick_time = getattr(tick, "time", None)
+
+    if tick_time:
+        return build_setup_id(strategy, signal, tick_time)
+
+    return f"MTF-{strategy}-{signal}-{datetime.utcnow().timestamp()}"
+
+
+def process_mtf_conflict_candidate(
+    *,
+    candidate,
+    rejection_reason,
+    df,
+    tick,
+    account_info,
+    market_condition,
+    session_name,
+):
+    signal = candidate.get("signal")
+    strategy = candidate.get("strategy")
+    entry_model = candidate.get("entry_model")
+    mtf_bias = extract_mtf_bias_from_rejection(rejection_reason)
+
+    setup_id = get_mtf_conflict_setup_id(candidate, signal, tick)
+    price_at_rejection = get_current_mtf_conflict_price(signal, tick)
+
+    shadow_trade_plan = calculate_trade_plan(
+        df=df,
+        signal=signal,
+        tick=tick,
+        account_balance=account_info.balance,
+        signal_data=candidate,
+    )
+
+    shadow_rr = None
+    required_rr = None
+
+    if shadow_trade_plan is not None:
+        shadow_trade_plan["score"] = candidate.get("score", 0)
+        shadow_trade_plan["strategy"] = strategy
+        shadow_trade_plan["market_condition"] = market_condition
+        shadow_trade_plan["reason"] = candidate.get("reason", "N/A")
+        shadow_trade_plan["session"] = candidate.get("session", session_name)
+        shadow_trade_plan["setup_id"] = setup_id
+
+        shadow_rr = calculate_rr_value(shadow_trade_plan)
+
+        required_rr = get_min_rr(
+            strategy,
+            candidate.get("entry_model"),
+            candidate.get("sl_model"),
+        )
+
+    execution_mode = get_mtf_conflict_execution_mode(mtf_bias)
+
+    execution_allowed, execution_reason = mtf_conflict_soft_execution_allowed(
+        candidate=candidate,
+        signal=signal,
+        mtf_bias=mtf_bias,
+        shadow_trade_plan=shadow_trade_plan,
+        shadow_rr=shadow_rr,
+        required_rr=required_rr,
+        execution_mode=execution_mode,
+    )
+
+    register_mtf_conflict_opportunity(
+        symbol=SYMBOL,
+        setup_id=setup_id,
+        strategy=strategy,
+        signal=signal,
+        entry_model=entry_model,
+        score=candidate.get("score"),
+        session=session_name,
+        market_condition=market_condition,
+        mtf_bias=mtf_bias,
+        rejection_reason=rejection_reason,
+        price_at_rejection=price_at_rejection,
+        shadow_trade_plan=shadow_trade_plan,
+        shadow_rr=shadow_rr,
+        shadow_required_rr=required_rr,
+        execution_mode=execution_mode,
+        execution_allowed=execution_allowed,
+        execution_reason=execution_reason,
+    )
+
+    log_setup_event(
+        setup_id=setup_id,
+        event="MTF_CONFLICT_CANDIDATE_TRACKED",
+        strategy=strategy,
+        signal=signal,
+        entry_model=entry_model,
+        score=candidate.get("score"),
+        session=session_name,
+        market_condition=market_condition,
+        entry=shadow_trade_plan.get("entry_price") if shadow_trade_plan else None,
+        sl=shadow_trade_plan.get("stop_loss") if shadow_trade_plan else None,
+        tp=shadow_trade_plan.get("take_profit") if shadow_trade_plan else None,
+        rr=shadow_rr,
+        required_rr=required_rr,
+        reason=rejection_reason,
+        extra={
+            "mtf_bias": mtf_bias,
+            "mtf_conflict_mode": execution_mode,
+            "price_at_rejection": price_at_rejection,
+            "shadow_entry": shadow_trade_plan.get("entry_price") if shadow_trade_plan else None,
+            "shadow_sl": shadow_trade_plan.get("stop_loss") if shadow_trade_plan else None,
+            "shadow_tp": shadow_trade_plan.get("take_profit") if shadow_trade_plan else None,
+            "shadow_rr": shadow_rr,
+            "shadow_required_rr": required_rr,
+            "execution_allowed": execution_allowed,
+            "execution_reason": execution_reason,
+        },
+    )
+
+    if not execution_allowed:
+        logger.info(
+            f"[MTF CONFLICT] Tracked only | "
+            f"setup_id={setup_id} strategy={strategy} signal={signal} "
+            f"mode={execution_mode} reason={execution_reason}"
+        )
+        return False
+
+    if execution_mode == "COUNTER_MTF_SCALP":
+        mtf_trade_plan, plan_reason = build_mtf_conflict_scalp_trade_plan(
+            candidate=candidate,
+            signal=signal,
+            tick=tick,
+            shadow_trade_plan=shadow_trade_plan,
+            setup_id=setup_id,
+        )
+
+        mtf_rr = round(
+            MTF_CONFLICT_COUNTER_SCALP_TP_PRICE / MTF_CONFLICT_COUNTER_SCALP_SL_PRICE,
+            2,
+        )
+
+        event_attempt = "MTF_CONFLICT_COUNTER_SCALP_EXECUTION_ATTEMPT"
+        event_success = "MTF_CONFLICT_COUNTER_SCALP_EXECUTED"
+        event_failed = "MTF_CONFLICT_COUNTER_SCALP_EXECUTION_FAILED"
+
+    else:
+        mtf_trade_plan, plan_reason = build_mtf_conflict_calculated_trade_plan(
+            candidate=candidate,
+            signal=signal,
+            shadow_trade_plan=shadow_trade_plan,
+            setup_id=setup_id,
+        )
+
+        mtf_rr = shadow_rr
+
+        event_attempt = "MTF_CONFLICT_OVERRIDE_EXECUTION_ATTEMPT"
+        event_success = "MTF_CONFLICT_OVERRIDE_EXECUTED"
+        event_failed = "MTF_CONFLICT_OVERRIDE_EXECUTION_FAILED"
+
+    if mtf_trade_plan is None:
+        logger.info(
+            f"[MTF CONFLICT] Trade plan refused | "
+            f"setup_id={setup_id} strategy={strategy} signal={signal} "
+            f"mode={execution_mode} reason={plan_reason}"
+        )
+
+        mark_mtf_conflict_opportunity_failed(setup_id, plan_reason)
+
+        log_setup_event(
+            setup_id=setup_id,
+            event="MTF_CONFLICT_EXECUTION_PLAN_REFUSED",
+            strategy=strategy,
+            signal=signal,
+            entry_model=entry_model,
+            score=candidate.get("score"),
+            session=session_name,
+            market_condition=market_condition,
+            rr=shadow_rr,
+            required_rr=required_rr,
+            reason=plan_reason,
+            extra={
+                "mtf_bias": mtf_bias,
+                "mtf_conflict_mode": execution_mode,
+            },
+        )
+
+        return False
+
+    trade_allowed, guard_reason = check_trade_guard(signal, tick)
+
+    if not trade_allowed:
+        logger.info(
+            f"[MTF CONFLICT] Guard blocked | "
+            f"setup_id={setup_id} strategy={strategy} signal={signal} "
+            f"reason={guard_reason}"
+        )
+
+        mark_mtf_conflict_opportunity_failed(setup_id, guard_reason)
+
+        log_setup_event(
+            setup_id=mtf_trade_plan.get("setup_id"),
+            event="MTF_CONFLICT_EXECUTION_BLOCKED",
+            strategy=mtf_trade_plan.get("strategy"),
+            signal=signal,
+            entry_model=mtf_trade_plan.get("entry_model"),
+            score=candidate.get("score"),
+            session=session_name,
+            market_condition=market_condition,
+            entry=mtf_trade_plan.get("entry_price"),
+            sl=mtf_trade_plan.get("stop_loss"),
+            tp=mtf_trade_plan.get("take_profit"),
+            rr=mtf_rr,
+            required_rr=required_rr,
+            reason=guard_reason,
+            extra={
+                "source_setup_id": setup_id,
+                "source_strategy": strategy,
+                "mtf_bias": mtf_bias,
+                "mtf_conflict_mode": execution_mode,
+            },
+        )
+
+        return False
+
+    news_blocked, news_reason = is_news_blackout_active()
+
+    if news_blocked:
+        logger.info(
+            f"[MTF CONFLICT] News blocked | "
+            f"setup_id={setup_id} reason={news_reason}"
+        )
+        return False
+
+    time_blocked, time_reason = is_trading_blackout_active()
+
+    if time_blocked:
+        logger.info(
+            f"[MTF CONFLICT] Time blocked | "
+            f"setup_id={setup_id} reason={time_reason}"
+        )
+        return False
+
+    if is_trade_blocked_by_execution_memory(
+        trade_plan=mtf_trade_plan,
+        signal_data=candidate,
+        setup=None,
+        strategy_name=mtf_trade_plan.get("strategy"),
+        signal=signal,
+    ):
+        mark_mtf_conflict_opportunity_failed(
+            setup_id,
+            "Skipped by execution memory",
+        )
+        return False
+
+    send_telegram_message(
+        f"⚡ MTF Conflict Execution\n"
+        f"Symbol: {SYMBOL}\n"
+        f"Mode: {execution_mode}\n"
+        f"Source Strategy: {strategy}\n"
+        f"Signal: {signal}\n"
+        f"MTF Bias: {mtf_bias}\n"
+        f"Setup ID: {setup_id}\n\n"
+        f"Entry: {mtf_trade_plan['entry_price']}\n"
+        f"SL: {mtf_trade_plan['stop_loss']}\n"
+        f"TP: {mtf_trade_plan['take_profit']}\n"
+        f"RR: {mtf_rr}\n"
+        f"Lot: {mtf_trade_plan['lot']}"
+    )
+
+    log_setup_event(
+        setup_id=mtf_trade_plan.get("setup_id"),
+        event=event_attempt,
+        strategy=mtf_trade_plan.get("strategy"),
+        signal=signal,
+        entry_model=mtf_trade_plan.get("entry_model"),
+        score=candidate.get("score"),
+        session=session_name,
+        market_condition=market_condition,
+        entry=mtf_trade_plan.get("entry_price"),
+        sl=mtf_trade_plan.get("stop_loss"),
+        tp=mtf_trade_plan.get("take_profit"),
+        rr=mtf_rr,
+        required_rr=required_rr,
+        reason=mtf_trade_plan.get("reason"),
+        extra={
+            "source_setup_id": setup_id,
+            "source_strategy": strategy,
+            "mtf_bias": mtf_bias,
+            "mtf_conflict_mode": execution_mode,
+            "shadow_entry": shadow_trade_plan.get("entry_price") if shadow_trade_plan else None,
+            "shadow_sl": shadow_trade_plan.get("stop_loss") if shadow_trade_plan else None,
+            "shadow_tp": shadow_trade_plan.get("take_profit") if shadow_trade_plan else None,
+            "shadow_rr": shadow_rr,
+            "shadow_required_rr": required_rr,
+        },
+    )
+
+    execution_result = execute_trade(signal, mtf_trade_plan, SYMBOL)
+
+    if execution_result:
+        mark_mtf_conflict_opportunity_executed(
+            setup_id,
+            executed_setup_id=mtf_trade_plan.get("setup_id"),
+            execution_mode=execution_mode,
+        )
+
+        log_setup_event(
+            setup_id=mtf_trade_plan.get("setup_id"),
+            event=event_success,
+            strategy=mtf_trade_plan.get("strategy"),
+            signal=signal,
+            entry_model=mtf_trade_plan.get("entry_model"),
+            score=candidate.get("score"),
+            session=session_name,
+            market_condition=market_condition,
+            entry=mtf_trade_plan.get("entry_price"),
+            sl=mtf_trade_plan.get("stop_loss"),
+            tp=mtf_trade_plan.get("take_profit"),
+            rr=mtf_rr,
+            required_rr=required_rr,
+            reason="mtf_conflict_execution_success",
+            extra={
+                "source_setup_id": setup_id,
+                "source_strategy": strategy,
+                "mtf_bias": mtf_bias,
+                "mtf_conflict_mode": execution_mode,
+            },
+        )
+
+        return True
+
+    mark_mtf_conflict_opportunity_failed(
+        setup_id,
+        "execute_trade returned False",
+    )
+
+    log_setup_event(
+        setup_id=mtf_trade_plan.get("setup_id"),
+        event=event_failed,
+        strategy=mtf_trade_plan.get("strategy"),
+        signal=signal,
+        entry_model=mtf_trade_plan.get("entry_model"),
+        score=candidate.get("score"),
+        session=session_name,
+        market_condition=market_condition,
+        entry=mtf_trade_plan.get("entry_price"),
+        sl=mtf_trade_plan.get("stop_loss"),
+        tp=mtf_trade_plan.get("take_profit"),
+        rr=mtf_rr,
+        required_rr=required_rr,
+        reason="execute_trade returned False",
+        extra={
+            "source_setup_id": setup_id,
+            "source_strategy": strategy,
+            "mtf_bias": mtf_bias,
+            "mtf_conflict_mode": execution_mode,
+        },
+    )
+
+    return False
+
 def validate_candidate_pre_execution(
     candidate,
     df,
@@ -2218,6 +2814,13 @@ def process_cycle(last_processed_candle_time):
             return current_candle_time
 
     # =========================
+    # MTF CONFLICT OPPORTUNITY TRACKER
+    # Runs every loop, not only on a new M15 candle.
+    # =========================
+    if ENABLE_MTF_CONFLICT_OPPORTUNITY_TRACKER:
+        update_mtf_conflict_opportunities(SYMBOL)
+
+    # =========================
     # NEW CANDLE CHECK
     # =========================
     from src.session_engine import detect_session, session_score_adjustment
@@ -2830,6 +3433,20 @@ def process_cycle(last_processed_candle_time):
             )
 
             if not is_valid:
+                if is_mtf_conflict_rejection(rejection_reason):
+                    mtf_conflict_executed = process_mtf_conflict_candidate(
+                        candidate=candidate,
+                        rejection_reason=rejection_reason,
+                        df=df,
+                        tick=tick,
+                        account_info=account_info,
+                        market_condition=market_condition,
+                        session_name=session_name,
+                    )
+
+                    if mtf_conflict_executed:
+                        return current_candle_time
+
                 rejected_candidates.append(
                     {
                         "strategy": candidate.get("strategy"),
