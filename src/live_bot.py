@@ -4,6 +4,7 @@ from datetime import datetime
 
 import MetaTrader5 as mt5
 import pandas as pd
+import hashlib
 
 from src.execution import check_trade_guard
 from src.indicators import calculate_ema, calculate_atr
@@ -946,6 +947,110 @@ def try_build_scalp_trade_plan(
 def build_setup_id(strategy_name, signal, tick_time):
     prefix = (strategy_name or "UNK")[:3].upper()
     return f"{prefix}-{signal}-{int(tick_time)}"
+
+
+def _stable_setup_value(value):
+    if value is None:
+        return None
+
+    try:
+        return round(float(value), 2)
+    except Exception:
+        return str(value)
+
+
+def build_stable_candidate_setup_id(candidate, strategy_name, signal, tick_time):
+    strategy_key = str(strategy_name or candidate.get("strategy") or "SETUP").upper()
+    signal_key = str(signal or candidate.get("signal") or "NA").upper()
+
+    identity_keys = [
+        "entry_model",
+        "target_model",
+
+        # ORB / session range
+        "orb_high",
+        "orb_low",
+        "orb_range",
+        "range_high",
+        "range_low",
+        "breakout_level",
+
+        # FVG / IFVG
+        "fvg_top",
+        "fvg_bottom",
+        "fvg_mid",
+        "ifvg_top",
+        "ifvg_bottom",
+        "ifvg_mid",
+        "failed_fvg_top",
+        "failed_fvg_bottom",
+        "failed_fvg_mid",
+
+        # Structure / sweep / reversal
+        "support",
+        "resistance",
+        "recent_high",
+        "recent_low",
+        "sweep_high",
+        "sweep_low",
+        "failed_breakout_level",
+        "neckline",
+        "neckline_price",
+
+        # Final references
+        "sl_reference",
+        "tp_reference",
+        "stop_loss",
+        "take_profit",
+    ]
+
+    parts = []
+
+    for key in identity_keys:
+        value = _stable_setup_value(candidate.get(key))
+
+        if value is not None:
+            parts.append(f"{key}={value}")
+
+    if len(parts) < 2:
+        existing_setup_id = candidate.get("setup_id")
+
+        if existing_setup_id:
+            return existing_setup_id
+
+        return build_setup_id(strategy_key, signal_key, tick_time)
+
+    raw = f"{strategy_key}|{signal_key}|" + "|".join(parts)
+    digest = hashlib.md5(raw.encode("utf-8")).hexdigest()[:10]
+    prefix = strategy_key.split("_")[0][:3]
+
+    return f"{prefix}-{signal_key}-{digest}"
+
+
+def is_setup_id_already_active(setup_id):
+    if not setup_id or setup_id == "N/A":
+        return False, None
+
+    active_states = {
+        "WAITING",
+        "READY",
+        "WAIT_BETTER_ENTRY",
+        "WAIT_DELAYED_ENTRY",
+        "EXECUTED",
+    }
+
+    for setup in execution_engine.active_setups:
+        setup_data = setup.get("data", {})
+
+        if setup_data.get("setup_id") != setup_id:
+            continue
+
+        setup_state = setup.get("state")
+
+        if setup_state in active_states:
+            return True, setup_state
+
+    return False, None
 
 def select_confirmed_ready_setup(ready_setups, df, selected_signal_data):
     from src.confirmation_engine import confirm_entry
@@ -3479,7 +3584,38 @@ def process_cycle(last_processed_candle_time):
                     result["session_reasons"].extend(session_reasons)
 
                 result["score"] = max(0, min(result["score"], 100))
-
+                
+                result["setup_id"] = build_stable_candidate_setup_id(
+                    candidate=result,
+                    strategy_name=name,
+                    signal=signal_value,
+                    tick_time=tick.time,
+                )
+                
+                duplicate_active, duplicate_state = is_setup_id_already_active(result["setup_id"])
+                
+                if duplicate_active:
+                    logger.info(
+                        f"[SETUP DUPLICATE SUPPRESSED] "
+                        f"setup_id={result['setup_id']} "
+                        f"strategy={name} signal={signal_value} "
+                        f"state={duplicate_state}"
+                    )
+                
+                    log_setup_event(
+                        setup_id=result["setup_id"],
+                        event="SETUP_DUPLICATE_SUPPRESSED",
+                        strategy=name,
+                        signal=signal_value,
+                        entry_model=result.get("entry_model"),
+                        score=result.get("score"),
+                        session=session_name,
+                        market_condition=market_condition,
+                        reason=f"same structural setup already active state={duplicate_state}",
+                    )
+                
+                    continue
+                
                 signals.append(result)
 
         except Exception as e:
