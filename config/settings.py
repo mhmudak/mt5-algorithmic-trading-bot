@@ -78,6 +78,20 @@ TRADING_BLACKOUT_WINDOWS = [
 ]
 
 # =========================
+# Opening Strategy Blackout
+# =========================
+ENABLE_OPENING_STRATEGY_BLACKOUT = True
+
+OPENING_STRATEGY_BLACKOUT_START = "00:00"
+OPENING_STRATEGY_BLACKOUT_END = "03:00"
+
+OPENING_STRATEGY_BLACKOUT_STRATEGIES = [
+    "ORB",
+    "ORB_V00",
+    "WAVETREND_MOMENTUM",
+]
+
+# =========================
 # Automatic Economic Calendar Filter
 # =========================
 ENABLE_AUTO_NEWS_FILTER = True
@@ -331,7 +345,6 @@ MAX_ATR_SPIKE_MULTIPLIER = 1.8
 ENABLE_SESSION_FILTER = False
 SESSION_START_HOUR = 9
 SESSION_END_HOUR = 18
-
 
 # =========================
 # Strategy Auto Control

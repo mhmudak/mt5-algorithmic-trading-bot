@@ -174,6 +174,10 @@ from config.settings import (
     MTF_CONFLICT_REQUIRE_SHADOW_RR_FOR_SCALP,
     MTF_CONFLICT_RETRACE_FIRST_STRATEGIES,
     MTF_CONFLICT_TRACK_ONLY_STRATEGIES,
+    ENABLE_OPENING_STRATEGY_BLACKOUT,
+    OPENING_STRATEGY_BLACKOUT_START,
+    OPENING_STRATEGY_BLACKOUT_END,
+    OPENING_STRATEGY_BLACKOUT_STRATEGIES,
 )
 
 from src.candidate_rejection_recovery import (
@@ -958,6 +962,46 @@ def _stable_setup_value(value):
     except Exception:
         return str(value)
 
+def _parse_hhmm_time(value):
+    hour, minute = str(value).split(":")
+    return int(hour), int(minute)
+
+
+def _time_in_hhmm_window(current_time, start_hhmm, end_hhmm):
+    start_hour, start_minute = _parse_hhmm_time(start_hhmm)
+    end_hour, end_minute = _parse_hhmm_time(end_hhmm)
+
+    current_minutes = current_time.hour * 60 + current_time.minute
+    start_minutes = start_hour * 60 + start_minute
+    end_minutes = end_hour * 60 + end_minute
+
+    if start_minutes <= end_minutes:
+        return start_minutes <= current_minutes < end_minutes
+
+    return current_minutes >= start_minutes or current_minutes < end_minutes
+
+
+def opening_strategy_blackout_blocks(strategy_name, current_time):
+    if not ENABLE_OPENING_STRATEGY_BLACKOUT:
+        return False, None
+
+    strategy_key = str(strategy_name or "").upper()
+
+    if strategy_key not in OPENING_STRATEGY_BLACKOUT_STRATEGIES:
+        return False, None
+
+    if not _time_in_hhmm_window(
+        current_time,
+        OPENING_STRATEGY_BLACKOUT_START,
+        OPENING_STRATEGY_BLACKOUT_END,
+    ):
+        return False, None
+
+    return (
+        True,
+        f"opening_blackout strategy={strategy_key} "
+        f"window={OPENING_STRATEGY_BLACKOUT_START}-{OPENING_STRATEGY_BLACKOUT_END}",
+    )
 
 def build_stable_candidate_setup_id(candidate, strategy_name, signal, tick_time):
     strategy_key = str(strategy_name or candidate.get("strategy") or "SETUP").upper()
@@ -3439,6 +3483,31 @@ def process_cycle(last_processed_candle_time):
                     )
 
                     continue
+                
+            opening_blocked, opening_block_reason = opening_strategy_blackout_blocks(
+                name,
+                current_candle_time,
+            )
+
+            if opening_blocked:
+                logger.info(
+                    f"[OPENING STRATEGY BLACKOUT] "
+                    f"strategy={name} session={session_name} "
+                    f"market_condition={market_condition} "
+                    f"reason={opening_block_reason}"
+                )
+
+                log_setup_event(
+                    setup_id=f"OPENING-BLOCK-{name}-{int(tick.time)}",
+                    event="STRATEGY_OPENING_BLACKOUT_BLOCKED",
+                    strategy=name,
+                    signal="N/A",
+                    session=session_name,
+                    market_condition=market_condition,
+                    reason=opening_block_reason,
+                )
+
+                continue
 
             result = strat(df)
             logger.info(f"[STRATEGY RESULT] {name}: {result}")
@@ -3584,16 +3653,16 @@ def process_cycle(last_processed_candle_time):
                     result["session_reasons"].extend(session_reasons)
 
                 result["score"] = max(0, min(result["score"], 100))
-                
+
                 result["setup_id"] = build_stable_candidate_setup_id(
                     candidate=result,
                     strategy_name=name,
                     signal=signal_value,
                     tick_time=tick.time,
                 )
-                
+
                 duplicate_active, duplicate_state = is_setup_id_already_active(result["setup_id"])
-                
+
                 if duplicate_active:
                     logger.info(
                         f"[SETUP DUPLICATE SUPPRESSED] "
@@ -3601,7 +3670,7 @@ def process_cycle(last_processed_candle_time):
                         f"strategy={name} signal={signal_value} "
                         f"state={duplicate_state}"
                     )
-                
+
                     log_setup_event(
                         setup_id=result["setup_id"],
                         event="SETUP_DUPLICATE_SUPPRESSED",
@@ -3613,7 +3682,7 @@ def process_cycle(last_processed_candle_time):
                         market_condition=market_condition,
                         reason=f"same structural setup already active state={duplicate_state}",
                     )
-                
+
                     continue
                 
                 signals.append(result)
