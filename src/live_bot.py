@@ -184,6 +184,8 @@ from config.settings import (
     FVG_ZONE_STAGED_ENTRY_EXPIRY_MINUTES,
     FVG_ZONE_STAGED_ENTRY_SL_BUFFER,
     STRATEGY_EXTRA_SL_BUFFER,
+    LOG_STRATEGY_SESSION_BLOCKS_TO_SHEETS,
+    LOG_OPENING_BLACKOUT_BLOCKS_TO_SHEETS,
 )
 
 from src.candidate_rejection_recovery import (
@@ -3713,15 +3715,16 @@ def process_cycle(last_processed_candle_time):
                         f"reason={session_block_reason}"
                     )
 
-                    log_setup_event(
-                        setup_id=f"SESSION-BLOCK-{name}-{int(tick.time)}",
-                        event="STRATEGY_SESSION_BLOCKED",
-                        strategy=name,
-                        signal="N/A",
-                        session=session_name,
-                        market_condition=market_condition,
-                        reason=session_block_reason,
-                    )
+                    if LOG_STRATEGY_SESSION_BLOCKS_TO_SHEETS:
+                        log_setup_event(
+                            setup_id=f"SESSION-BLOCK-{name}-{int(tick.time)}",
+                            event="STRATEGY_SESSION_BLOCKED",
+                            strategy=name,
+                            signal="N/A",
+                            session=session_name,
+                            market_condition=market_condition,
+                            reason=session_block_reason,
+                        )
 
                     continue
                 
@@ -3738,15 +3741,16 @@ def process_cycle(last_processed_candle_time):
                     f"reason={opening_block_reason}"
                 )
 
-                log_setup_event(
-                    setup_id=f"OPENING-BLOCK-{name}-{int(tick.time)}",
-                    event="STRATEGY_OPENING_BLACKOUT_BLOCKED",
-                    strategy=name,
-                    signal="N/A",
-                    session=session_name,
-                    market_condition=market_condition,
-                    reason=opening_block_reason,
-                )
+                if LOG_OPENING_BLACKOUT_BLOCKS_TO_SHEETS:
+                    log_setup_event(
+                        setup_id=f"OPENING-BLOCK-{name}-{int(tick.time)}",
+                        event="STRATEGY_OPENING_BLACKOUT_BLOCKED",
+                        strategy=name,
+                        signal="N/A",
+                        session=session_name,
+                        market_condition=market_condition,
+                        reason=opening_block_reason,
+                    )
 
                 continue
 

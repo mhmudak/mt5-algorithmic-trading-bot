@@ -1176,3 +1176,9 @@ STRATEGY_EXTRA_SL_BUFFER = {
     "FVG_CE_MITIGATION": 2.0,
     "HTF_TREND_PULLBACK": 3.0,
 }
+
+# =========================
+# Monitoring Noise Control
+# =========================
+LOG_STRATEGY_SESSION_BLOCKS_TO_SHEETS = False
+LOG_OPENING_BLACKOUT_BLOCKS_TO_SHEETS = False
