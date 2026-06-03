@@ -1,3 +1,11 @@
+from config.settings import (
+    ENABLE_SESSION_STRATEGY_BLOCKS,
+    ENABLE_SESSION_STRATEGY_BOOSTS,
+    SESSION_STRATEGY_BLOCKS,
+    SESSION_STRATEGY_BOOSTS,
+    SESSION_STRATEGY_BOOST_VALUE,
+)
+
 def detect_session(current_time):
     hour = current_time.hour
 
@@ -122,5 +130,32 @@ def session_score_adjustment(strategy_name: str, session_name: str):
         elif session_name == "OFF_HOURS":
             score_boost -= 4
             reasons.append("off_hours_pivot_penalty")
+            
+    # =========================
+    # Empirical suitable-session boost
+    # =========================
+    if ENABLE_SESSION_STRATEGY_BOOSTS:
+        session_key = str(session_name or "").upper()
+        strategy_key = str(strategy_name or "").upper()
+
+        boosted = SESSION_STRATEGY_BOOSTS.get(session_key, [])
+
+        if strategy_key in boosted:
+            score_boost += SESSION_STRATEGY_BOOST_VALUE
+            reasons.append(f"empirical_session_boost_{session_key}")
 
     return score_boost, reasons
+
+def session_blocks_strategy(strategy_name: str, session_name: str):
+    if not ENABLE_SESSION_STRATEGY_BLOCKS:
+        return False, None
+
+    strategy_key = str(strategy_name or "").upper()
+    session_key = str(session_name or "").upper()
+
+    blocked = SESSION_STRATEGY_BLOCKS.get(session_key, [])
+
+    if strategy_key in blocked:
+        return True, f"session_blocked strategy={strategy_key} session={session_key}"
+
+    return False, None

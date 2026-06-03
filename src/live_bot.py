@@ -337,21 +337,21 @@ def get_min_rr(strategy_name, entry_model=None, sl_model=None):
     }
 
     if strategy_name in rr_140:
-        return 1.25
+        return 1.40
 
     if strategy_name in rr_130:
-        return 1.15
+        return 1.30
 
     if strategy_name in rr_125:
-        return 1.10
+        return 1.25
 
     if strategy_name in rr_110:
-        return 0.95
+        return 1.10
 
     if strategy_name == "WAVETREND_MOMENTUM":
         return WAVETREND_MOMENTUM_MIN_RR
 
-    return 1.00
+    return 1.10
 
 def calculate_rr_value(trade_plan):
     if not trade_plan:
@@ -2888,7 +2888,11 @@ def process_cycle(last_processed_candle_time):
     # =========================
     # NEW CANDLE CHECK
     # =========================
-    from src.session_engine import detect_session, session_score_adjustment
+    from src.session_engine import (
+        detect_session,
+        session_score_adjustment,
+        session_blocks_strategy,
+    )
     from config.settings import ENABLE_SESSION_ENGINE
 
     if (
@@ -3023,22 +3027,22 @@ def process_cycle(last_processed_candle_time):
     # =========================
     if market_condition == "TRENDING":
         strategy_map = [
-            ("HTF_TREND_PULLBACK", htf_trend_pullback_signal),
-            ("OB_FVG_COMBO", ob_fvg_combo_signal),
-            ("RELIEF_RALLY", relief_rally_signal),
-            ("HTF_FIB_CONFLUENCE", htf_fib_confluence_signal),
-            ("SESSION_ORB_RETEST", session_orb_retest_signal),
-            ("LVN_FVG_RECLAIM", lvn_fvg_reclaim_signal),
-            ("FVG_CE_MITIGATION", fvg_ce_mitigation_signal),
-            ("ORB_V00", orb_v00_signal),
-            ("MICRO_SR_SWEEP_RECLAIM", micro_sr_sweep_reclaim_signal),
             ("ORB", orb_signal),
-            ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
+            ("ORB_V00", orb_v00_signal),
+            ("SESSION_ORB_RETEST", session_orb_retest_signal),
             ("WAVETREND_MOMENTUM", wavetrend_momentum_signal),
-            ("FCR_M1_FVG", fcr_m1_fvg_signal),
+            ("HTF_TREND_PULLBACK", htf_trend_pullback_signal),
             ("BREAKER_BLOCK", breaker_block_signal),
-            ("MTF_OB_ENTRY", mtf_ob_entry_signal),
+            ("MICRO_SR_SWEEP_RECLAIM", micro_sr_sweep_reclaim_signal),
+            ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
+            ("RELIEF_RALLY", relief_rally_signal),
             ("ORDER_BLOCK", order_block_signal),
+            ("FVG_CE_MITIGATION", fvg_ce_mitigation_signal),
+            ("OB_FVG_COMBO", ob_fvg_combo_signal),
+            ("HTF_FIB_CONFLUENCE", htf_fib_confluence_signal),
+            ("LVN_FVG_RECLAIM", lvn_fvg_reclaim_signal),
+            ("MTF_OB_ENTRY", mtf_ob_entry_signal),
+            ("FCR_M1_FVG", fcr_m1_fvg_signal),
             ("FVG", fvg_signal),
             ("TRIANGLE_PENNANT", triangle_pennant_signal),
             ("FLAG_REFINED", flag_refined_signal),
@@ -3053,19 +3057,19 @@ def process_cycle(last_processed_candle_time):
 
     elif market_condition == "PULLBACK_TREND":
         strategy_map = [
-            ("HTF_TREND_PULLBACK", htf_trend_pullback_signal),
-            ("ORDER_BLOCK", order_block_signal),
+            ("WAVETREND_MOMENTUM", wavetrend_momentum_signal),
             ("BREAKER_BLOCK", breaker_block_signal),
-            ("FVG_CE_MITIGATION", fvg_ce_mitigation_signal),
-            ("IFVG_RETEST_CONFLUENCE", ifvg_retest_confluence_signal),
-            ("FVG", fvg_signal),
-            ("OB_FVG_COMBO", ob_fvg_combo_signal),
+            ("HTF_TREND_PULLBACK", htf_trend_pullback_signal),
             ("RELIEF_RALLY", relief_rally_signal),
             ("MICRO_SR_SWEEP_RECLAIM", micro_sr_sweep_reclaim_signal),
+            ("ORDER_BLOCK", order_block_signal),
+            ("FVG_CE_MITIGATION", fvg_ce_mitigation_signal),
+            ("IFVG_RETEST_CONFLUENCE", ifvg_retest_confluence_signal),
+            ("OB_FVG_COMBO", ob_fvg_combo_signal),
             ("HTF_FIB_CONFLUENCE", htf_fib_confluence_signal),
             ("MTF_SR_FVG_RECLAIM", mtf_sr_fvg_reclaim_signal),
             ("SUPPLY_DEMAND_RETEST", supply_demand_retest_signal),
-            ("WAVETREND_MOMENTUM", wavetrend_momentum_signal),
+            ("FVG", fvg_signal),
             ("WAVETREND_PIVOT", wavetrend_pivot_signal),
             ("STRUCTURE_LIQUIDITY", structure_liquidity_signal),
             ("LIQUIDITY_CANDLE", liquidity_candle_signal),
@@ -3075,15 +3079,16 @@ def process_cycle(last_processed_candle_time):
 
     elif market_condition == "RANGING":
         strategy_map = [
-            ("RANGE_SWEEP_RECLAIM", range_sweep_reclaim_signal),
-            ("VWAP_RANGE_MEAN_REVERSION", vwap_range_mean_reversion_signal),
-            ("VWAP_RECLAIM", vwap_reclaim_signal),
-            ("MICRO_SR_SWEEP_RECLAIM", micro_sr_sweep_reclaim_signal),
-            ("WAVETREND_PIVOT", wavetrend_pivot_signal),
-            ("FRACTAL_SWEEP", fractal_sweep_signal),
-            ("LIQUIDITY_TRAP", liquidity_trap_signal),
+            ("BREAKER_BLOCK", breaker_block_signal),
             ("FAILED_FVG_REVERSAL", failed_fvg_reversal_signal),
             ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
+            ("MICRO_SR_SWEEP_RECLAIM", micro_sr_sweep_reclaim_signal),
+            ("VWAP_RANGE_MEAN_REVERSION", vwap_range_mean_reversion_signal),
+            ("VWAP_RECLAIM", vwap_reclaim_signal),
+            ("LIQUIDITY_TRAP", liquidity_trap_signal),
+            ("FRACTAL_SWEEP", fractal_sweep_signal),
+            ("ORDER_BLOCK", order_block_signal),
+            ("HEAD_SHOULDERS", head_shoulders_signal),
             ("IFVG_RETEST_CONFLUENCE", ifvg_retest_confluence_signal),
             ("MTF_SR_FVG_RECLAIM", mtf_sr_fvg_reclaim_signal),
             ("SUPPLY_DEMAND_RETEST", supply_demand_retest_signal),
@@ -3096,9 +3101,6 @@ def process_cycle(last_processed_candle_time):
             ("SMT", smt_signal),
             ("LIQUIDITY_SWEEP", liquidity_sweep_signal),
             ("LIQUIDITY_CANDLE", liquidity_candle_signal),
-            ("BREAKER_BLOCK", breaker_block_signal),
-            ("ORDER_BLOCK", order_block_signal),
-            ("HEAD_SHOULDERS", head_shoulders_signal),
             ("FAST", fast_signal),
             ("SNIPER_V2", sniper_signal),
         ]
@@ -3106,33 +3108,33 @@ def process_cycle(last_processed_candle_time):
 
     elif market_condition == "VOLATILE":
         strategy_map = [
-            ("VWAP_RECLAIM", vwap_reclaim_signal),
-            ("MICRO_SR_SWEEP_RECLAIM", micro_sr_sweep_reclaim_signal),
-            ("WAVETREND_PIVOT", wavetrend_pivot_signal),
+            ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
+            ("FAILED_FVG_REVERSAL", failed_fvg_reversal_signal),
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
             ("FRACTAL_SWEEP", fractal_sweep_signal),
-            ("FAILED_FVG_REVERSAL", failed_fvg_reversal_signal),
-            ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
+            ("EXTREME_SWEEP_RECLAIM", extreme_sweep_reclaim_signal),
+            ("MICRO_SR_SWEEP_RECLAIM", micro_sr_sweep_reclaim_signal),
+            ("VWAP_RECLAIM", vwap_reclaim_signal),
+            ("BREAKER_BLOCK", breaker_block_signal),
+            ("SESSION_ORB_RETEST", session_orb_retest_signal),
+            ("WAVETREND_MOMENTUM", wavetrend_momentum_signal),
+            ("STRUCTURE_LIQUIDITY", structure_liquidity_signal),
             ("IFVG_RETEST_CONFLUENCE", ifvg_retest_confluence_signal),
             ("MTF_SR_FVG_RECLAIM", mtf_sr_fvg_reclaim_signal),
             ("SUPPLY_DEMAND_RETEST", supply_demand_retest_signal),
-            ("EXTREME_SWEEP_RECLAIM", extreme_sweep_reclaim_signal),
-            ("STRUCTURE_LIQUIDITY", structure_liquidity_signal),
             ("CRT_TBS", crt_tbs_signal),
             ("SMT_PRO", smt_pro_signal),
             ("SMT", smt_signal),
             ("LIQUIDITY_POOL_OB", liquidity_pool_ob_signal),
-            ("SESSION_ORB_RETEST", session_orb_retest_signal),
-            ("LVN_FVG_RECLAIM", lvn_fvg_reclaim_signal),
             ("AMD_FVG", amd_fvg_signal),
-            ("FVG_CE_MITIGATION", fvg_ce_mitigation_signal),
-            ("ORB_V00", orb_v00_signal),
+            ("LVN_FVG_RECLAIM", lvn_fvg_reclaim_signal),
             ("ORB", orb_signal),
-            ("WAVETREND_MOMENTUM", wavetrend_momentum_signal),
+            ("ORB_V00", orb_v00_signal),
+            ("FVG_CE_MITIGATION", fvg_ce_mitigation_signal),
+            ("ORDER_BLOCK", order_block_signal),
             ("FCR_M1_FVG", fcr_m1_fvg_signal),
             ("LIQUIDITY_SWEEP", liquidity_sweep_signal),
             ("LIQUIDITY_CANDLE", liquidity_candle_signal),
-            ("ORDER_BLOCK", order_block_signal),
             ("STRICT", strict_signal),
             ("FVG", fvg_signal),
         ]
@@ -3291,6 +3293,14 @@ def process_cycle(last_processed_candle_time):
             if name != "FCR_M1_FVG"
         ]
         logger.info("[STRATEGY TOGGLE] FCR_M1_FVG disabled")
+        
+    logger.info(
+        f"[STRATEGY MAP ACTIVE] "
+        f"market_condition={market_condition} "
+        f"session={session_name} "
+        f"count={len(strategy_map)} "
+        f"strategies={[name for name, _ in strategy_map]}"
+    )
 
     for name, strat in strategy_map:
 
@@ -3300,6 +3310,31 @@ def process_cycle(last_processed_candle_time):
             continue
 
         try:
+            if ENABLE_SESSION_ENGINE:
+                blocked_by_session, session_block_reason = session_blocks_strategy(
+                    name,
+                    session_name,
+                )
+
+                if blocked_by_session:
+                    logger.info(
+                        f"[SESSION STRATEGY BLOCKED] "
+                        f"strategy={name} session={session_name} "
+                        f"reason={session_block_reason}"
+                    )
+
+                    log_setup_event(
+                        setup_id=f"SESSION-BLOCK-{name}-{int(tick.time)}",
+                        event="STRATEGY_SESSION_BLOCKED",
+                        strategy=name,
+                        signal="N/A",
+                        session=session_name,
+                        market_condition=market_condition,
+                        reason=session_block_reason,
+                    )
+
+                    continue
+
             result = strat(df)
             logger.info(f"[STRATEGY RESULT] {name}: {result}")
 
