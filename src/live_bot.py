@@ -178,6 +178,12 @@ from config.settings import (
     OPENING_STRATEGY_BLACKOUT_START,
     OPENING_STRATEGY_BLACKOUT_END,
     OPENING_STRATEGY_BLACKOUT_STRATEGIES,
+    ENABLE_FVG_ZONE_STAGED_ENTRY,
+    FVG_ZONE_STAGED_ENTRY_STRATEGIES,
+    FVG_ZONE_STAGED_ENTRY_LEVELS,
+    FVG_ZONE_STAGED_ENTRY_EXPIRY_MINUTES,
+    FVG_ZONE_STAGED_ENTRY_SL_BUFFER,
+    STRATEGY_EXTRA_SL_BUFFER,
 )
 
 from src.candidate_rejection_recovery import (
@@ -1418,6 +1424,227 @@ def continuation_safety_rejects_candidate(candidate, signal, atr):
 
     return False, None
 
+def get_strategy_extra_sl_buffer(strategy_name):
+    try:
+        return float(STRATEGY_EXTRA_SL_BUFFER.get(strategy_name, 0.0))
+    except Exception:
+        return 0.0
+
+
+def apply_extra_sl_buffer(signal, stop_loss, buffer_value):
+    if stop_loss is None or not buffer_value:
+        return stop_loss
+
+    if signal == "BUY":
+        return round(float(stop_loss) - float(buffer_value), 2)
+
+    if signal == "SELL":
+        return round(float(stop_loss) + float(buffer_value), 2)
+
+    return stop_loss
+
+
+def get_fvg_zone(candidate):
+    fvg_top = (
+        candidate.get("fvg_top")
+        or candidate.get("ifvg_top")
+        or candidate.get("failed_fvg_top")
+    )
+
+    fvg_bottom = (
+        candidate.get("fvg_bottom")
+        or candidate.get("ifvg_bottom")
+        or candidate.get("failed_fvg_bottom")
+    )
+
+    if fvg_top is None or fvg_bottom is None:
+        return None, None
+
+    top = max(float(fvg_top), float(fvg_bottom))
+    bottom = min(float(fvg_top), float(fvg_bottom))
+
+    return top, bottom
+
+
+def build_fvg_staged_entry_prices(signal, fvg_top, fvg_bottom):
+    fvg_height = abs(float(fvg_top) - float(fvg_bottom))
+
+    if signal == "BUY":
+        return [
+            round(float(fvg_top), 2),
+            round(float(fvg_top) - fvg_height * 0.60, 2),
+            round(float(fvg_top) - fvg_height * 0.85, 2),
+        ]
+
+    if signal == "SELL":
+        return [
+            round(float(fvg_bottom), 2),
+            round(float(fvg_bottom) + fvg_height * 0.60, 2),
+            round(float(fvg_bottom) + fvg_height * 0.85, 2),
+        ]
+
+    return []
+
+
+def should_use_fvg_zone_staged_entry(strategy_name, signal_data):
+    if not ENABLE_FVG_ZONE_STAGED_ENTRY:
+        return False
+
+    strategy_key = str(strategy_name or "").upper()
+
+    if strategy_key not in FVG_ZONE_STAGED_ENTRY_STRATEGIES:
+        return False
+
+    fvg_top, fvg_bottom = get_fvg_zone(signal_data)
+
+    return fvg_top is not None and fvg_bottom is not None
+
+def fvg_stage_price_reached(signal, tick, target_entry):
+    if signal == "BUY":
+        return float(tick.ask) <= float(target_entry)
+
+    if signal == "SELL":
+        return float(tick.bid) >= float(target_entry)
+
+    return False
+
+
+def get_fvg_stage_execution_price(signal, tick):
+    if signal == "BUY":
+        return float(tick.ask)
+
+    if signal == "SELL":
+        return float(tick.bid)
+
+    return None
+
+
+def process_wait_fvg_staged_entry_setups(df, tick, account_info, market_condition, session_name):
+    staged_setups = execution_engine.get_wait_fvg_staged_entry_setups()
+
+    if not staged_setups:
+        return False
+
+    for setup in staged_setups:
+        setup_data = setup.get("data", {})
+        strategy_name = setup_data.get("strategy")
+        signal = setup_data.get("signal")
+        setup_id = setup_data.get("setup_id")
+
+        stages = setup.get("fvg_staged_entries", [])
+
+        for stage in stages:
+            if stage.get("executed"):
+                continue
+
+            target_entry = stage.get("target_entry")
+
+            if not fvg_stage_price_reached(signal, tick, target_entry):
+                continue
+
+            execution_price = get_fvg_stage_execution_price(signal, tick)
+
+            trade_plan = dict(setup_data.get("fvg_staged_trade_plan", {}))
+            trade_plan["entry_price"] = round(execution_price, 2)
+            trade_plan["lot"] = stage.get("lot")
+            trade_plan["setup_id"] = f"{setup_id}-{stage.get('stage_name')}"
+            trade_plan["role"] = stage.get("stage_name")
+            trade_plan["reason"] = (
+                f"{setup_data.get('reason', 'N/A')} | "
+                f"FVG_STAGED_ENTRY {stage.get('stage_name')} "
+                f"target={target_entry}"
+            )
+
+            logger.info(
+                f"[FVG STAGED ENTRY] Executing | "
+                f"setup_id={setup_id} stage={stage.get('stage_name')} "
+                f"target={target_entry} execution_price={execution_price}"
+            )
+
+            send_telegram_message(
+                f"🔥 FVG Staged Entry Executing\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Strategy: {strategy_name}\n"
+                f"Signal: {signal}\n"
+                f"Setup ID: {setup_id}\n"
+                f"Stage: {stage.get('stage_name')}\n\n"
+                f"Target Entry: {target_entry}\n"
+                f"Execution Entry: {trade_plan['entry_price']}\n"
+                f"SL: {trade_plan['stop_loss']}\n"
+                f"TP: {trade_plan['take_profit']}\n"
+                f"Lot: {trade_plan['lot']}"
+            )
+
+            log_setup_event(
+                setup_id=trade_plan.get("setup_id"),
+                event="FVG_STAGED_ENTRY_EXECUTION_ATTEMPT",
+                strategy=strategy_name,
+                signal=signal,
+                entry_model=setup_data.get("entry_model"),
+                score=setup_data.get("score"),
+                session=session_name,
+                market_condition=market_condition,
+                entry=trade_plan.get("entry_price"),
+                sl=trade_plan.get("stop_loss"),
+                tp=trade_plan.get("take_profit"),
+                reason=f"FVG staged entry {stage.get('stage_name')}",
+                extra={
+                    "parent_setup_id": setup_id,
+                    "stage": stage,
+                },
+            )
+
+            execution_result = execute_trade(signal, trade_plan, SYMBOL)
+
+            if execution_result:
+                stage["executed"] = True
+
+                log_setup_event(
+                    setup_id=trade_plan.get("setup_id"),
+                    event="FVG_STAGED_ENTRY_EXECUTED",
+                    strategy=strategy_name,
+                    signal=signal,
+                    entry_model=setup_data.get("entry_model"),
+                    score=setup_data.get("score"),
+                    session=session_name,
+                    market_condition=market_condition,
+                    entry=trade_plan.get("entry_price"),
+                    sl=trade_plan.get("stop_loss"),
+                    tp=trade_plan.get("take_profit"),
+                    reason=f"FVG staged entry executed {stage.get('stage_name')}",
+                    extra={
+                        "parent_setup_id": setup_id,
+                        "stage": stage,
+                    },
+                )
+
+                if all(item.get("executed") for item in stages):
+                    execution_engine.mark_executed(setup)
+
+                return True
+
+            log_setup_event(
+                setup_id=trade_plan.get("setup_id"),
+                event="FVG_STAGED_ENTRY_EXECUTION_FAILED",
+                strategy=strategy_name,
+                signal=signal,
+                entry_model=setup_data.get("entry_model"),
+                score=setup_data.get("score"),
+                session=session_name,
+                market_condition=market_condition,
+                entry=trade_plan.get("entry_price"),
+                sl=trade_plan.get("stop_loss"),
+                tp=trade_plan.get("take_profit"),
+                reason="execute_trade returned False",
+                extra={
+                    "parent_setup_id": setup_id,
+                    "stage": stage,
+                },
+            )
+
+            return True
+
+    return False
 
 def continuation_requires_retrace_first(strategy_name, entry_model, rr_value):
     if not ENABLE_CONTINUATION_SAFETY_GUARD:
@@ -3005,6 +3232,20 @@ def process_cycle(last_processed_candle_time):
     # =========================
     if ENABLE_DELAYED_RETRACE_ENTRY:
         if process_wait_delayed_entry_setups(
+            df=df,
+            tick=tick,
+            account_info=account_info,
+            market_condition="PENDING",
+            session_name="PENDING",
+        ):
+            return current_candle_time
+        
+    # =========================
+    # FVG STAGED ENTRY CHECK
+    # Runs every loop, not only on a new M15 candle.
+    # =========================
+    if ENABLE_FVG_ZONE_STAGED_ENTRY:
+        if process_wait_fvg_staged_entry_setups(
             df=df,
             tick=tick,
             account_info=account_info,
@@ -5105,6 +5346,101 @@ def process_cycle(last_processed_candle_time):
                 )
 
                 return current_candle_time
+            
+            if should_use_fvg_zone_staged_entry(strategy_name, selected_signal_data):
+                fvg_top, fvg_bottom = get_fvg_zone(selected_signal_data)
+
+                staged_prices = build_fvg_staged_entry_prices(
+                    signal=signal,
+                    fvg_top=fvg_top,
+                    fvg_bottom=fvg_bottom,
+                )
+
+                if staged_prices:
+                    extra_sl_buffer = get_strategy_extra_sl_buffer(strategy_name)
+
+                    if extra_sl_buffer <= 0:
+                        extra_sl_buffer = FVG_ZONE_STAGED_ENTRY_SL_BUFFER
+
+                    staged_trade_plan = dict(trade_plan)
+                    staged_trade_plan["stop_loss"] = apply_extra_sl_buffer(
+                        signal,
+                        trade_plan.get("stop_loss"),
+                        extra_sl_buffer,
+                    )
+
+                    stage_lot = round(float(trade_plan.get("lot", 0.0)), 2)
+
+                    if stage_lot <= 0:
+                        logger.info(
+                            f"[FVG STAGED ENTRY] Skipped | invalid full stage lot "
+                            f"lot={stage_lot} stages={len(staged_prices)}"
+                        )
+                        return current_candle_time
+                    
+                    total_planned_lot = round(stage_lot * len(staged_prices), 2)
+                    
+                    stages = []
+                    
+                    for index, target_entry in enumerate(staged_prices, start=1):
+                        stages.append(
+                            {
+                                "stage_name": f"FVG_STAGE_{index}",
+                                "target_entry": target_entry,
+                                "lot": stage_lot,
+                                "executed": False,
+                            }
+                        )
+
+                    selected_signal_data["fvg_staged_trade_plan"] = staged_trade_plan
+
+                    execution_engine.mark_wait_fvg_staged_entry(
+                        setup=best_setup,
+                        stages=stages,
+                        expiry_minutes=FVG_ZONE_STAGED_ENTRY_EXPIRY_MINUTES,
+                    )
+
+                    log_setup_event(
+                        setup_id=selected_signal_data.get("setup_id"),
+                        event="FVG_STAGED_ENTRY_WAITING",
+                        strategy=strategy_name,
+                        signal=signal,
+                        entry_model=selected_signal_data.get("entry_model"),
+                        score=score,
+                        session=session_name,
+                        market_condition=market_condition,
+                        entry=trade_plan.get("entry_price"),
+                        sl=staged_trade_plan.get("stop_loss"),
+                        tp=trade_plan.get("take_profit"),
+                        rr=rr_value,
+                        reason="FVG zone staged entry waiting",
+                        extra={
+                            "fvg_top": fvg_top,
+                            "fvg_bottom": fvg_bottom,
+                            "stages": stages,
+                            "original_lot": stage_lot,
+                            "stage_lot": stage_lot,
+                            "total_planned_lot": total_planned_lot,
+                            "lot_mode": "FULL_LOT_PER_STAGE",
+                            "extra_sl_buffer": extra_sl_buffer,
+                        },
+                    )
+
+                    send_telegram_message(
+                        f"⏳ FVG Staged Entry Waiting\n"
+                        f"Symbol: {SYMBOL}\n"
+                        f"Strategy: {strategy_name}\n"
+                        f"Signal: {signal}\n"
+                        f"Setup ID: {selected_signal_data.get('setup_id')}\n\n"
+                        f"FVG Zone: {round(fvg_bottom, 2)} - {round(fvg_top, 2)}\n"
+                        f"Stages: {', '.join(str(item) for item in staged_prices)}\n"
+                        f"Lot per Stage: {stage_lot}\n"
+                        f"Total Planned Lot: {total_planned_lot}\n"
+                        f"SL with Buffer: {staged_trade_plan.get('stop_loss')}\n"
+                        f"TP: {trade_plan.get('take_profit')}"
+                    )
+
+                    return current_candle_time
 
             if ENABLE_SPLIT_DELAYED_ENTRY:
                 immediate_lot, delayed_lot = split_lot_for_delayed_entry(

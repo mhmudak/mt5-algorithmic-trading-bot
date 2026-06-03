@@ -415,6 +415,12 @@ class ExecutionEngine:
         setup["delayed_entry_started_at"] = datetime.utcnow()
         setup["expires_at"] = datetime.utcnow() + timedelta(minutes=expiry_minutes)
 
+    def mark_wait_fvg_staged_entry(self, setup, stages, expiry_minutes):
+        setup["state"] = "WAIT_FVG_STAGED_ENTRY"
+        setup["wait_reason"] = "Waiting for FVG staged entries"
+        setup["fvg_staged_entries"] = stages
+        setup["fvg_staged_started_at"] = datetime.utcnow()
+        setup["expires_at"] = datetime.utcnow() + timedelta(minutes=expiry_minutes)
 
     def get_wait_delayed_entry_setups(self):
         valid_setups = []
@@ -426,6 +432,22 @@ class ExecutionEngine:
             if datetime.utcnow() > setup["expires_at"]:
                 setup["state"] = "EXPIRED"
                 setup["wait_reason"] = "Delayed entry setup expired"
+                continue
+
+            valid_setups.append(setup)
+
+        return valid_setups
+    
+    def get_wait_fvg_staged_entry_setups(self):
+        valid_setups = []
+
+        for setup in self.active_setups:
+            if setup.get("state") != "WAIT_FVG_STAGED_ENTRY":
+                continue
+
+            if datetime.utcnow() > setup["expires_at"]:
+                setup["state"] = "EXPIRED"
+                setup["wait_reason"] = "FVG staged entry setup expired"
                 continue
 
             valid_setups.append(setup)
