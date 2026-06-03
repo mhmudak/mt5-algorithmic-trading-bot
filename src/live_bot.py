@@ -171,6 +171,8 @@ from config.settings import (
     MTF_CONFLICT_REQUIRE_SHADOW_TRADE_PLAN,
     MTF_CONFLICT_REQUIRE_SHADOW_RR_FOR_NORMAL_EXECUTION,
     MTF_CONFLICT_REQUIRE_SHADOW_RR_FOR_SCALP,
+    MTF_CONFLICT_RETRACE_FIRST_STRATEGIES,
+    MTF_CONFLICT_TRACK_ONLY_STRATEGIES,
 )
 
 from src.candidate_rejection_recovery import (
@@ -1286,6 +1288,20 @@ def continuation_requires_retrace_first(strategy_name, entry_model, rr_value):
 
     return float(rr_value) < CONTINUATION_SAFETY_MIN_IMMEDIATE_RR
 
+def get_mtf_conflict_strategy_mode(strategy):
+    strategy_key = str(strategy or "").upper()
+
+    if strategy_key in MTF_CONFLICT_TRACK_ONLY_STRATEGIES:
+        return "TRACK_ONLY"
+
+    if strategy_key in MTF_CONFLICT_RETRACE_FIRST_STRATEGIES:
+        return "RETRACE_FIRST"
+
+    if strategy_key in MTF_CONFLICT_SOFT_EXECUTION_STRATEGIES:
+        return "SOFT_EXECUTION"
+
+    return "TRACK_ONLY"
+
 def is_mtf_conflict_rejection(reason):
     return str(reason or "").lower().startswith("mtf_conflict")
 
@@ -1353,7 +1369,15 @@ def mtf_conflict_soft_execution_allowed(
 
     strategy = str(candidate.get("strategy", "") or "").upper()
 
-    if strategy not in MTF_CONFLICT_SOFT_EXECUTION_STRATEGIES:
+    strategy_mode = get_mtf_conflict_strategy_mode(strategy)
+
+    if strategy_mode == "TRACK_ONLY":
+        return False, "track_only_strategy"
+
+    if strategy_mode == "RETRACE_FIRST":
+        return False, "retrace_first_required"
+
+    if strategy_mode != "SOFT_EXECUTION":
         return False, "strategy_not_allowed"
 
     try:
@@ -1569,6 +1593,23 @@ def process_mtf_conflict_candidate(
         required_rr=required_rr,
         execution_mode=execution_mode,
     )
+    
+    strategy_mode = get_mtf_conflict_strategy_mode(strategy)
+
+    recovery_registered = False
+
+    if strategy_mode == "RETRACE_FIRST":
+        recovery_registered = register_rejected_candidate_for_recovery(
+            symbol=SYMBOL,
+            signal=signal,
+            strategy=strategy,
+            score=candidate.get("score", 0),
+            reason_type="MTF_CONFLICT_RETRACE_FIRST",
+            rejection_reason=rejection_reason,
+            signal_data=candidate,
+            required_rr=required_rr,
+            current_rr=shadow_rr,
+        )
 
     register_mtf_conflict_opportunity(
         symbol=SYMBOL,
@@ -1607,6 +1648,8 @@ def process_mtf_conflict_candidate(
         reason=rejection_reason,
         extra={
             "mtf_bias": mtf_bias,
+            "strategy_mode": strategy_mode,
+            "recovery_registered": recovery_registered,
             "mtf_conflict_mode": execution_mode,
             "price_at_rejection": price_at_rejection,
             "shadow_entry": shadow_trade_plan.get("entry_price") if shadow_trade_plan else None,
@@ -1797,8 +1840,30 @@ def process_mtf_conflict_candidate(
             "shadow_required_rr": required_rr,
         },
     )
+    
+    logger.warning(
+        f"[MTF CONFLICT] Calling execute_trade | "
+        f"source_setup_id={setup_id} "
+        f"exec_setup_id={mtf_trade_plan.get('setup_id')} "
+        f"source_strategy={strategy} "
+        f"exec_strategy={mtf_trade_plan.get('strategy')} "
+        f"signal={signal} "
+        f"mode={execution_mode} "
+        f"entry={mtf_trade_plan.get('entry_price')} "
+        f"sl={mtf_trade_plan.get('stop_loss')} "
+        f"tp={mtf_trade_plan.get('take_profit')} "
+        f"lot={mtf_trade_plan.get('lot')} "
+        f"rr={mtf_rr}"
+    )
 
     execution_result = execute_trade(signal, mtf_trade_plan, SYMBOL)
+    
+    logger.warning(
+        f"[MTF CONFLICT] execute_trade result | "
+        f"source_setup_id={setup_id} "
+        f"exec_setup_id={mtf_trade_plan.get('setup_id')} "
+        f"result={execution_result}"
+    )
 
     if execution_result:
         mark_mtf_conflict_opportunity_executed(

@@ -193,7 +193,7 @@ def mark_mtf_conflict_opportunity_failed(setup_id, reason):
     if setup_id not in entries:
         return
 
-    entries[setup_id]["status"] = "EXECUTION_FAILED"
+    entries[setup_id]["status"] = "TRACKING_EXECUTION_FAILED"
     entries[setup_id]["failed_at"] = datetime.now().isoformat()
     entries[setup_id]["failure_reason"] = reason
 
@@ -216,7 +216,7 @@ def update_mtf_conflict_opportunities(symbol):
         if item.get("symbol") != symbol:
             continue
 
-        if item.get("status") != "TRACKING":
+        if item.get("status") not in ["TRACKING", "TRACKING_EXECUTION_FAILED"]:
             continue
 
         try:
