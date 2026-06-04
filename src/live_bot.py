@@ -197,6 +197,10 @@ from config.settings import (
     ORB_TICK_BREAKOUT_MIN_DISTANCE,
     ORB_TICK_BREAKOUT_MIN_RR,
     ORB_TICK_BREAKOUT_REQUIRE_M5_CONFIRMATION,
+    ENABLE_CANDIDATE_REJECTION_TELEGRAM_ALERTS,
+    TELEGRAM_NOTIFY_CANDIDATE_REJECTED_LOW_RR,
+    TELEGRAM_NOTIFY_CANDIDATE_RECOVERY_INVALIDATED,
+    TELEGRAM_NOTIFY_GENERIC_CANDIDATE_REJECTED,
 )
 
 from src.candidate_rejection_recovery import (
@@ -568,7 +572,7 @@ def get_strategy_selection_priority(strategy_name, market_condition):
         "BREAKER_BLOCK": 4,
         "ORDER_BLOCK": 4,
         "FVG": 3,
-        "FVG_CE_MITIGATION": 3,
+        "FVG_CE_MITIGATION": 2,
         "LIQUIDITY_TRAP": 4,
         "FAILED_BREAKOUT_REVERSAL": 4,
         "FAILED_FVG_REVERSAL": 4,
@@ -3468,6 +3472,23 @@ def process_candidate_rejection_recovery_setups(
                     "reason_type": reason_type,
                 },
             )
+            
+            if (
+                ENABLE_CANDIDATE_REJECTION_TELEGRAM_ALERTS
+                and TELEGRAM_NOTIFY_CANDIDATE_RECOVERY_INVALIDATED
+            ):
+                send_telegram_message(
+                    f"🛑 Candidate Recovery Invalidated\n"
+                    f"Symbol: {SYMBOL}\n"
+                    f"Strategy: {strategy_name}\n"
+                    f"Signal: {signal}\n"
+                    f"Setup ID: {setup_id}\n"
+                    f"Recovery ID: {recovery_id}\n\n"
+                    f"Reason: {consumed_reason}\n"
+                    f"Current Price: {current_recovery_price}\n"
+                    f"Original TP: {signal_data.get('tp_reference') or signal_data.get('take_profit') or signal_data.get('tp')}\n"
+                    f"Original SL: {signal_data.get('sl_reference') or signal_data.get('stop_loss') or signal_data.get('sl')}"
+                )
 
             continue
 
@@ -4594,6 +4615,19 @@ def process_cycle(last_processed_candle_time):
                     market_condition=market_condition,
                     reason=rejection_reason,
                 )
+                
+                if (
+                    ENABLE_CANDIDATE_REJECTION_TELEGRAM_ALERTS
+                    and TELEGRAM_NOTIFY_GENERIC_CANDIDATE_REJECTED
+                ):
+                    send_telegram_message(
+                        f"🚫 Candidate Rejected\n"
+                        f"Symbol: {SYMBOL}\n"
+                        f"Strategy: {candidate.get('strategy')}\n"
+                        f"Signal: {candidate.get('signal')}\n"
+                        f"Score: {candidate.get('score')}\n\n"
+                        f"Reason: {rejection_reason}"
+                    )
 
                 continue
 
@@ -4685,6 +4719,23 @@ def process_cycle(last_processed_candle_time):
                     required_rr=min_rr_required,
                     reason=rejection_reason,
                 )
+                
+                if (
+                    ENABLE_CANDIDATE_REJECTION_TELEGRAM_ALERTS
+                    and TELEGRAM_NOTIFY_CANDIDATE_REJECTED_LOW_RR
+                ):
+                    send_telegram_message(
+                        f"⚠️ Candidate Rejected — Low RR\n"
+                        f"Symbol: {SYMBOL}\n"
+                        f"Strategy: {candidate_strategy}\n"
+                        f"Signal: {candidate_signal}\n"
+                        f"Setup ID: {validated_candidate.get('setup_id', 'N/A')}\n\n"
+                        f"Entry: {candidate_trade_plan.get('entry_price')}\n"
+                        f"SL: {candidate_trade_plan.get('stop_loss')}\n"
+                        f"TP: {candidate_trade_plan.get('take_profit')}\n"
+                        f"RR: {rr_value} / Required: {min_rr_required}\n\n"
+                        f"Action: moved to candidate recovery if eligible."
+                    )
                 
                 register_rejected_candidate_for_recovery(
                     symbol=SYMBOL,

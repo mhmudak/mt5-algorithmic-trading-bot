@@ -470,7 +470,7 @@ SMC_MIN_FINAL_SCORE = 88
 # =========================
 # Strategy Toggles
 # =========================
-ENABLE_FCR_M1_FVG = False # may turn it off
+ENABLE_FCR_M1_FVG = True # may turn it off
 
 # =========================
 # Session Engine
@@ -490,7 +490,7 @@ SESSION_NEWYORK_END = 21
 # =========================
 # WaveTrend Pivot M5 Strategy
 # =========================
-ENABLE_WAVETREND_PIVOT_M5 = False # may turn it off
+ENABLE_WAVETREND_PIVOT_M5 = True # may turn it off
 WAVETREND_PIVOT_TIMEFRAME = mt5.TIMEFRAME_M5
 WAVETREND_PIVOT_BARS = 600
 
@@ -1216,3 +1216,14 @@ ORB_TICK_BREAKOUT_MIN_DISTANCE = 0.30
 ORB_TICK_BREAKOUT_MIN_RR = 2.0
 
 ORB_TICK_BREAKOUT_REQUIRE_M5_CONFIRMATION = False
+
+# =========================
+# Candidate Rejection Notifications
+# =========================
+ENABLE_CANDIDATE_REJECTION_TELEGRAM_ALERTS = True
+
+TELEGRAM_NOTIFY_CANDIDATE_REJECTED_LOW_RR = True
+TELEGRAM_NOTIFY_CANDIDATE_RECOVERY_INVALIDATED = True
+
+# Keep this False unless you want a lot of noise.
+TELEGRAM_NOTIFY_GENERIC_CANDIDATE_REJECTED = False
