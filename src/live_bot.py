@@ -191,6 +191,12 @@ from config.settings import (
     ENABLE_LOW_RR_RECOVERY_HIGH_SLIPPAGE_RETRY,
     HIGH_SLIPPAGE_RETRY_EXPIRY_MINUTES,
     HIGH_SLIPPAGE_RETRY_SOURCES,
+    ENABLE_ORB_TICK_BREAKOUT_WATCHER,
+    ORB_TICK_BREAKOUT_WATCH_STRATEGIES,
+    ORB_TICK_BREAKOUT_EXPIRY_MINUTES,
+    ORB_TICK_BREAKOUT_MIN_DISTANCE,
+    ORB_TICK_BREAKOUT_MIN_RR,
+    ORB_TICK_BREAKOUT_REQUIRE_M5_CONFIRMATION,
 )
 
 from src.candidate_rejection_recovery import (
@@ -1119,6 +1125,8 @@ def is_setup_id_already_active(setup_id):
         "READY",
         "WAIT_BETTER_ENTRY",
         "WAIT_DELAYED_ENTRY",
+        "WAIT_FVG_STAGED_ENTRY",
+        "WAIT_ORB_TICK_BREAKOUT",
         "EXECUTED",
     }
 
@@ -1476,6 +1484,56 @@ def apply_extra_sl_buffer(signal, stop_loss, buffer_value):
 
     return stop_loss
 
+def should_use_orb_tick_breakout_watcher(strategy_name, signal_data):
+    if not ENABLE_ORB_TICK_BREAKOUT_WATCHER:
+        return False
+
+    strategy_key = str(strategy_name or "").upper()
+
+    if strategy_key not in ORB_TICK_BREAKOUT_WATCH_STRATEGIES:
+        return False
+
+    signal = signal_data.get("signal")
+
+    if signal not in ["BUY", "SELL"]:
+        return False
+
+    if signal_data.get("orb_high") is None or signal_data.get("orb_low") is None:
+        return False
+
+    entry_model = str(signal_data.get("entry_model", "") or "").upper()
+
+    return entry_model in ["WAIT_RETEST", "BREAKOUT", "FAST_CONTINUATION"]
+
+
+def orb_tick_breakout_ready(signal, tick, signal_data, min_distance):
+    orb_high = signal_data.get("orb_high")
+    orb_low = signal_data.get("orb_low")
+
+    if orb_high is None or orb_low is None:
+        return False, None, None, None
+
+    if signal == "BUY":
+        current_price = float(tick.ask)
+        breakout_level = float(orb_high)
+        breakout_distance = current_price - breakout_level
+
+        if breakout_distance >= float(min_distance):
+            return True, current_price, breakout_level, round(breakout_distance, 2)
+
+        return False, current_price, breakout_level, round(breakout_distance, 2)
+
+    if signal == "SELL":
+        current_price = float(tick.bid)
+        breakout_level = float(orb_low)
+        breakout_distance = breakout_level - current_price
+
+        if breakout_distance >= float(min_distance):
+            return True, current_price, breakout_level, round(breakout_distance, 2)
+
+        return False, current_price, breakout_level, round(breakout_distance, 2)
+
+    return False, None, None, None
 
 def get_fvg_zone(candidate):
     fvg_top = (
@@ -2701,6 +2759,220 @@ def process_wait_better_entry_setups(df, tick, account_info, market_condition, s
 
     return False
 
+def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_condition, session_name):
+    orb_setups = execution_engine.get_wait_orb_tick_breakout_setups()
+
+    if not orb_setups:
+        return False
+
+    orb_setups = sorted(
+        orb_setups,
+        key=lambda setup: setup["data"].get("score", 0),
+        reverse=True,
+    )
+
+    for setup in orb_setups:
+        setup_data = setup.get("data", {})
+        signal = setup_data.get("signal")
+        strategy_name = setup_data.get("strategy")
+        setup_id = setup_data.get("setup_id", "N/A")
+
+        if signal not in ["BUY", "SELL"]:
+            continue
+
+        min_distance = setup.get(
+            "orb_tick_breakout_min_distance",
+            ORB_TICK_BREAKOUT_MIN_DISTANCE,
+        )
+
+        breakout_ready, current_price, breakout_level, breakout_distance = orb_tick_breakout_ready(
+            signal=signal,
+            tick=tick,
+            signal_data=setup_data,
+            min_distance=min_distance,
+        )
+
+        if not breakout_ready:
+            logger.info(
+                f"[ORB TICK WATCHER] Not ready | "
+                f"setup_id={setup_id} strategy={strategy_name} signal={signal} "
+                f"current={current_price} level={breakout_level} "
+                f"distance={breakout_distance} required={min_distance}"
+            )
+            continue
+
+        if ORB_TICK_BREAKOUT_REQUIRE_M5_CONFIRMATION:
+            m5_confirmed, m5_reason = extra_entry_confirmation_ok(signal)
+
+            if not m5_confirmed:
+                logger.info(
+                    f"[ORB TICK WATCHER] M5 confirmation failed | "
+                    f"setup_id={setup_id} signal={signal} reason={m5_reason}"
+                )
+                continue
+
+        trade_plan = calculate_trade_plan(
+            df=df,
+            signal=signal,
+            tick=tick,
+            account_balance=account_info.balance,
+            signal_data=setup_data,
+        )
+
+        if trade_plan is None:
+            logger.info(
+                f"[ORB TICK WATCHER] Trade plan invalid | "
+                f"setup_id={setup_id} strategy={strategy_name}"
+            )
+            continue
+
+        trade_plan["score"] = setup_data.get("score", 0)
+        trade_plan["strategy"] = strategy_name
+        trade_plan["market_condition"] = market_condition
+        trade_plan["reason"] = (
+            f"{setup_data.get('reason', 'N/A')} | "
+            f"ORB_TICK_BREAKOUT distance={breakout_distance}"
+        )
+        trade_plan["session"] = setup_data.get("session", session_name)
+        trade_plan["setup_id"] = setup_id
+
+        rr_value = calculate_rr_value(trade_plan)
+        required_rr = setup.get("orb_tick_breakout_min_rr", ORB_TICK_BREAKOUT_MIN_RR)
+
+        if rr_value is None or rr_value < required_rr:
+            logger.info(
+                f"[ORB TICK WATCHER] RR too low | "
+                f"setup_id={setup_id} rr={rr_value} required={required_rr}"
+            )
+            continue
+
+        trade_allowed, guard_reason = check_trade_guard(signal, tick)
+
+        if not trade_allowed:
+            logger.info(
+                f"[ORB TICK WATCHER] Guard blocked | "
+                f"setup_id={setup_id} reason={guard_reason}"
+            )
+            continue
+
+        news_blocked, news_reason = is_news_blackout_active()
+
+        if news_blocked:
+            logger.info(
+                f"[ORB TICK WATCHER] News blocked | "
+                f"setup_id={setup_id} reason={news_reason}"
+            )
+            continue
+
+        time_blocked, time_reason = is_trading_blackout_active()
+
+        if time_blocked:
+            logger.info(
+                f"[ORB TICK WATCHER] Time blocked | "
+                f"setup_id={setup_id} reason={time_reason}"
+            )
+            continue
+
+        if is_trade_blocked_by_execution_memory(
+            trade_plan=trade_plan,
+            signal_data=setup_data,
+            setup=setup,
+            strategy_name=strategy_name,
+            signal=signal,
+        ):
+            return True
+
+        send_telegram_message(
+            f"🔥 ORB Tick Breakout Executing\n"
+            f"Symbol: {SYMBOL}\n"
+            f"Strategy: {strategy_name}\n"
+            f"Signal: {signal}\n"
+            f"Setup ID: {setup_id}\n\n"
+            f"Current: {current_price}\n"
+            f"Breakout Level: {breakout_level}\n"
+            f"Distance: {breakout_distance}\n"
+            f"Entry: {trade_plan['entry_price']}\n"
+            f"SL: {trade_plan['stop_loss']}\n"
+            f"TP: {trade_plan['take_profit']}\n"
+            f"RR: {rr_value} / Required: {required_rr}"
+        )
+
+        log_setup_event(
+            setup_id=setup_id,
+            event="ORB_TICK_BREAKOUT_EXECUTION_ATTEMPT",
+            strategy=strategy_name,
+            signal=signal,
+            entry_model=setup_data.get("entry_model"),
+            score=setup_data.get("score"),
+            session=session_name,
+            market_condition=market_condition,
+            entry=trade_plan.get("entry_price"),
+            sl=trade_plan.get("stop_loss"),
+            tp=trade_plan.get("take_profit"),
+            rr=rr_value,
+            required_rr=required_rr,
+            reason="orb tick breakout watcher",
+            extra={
+                "current_price": current_price,
+                "breakout_level": breakout_level,
+                "breakout_distance": breakout_distance,
+            },
+        )
+
+        execution_result = execute_trade(signal, trade_plan, SYMBOL)
+
+        if execution_result:
+            execution_engine.mark_executed(setup)
+
+            log_setup_event(
+                setup_id=setup_id,
+                event="ORB_TICK_BREAKOUT_EXECUTED",
+                strategy=strategy_name,
+                signal=signal,
+                entry_model=setup_data.get("entry_model"),
+                score=setup_data.get("score"),
+                session=session_name,
+                market_condition=market_condition,
+                entry=trade_plan.get("entry_price"),
+                sl=trade_plan.get("stop_loss"),
+                tp=trade_plan.get("take_profit"),
+                rr=rr_value,
+                required_rr=required_rr,
+                reason="orb tick breakout executed",
+            )
+
+            return True
+
+        if hasattr(execution_engine, "mark_execution_failed"):
+            execution_engine.mark_execution_failed(
+                setup,
+                "ORB tick breakout execution failed",
+            )
+        else:
+            setup["state"] = "EXECUTION_FAILED"
+            setup["wait_reason"] = "ORB tick breakout execution failed"
+
+        log_setup_event(
+            setup_id=setup_id,
+            event="ORB_TICK_BREAKOUT_EXECUTION_FAILED",
+            strategy=strategy_name,
+            signal=signal,
+            entry_model=setup_data.get("entry_model"),
+            score=setup_data.get("score"),
+            session=session_name,
+            market_condition=market_condition,
+            entry=trade_plan.get("entry_price"),
+            sl=trade_plan.get("stop_loss"),
+            tp=trade_plan.get("take_profit"),
+            rr=rr_value,
+            required_rr=required_rr,
+            reason="execute_trade returned False",
+        )
+
+        return True
+
+    return False
+
 def register_execution_failure_retry_as_better_entry(
     *,
     signal_data,
@@ -3430,6 +3702,20 @@ def process_cycle(last_processed_candle_time):
     # =========================
     if ENABLE_FVG_ZONE_STAGED_ENTRY:
         if process_wait_fvg_staged_entry_setups(
+            df=df,
+            tick=tick,
+            account_info=account_info,
+            market_condition="PENDING",
+            session_name="PENDING",
+        ):
+            return current_candle_time
+        
+    # =========================
+    # ORB TICK BREAKOUT WATCHER
+    # Runs every loop, not only on a new M15 candle.
+    # =========================
+    if ENABLE_ORB_TICK_BREAKOUT_WATCHER:
+        if process_wait_orb_tick_breakout_setups(
             df=df,
             tick=tick,
             account_info=account_info,
@@ -5487,6 +5773,51 @@ def process_cycle(last_processed_candle_time):
                 entry_model=selected_signal_data.get("entry_model"),
                 rr_value=rr_value,
             )
+            
+            if should_use_orb_tick_breakout_watcher(strategy_name, selected_signal_data):
+                execution_engine.mark_wait_orb_tick_breakout(
+                    setup=best_setup,
+                    expiry_minutes=ORB_TICK_BREAKOUT_EXPIRY_MINUTES,
+                    min_rr=ORB_TICK_BREAKOUT_MIN_RR,
+                    min_distance=ORB_TICK_BREAKOUT_MIN_DISTANCE,
+                )
+
+                log_setup_event(
+                    setup_id=selected_signal_data.get("setup_id"),
+                    event="ORB_TICK_BREAKOUT_WATCHING",
+                    strategy=strategy_name,
+                    signal=signal,
+                    entry_model=selected_signal_data.get("entry_model"),
+                    score=score,
+                    session=session_name,
+                    market_condition=market_condition,
+                    entry=trade_plan.get("entry_price"),
+                    sl=trade_plan.get("stop_loss"),
+                    tp=trade_plan.get("take_profit"),
+                    rr=rr_value,
+                    required_rr=ORB_TICK_BREAKOUT_MIN_RR,
+                    reason="ORB tick breakout watcher registered",
+                    extra={
+                        "orb_high": selected_signal_data.get("orb_high"),
+                        "orb_low": selected_signal_data.get("orb_low"),
+                        "expiry_minutes": ORB_TICK_BREAKOUT_EXPIRY_MINUTES,
+                        "min_distance": ORB_TICK_BREAKOUT_MIN_DISTANCE,
+                    },
+                )
+
+                send_telegram_message(
+                    f"⏳ ORB Tick Breakout Watcher Registered\n"
+                    f"Symbol: {SYMBOL}\n"
+                    f"Strategy: {strategy_name}\n"
+                    f"Signal: {signal}\n"
+                    f"Setup ID: {selected_signal_data.get('setup_id')}\n\n"
+                    f"ORB High: {selected_signal_data.get('orb_high')}\n"
+                    f"ORB Low: {selected_signal_data.get('orb_low')}\n"
+                    f"Min Distance: {ORB_TICK_BREAKOUT_MIN_DISTANCE}\n"
+                    f"Expiry: {ORB_TICK_BREAKOUT_EXPIRY_MINUTES} minutes"
+                )
+
+                return current_candle_time
 
             if continuation_retrace_first:
                 execution_engine.mark_wait_delayed_entry(

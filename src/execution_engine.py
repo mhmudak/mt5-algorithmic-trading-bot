@@ -487,6 +487,30 @@ class ExecutionEngine:
             valid_setups.append(setup)
 
         return valid_setups
+    
+    def mark_wait_orb_tick_breakout(self, setup, expiry_minutes, min_rr, min_distance):
+        setup["state"] = "WAIT_ORB_TICK_BREAKOUT"
+        setup["wait_reason"] = "Waiting for ORB tick breakout continuation"
+        setup["orb_tick_breakout_started_at"] = datetime.utcnow()
+        setup["orb_tick_breakout_min_rr"] = min_rr
+        setup["orb_tick_breakout_min_distance"] = min_distance
+        setup["expires_at"] = datetime.utcnow() + timedelta(minutes=expiry_minutes)
+
+    def get_wait_orb_tick_breakout_setups(self):
+        valid_setups = []
+
+        for setup in self.active_setups:
+            if setup.get("state") != "WAIT_ORB_TICK_BREAKOUT":
+                continue
+
+            if datetime.utcnow() > setup["expires_at"]:
+                setup["state"] = "EXPIRED"
+                setup["wait_reason"] = "ORB tick breakout watcher expired"
+                continue
+
+            valid_setups.append(setup)
+
+        return valid_setups
 
     def mark_executed(self, setup):
         setup["state"] = "EXECUTED"
