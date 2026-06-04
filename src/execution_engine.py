@@ -390,6 +390,40 @@ class ExecutionEngine:
         setup["better_entry_started_at"] = datetime.utcnow()
         setup["expires_at"] = datetime.utcnow() + timedelta(minutes=expiry_minutes)
 
+    def create_wait_better_entry_retry(
+        self,
+        signal_data,
+        trade_plan,
+        min_rr_required,
+        current_rr,
+        expiry_minutes,
+        source,
+        reason,
+    ):
+        setup = {
+            "strategy": signal_data.get("strategy"),
+            "signal": signal_data.get("signal"),
+            "entry_model": signal_data.get("entry_model"),
+            "data": signal_data,
+            "state": "WAIT_BETTER_ENTRY",
+            "wait_reason": (
+                f"Retry waiting for better RR | source={source} "
+                f"current={current_rr} required={min_rr_required} reason={reason}"
+            ),
+            "better_entry_min_rr": min_rr_required,
+            "better_entry_initial_rr": current_rr,
+            "better_entry_started_at": datetime.utcnow(),
+            "expires_at": datetime.utcnow() + timedelta(minutes=expiry_minutes),
+            "retry_source": source,
+            "retry_reason": reason,
+            "retry_trade_plan": trade_plan,
+            "retry_expected_entry": trade_plan.get("entry_price"),
+        }
+
+        self.active_setups.append(setup)
+
+        return setup
+
     def get_wait_better_entry_setups(self):
         valid_setups = []
 

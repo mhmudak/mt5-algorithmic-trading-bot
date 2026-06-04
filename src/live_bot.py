@@ -186,6 +186,11 @@ from config.settings import (
     STRATEGY_EXTRA_SL_BUFFER,
     LOG_STRATEGY_SESSION_BLOCKS_TO_SHEETS,
     LOG_OPENING_BLACKOUT_BLOCKS_TO_SHEETS,
+    ENABLE_TICK_LEVEL_RECOVERY_RETRY,
+    ENABLE_MTF_CONFLICT_HIGH_SLIPPAGE_RETRY,
+    ENABLE_LOW_RR_RECOVERY_HIGH_SLIPPAGE_RETRY,
+    HIGH_SLIPPAGE_RETRY_EXPIRY_MINUTES,
+    HIGH_SLIPPAGE_RETRY_SOURCES,
 )
 
 from src.candidate_rejection_recovery import (
@@ -681,6 +686,32 @@ def extra_entry_confirmation_ok(signal):
         return False, "m5_sell_not_confirmed"
 
     return False, "invalid_signal"
+
+def retry_entry_is_equal_or_better(signal, tick, expected_entry):
+    if expected_entry is None:
+        return True, None, None
+
+    expected_entry = float(expected_entry)
+
+    if signal == "BUY":
+        current_price = float(tick.ask)
+        improvement = expected_entry - current_price
+
+        if current_price <= expected_entry:
+            return True, current_price, round(improvement, 2)
+
+        return False, current_price, round(improvement, 2)
+
+    if signal == "SELL":
+        current_price = float(tick.bid)
+        improvement = current_price - expected_entry
+
+        if current_price >= expected_entry:
+            return True, current_price, round(improvement, 2)
+
+        return False, current_price, round(improvement, 2)
+
+    return False, None, None
 
 def split_lot_for_delayed_entry(symbol, total_lot, immediate_pct):
     symbol_info = mt5.symbol_info(symbol)
@@ -2275,6 +2306,40 @@ def process_mtf_conflict_candidate(
 
         return True
 
+    if ENABLE_MTF_CONFLICT_HIGH_SLIPPAGE_RETRY:
+        candidate["setup_id"] = setup_id
+        candidate["strategy"] = strategy
+        candidate["signal"] = signal
+        candidate["entry_model"] = entry_model
+
+        retry_setup = register_execution_failure_retry_as_better_entry(
+            signal_data=candidate,
+            trade_plan=mtf_trade_plan,
+            source="MTF_CONFLICT",
+            min_rr_required=required_rr or 1.0,
+            current_rr=mtf_rr,
+            reason=f"execute_trade returned False during {execution_mode}",
+            expiry_minutes=HIGH_SLIPPAGE_RETRY_EXPIRY_MINUTES,
+        )
+
+        if retry_setup:
+            mark_mtf_conflict_opportunity_failed(
+                setup_id,
+                "Moved to WAIT_BETTER_ENTRY retry after execution failure",
+            )
+
+            send_telegram_message(
+                f"⏳ MTF Conflict Moved to Better Entry Retry\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Strategy: {strategy}\n"
+                f"Signal: {signal}\n"
+                f"Setup ID: {setup_id}\n"
+                f"Mode: {execution_mode}\n"
+                f"RR: {mtf_rr}"
+            )
+
+            return True
+
     mark_mtf_conflict_opportunity_failed(
         setup_id,
         "execute_trade returned False",
@@ -2519,6 +2584,26 @@ def process_wait_better_entry_setups(df, tick, account_info, market_condition, s
         trade_plan["reason"] = setup_data.get("reason", "N/A")
         trade_plan["session"] = setup_data.get("session", session_name)
         trade_plan["setup_id"] = setup_data.get("setup_id", "N/A")
+        
+        retry_source = setup.get("retry_source")
+
+        if retry_source in HIGH_SLIPPAGE_RETRY_SOURCES:
+            expected_entry = setup.get("retry_expected_entry")
+
+            price_ok, retry_current_price, improvement = retry_entry_is_equal_or_better(
+                signal=signal,
+                tick=tick,
+                expected_entry=expected_entry,
+            )
+
+            if not price_ok:
+                logger.info(
+                    f"[BETTER ENTRY] Retry waiting for equal/better price | "
+                    f"source={retry_source} strategy={strategy_name} "
+                    f"signal={signal} current={retry_current_price} "
+                    f"expected={expected_entry} improvement={improvement}"
+                )
+                continue
 
         rr_value = calculate_rr_value(trade_plan)
 
@@ -2615,6 +2700,72 @@ def process_wait_better_entry_setups(df, tick, account_info, market_condition, s
         return True
 
     return False
+
+def register_execution_failure_retry_as_better_entry(
+    *,
+    signal_data,
+    trade_plan,
+    source,
+    min_rr_required,
+    current_rr,
+    reason,
+    expiry_minutes=None,
+):
+    if not ENABLE_TICK_LEVEL_RECOVERY_RETRY:
+        return None
+
+    if source not in HIGH_SLIPPAGE_RETRY_SOURCES:
+        return None
+
+    if trade_plan is None:
+        return None
+
+    expiry = expiry_minutes or HIGH_SLIPPAGE_RETRY_EXPIRY_MINUTES
+
+    signal_data["setup_id"] = signal_data.get("setup_id") or trade_plan.get("setup_id")
+    signal_data["strategy"] = signal_data.get("strategy") or trade_plan.get("strategy")
+    signal_data["signal"] = signal_data.get("signal") or trade_plan.get("signal")
+    signal_data["retry_trade_plan"] = trade_plan
+    signal_data["retry_source"] = source
+
+    retry_setup = execution_engine.create_wait_better_entry_retry(
+        signal_data=signal_data,
+        trade_plan=trade_plan,
+        min_rr_required=min_rr_required,
+        current_rr=current_rr,
+        expiry_minutes=expiry,
+        source=source,
+        reason=reason,
+    )
+
+    logger.info(
+        f"[TICK RECOVERY RETRY] Registered WAIT_BETTER_ENTRY | "
+        f"source={source} setup_id={signal_data.get('setup_id')} "
+        f"rr={current_rr}/{min_rr_required} expiry={expiry}m reason={reason}"
+    )
+
+    log_setup_event(
+        setup_id=signal_data.get("setup_id"),
+        event="TICK_RECOVERY_RETRY_WAIT_BETTER_ENTRY",
+        strategy=signal_data.get("strategy"),
+        signal=signal_data.get("signal"),
+        entry_model=signal_data.get("entry_model"),
+        score=signal_data.get("score"),
+        entry=trade_plan.get("entry_price"),
+        sl=trade_plan.get("stop_loss"),
+        tp=trade_plan.get("take_profit"),
+        rr=current_rr,
+        required_rr=min_rr_required,
+        reason=f"{source}: {reason}",
+        extra={
+            "source": source,
+            "expiry_minutes": expiry,
+            "trade_plan": trade_plan,
+        },
+    )
+
+    return retry_setup
+
 
 def process_wait_delayed_entry_setups(df, tick, account_info, market_condition, session_name):
     delayed_setups = execution_engine.get_wait_delayed_entry_setups()
@@ -3138,6 +3289,37 @@ def process_candidate_rejection_recovery_setups(
             )
 
             return True
+
+        if (
+            reason_type == "LOW_RR"
+            and ENABLE_LOW_RR_RECOVERY_HIGH_SLIPPAGE_RETRY
+        ):
+            retry_setup = register_execution_failure_retry_as_better_entry(
+                signal_data=signal_data,
+                trade_plan=trade_plan,
+                source="LOW_RR_RECOVERY",
+                min_rr_required=min_rr,
+                current_rr=rr_value,
+                reason="execute_trade returned False after LOW_RR recovered",
+                expiry_minutes=HIGH_SLIPPAGE_RETRY_EXPIRY_MINUTES,
+            )
+
+            if retry_setup:
+                mark_recovery_candidate_failed(
+                    recovery_id,
+                    "Moved to WAIT_BETTER_ENTRY retry after execution failure",
+                )
+
+                send_telegram_message(
+                    f"⏳ Low RR Recovery Moved to Better Entry Retry\n"
+                    f"Symbol: {SYMBOL}\n"
+                    f"Strategy: {strategy_name}\n"
+                    f"Signal: {signal}\n"
+                    f"Setup ID: {setup_id}\n"
+                    f"RR: {rr_value} / Required: {min_rr}"
+                )
+
+                return True
 
         mark_recovery_candidate_failed(
             recovery_id,
