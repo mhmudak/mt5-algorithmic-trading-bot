@@ -1115,6 +1115,103 @@ def build_stable_candidate_setup_id(candidate, strategy_name, signal, tick_time)
 
     return f"{prefix}-{signal_key}-{digest}"
 
+def build_structural_execution_key(signal_data, strategy_name, signal):
+    strategy_key = str(strategy_name or signal_data.get("strategy") or "SETUP").upper()
+    signal_key = str(signal or signal_data.get("signal") or "NA").upper()
+
+    identity_keys = [
+        "entry_model",
+        "target_model",
+
+        # ORB / ORB_V00
+        "orb_high",
+        "orb_low",
+
+        # FVG / IFVG
+        "fvg_top",
+        "fvg_bottom",
+        "fvg_mid",
+        "ifvg_top",
+        "ifvg_bottom",
+        "ifvg_mid",
+
+        # OB / structure
+        "ob_high",
+        "ob_low",
+        "breaker_high",
+        "breaker_low",
+
+        # Risk references
+        "sl_reference",
+        "tp_reference",
+    ]
+
+    parts = [strategy_key, signal_key]
+
+    for key in identity_keys:
+        value = signal_data.get(key)
+        normalized = _stable_setup_value(value)
+
+        if normalized is not None:
+            parts.append(f"{key}={normalized}")
+
+    raw = "|".join(str(part) for part in parts)
+
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:14]
+
+    return f"{strategy_key}-{signal_key}-{digest}"
+
+
+def attach_structural_execution_key(setup, signal_data, strategy_name, signal):
+    structural_key = build_structural_execution_key(
+        signal_data=signal_data,
+        strategy_name=strategy_name,
+        signal=signal,
+    )
+
+    signal_data["structural_execution_key"] = structural_key
+
+    if setup is not None:
+        setup["structural_execution_key"] = structural_key
+        setup.setdefault("data", {})
+        setup["data"]["structural_execution_key"] = structural_key
+
+    return structural_key
+
+
+def is_structural_execution_locked(structural_key, current_setup=None):
+    if not structural_key:
+        return False, None, None
+
+    locked_states = {
+        "WAITING",
+        "READY",
+        "WAIT_BETTER_ENTRY",
+        "WAIT_DELAYED_ENTRY",
+        "WAIT_FVG_STAGED_ENTRY",
+        "WAIT_ORB_TICK_BREAKOUT",
+        "EXECUTED",
+    }
+
+    for setup in execution_engine.active_setups:
+        if current_setup is not None and setup is current_setup:
+            continue
+
+        if setup.get("state") not in locked_states:
+            continue
+
+        setup_data = setup.get("data", {})
+        existing_key = (
+            setup.get("structural_execution_key")
+            or setup_data.get("structural_execution_key")
+        )
+
+        if existing_key != structural_key:
+            continue
+
+        return True, setup.get("state"), setup_data.get("setup_id")
+
+    return False, None, None
 
 def is_setup_id_already_active(setup_id):
     if not setup_id or setup_id == "N/A":
@@ -5317,6 +5414,61 @@ def process_cycle(last_processed_candle_time):
             required_rr=min_rr_required,
             reason=reason,
         )
+        
+        structural_key = attach_structural_execution_key(
+            setup=best_setup,
+            signal_data=selected_signal_data,
+            strategy_name=strategy_name,
+            signal=signal,
+        )
+
+        structural_locked, locked_state, locked_setup_id = is_structural_execution_locked(
+            structural_key,
+            current_setup=best_setup,
+        )
+
+        if structural_locked:
+            logger.info(
+                f"[STRUCTURAL EXECUTION LOCK] Blocked duplicate setup | "
+                f"setup_id={selected_signal_data.get('setup_id')} "
+                f"strategy={strategy_name} signal={signal} "
+                f"structural_key={structural_key} "
+                f"locked_state={locked_state} locked_setup_id={locked_setup_id}"
+            )
+
+            if hasattr(execution_engine, "mark_execution_failed"):
+                execution_engine.mark_execution_failed(
+                    best_setup,
+                    f"Duplicate structural setup locked by {locked_setup_id} state={locked_state}",
+                )
+            else:
+                best_setup["state"] = "SKIPPED"
+                best_setup["wait_reason"] = (
+                    f"Duplicate structural setup locked by {locked_setup_id} state={locked_state}"
+                )
+
+            log_setup_event(
+                setup_id=selected_signal_data.get("setup_id"),
+                event="SETUP_STRUCTURAL_EXECUTION_LOCKED",
+                strategy=strategy_name,
+                signal=signal,
+                entry_model=selected_signal_data.get("entry_model"),
+                score=score,
+                session=session_name,
+                market_condition=market_condition,
+                entry=trade_plan.get("entry_price") if trade_plan else None,
+                sl=trade_plan.get("stop_loss") if trade_plan else None,
+                tp=trade_plan.get("take_profit") if trade_plan else None,
+                rr=rr_value,
+                reason=f"duplicate structural setup locked by {locked_setup_id} state={locked_state}",
+                extra={
+                    "structural_execution_key": structural_key,
+                    "locked_state": locked_state,
+                    "locked_setup_id": locked_setup_id,
+                },
+            )
+
+            return current_candle_time
 
         if not best_setup.get("trade_plan_notified"):
             if TELEGRAM_VERBOSE_SIGNALS and not best_setup.get("trade_plan_notified"):
