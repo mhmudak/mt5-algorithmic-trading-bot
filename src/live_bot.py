@@ -550,51 +550,143 @@ def get_strategy_selection_priority(strategy_name, market_condition):
     strategy_name = str(strategy_name or "").upper()
     market_condition = str(market_condition or "").upper()
 
-    ranging_priority = {
-        "RANGE_SWEEP_RECLAIM": 10,
-        "VWAP_RANGE_MEAN_REVERSION": 9,
-        "FAILED_BREAKOUT_REVERSAL": 8,
-        "FAILED_FVG_REVERSAL": 7,
-        "LIQUIDITY_TRAP": 7,
-        "FRACTAL_SWEEP": 5,
-        "VWAP_RECLAIM": 5,
-        "SUPPLY_DEMAND_RETEST": 4,
-        "IFVG_RETEST_CONFLUENCE": 4,
+    trending_priority = {
+        "ORB": 10,
+        "ORB_V00": 9,
+        "SESSION_ORB_RETEST": 8,
+        "WAVETREND_MOMENTUM": 8,
+        "HTF_TREND_PULLBACK": 7,
+        "BREAKER_BLOCK": 6,
+        "RELIEF_RALLY": 5,
+        "ORDER_BLOCK": 5,
+        "OB_FVG_COMBO": 4,
+        "HTF_FIB_CONFLUENCE": 4,
+        "STRUCTURE_LIQUIDITY": 4,
+        "FVG_CE_MITIGATION": 3,
         "MTF_SR_FVG_RECLAIM": 3,
-        "BREAKER_BLOCK": 3,
-        "WAVETREND_PIVOT": 2,
+        "LVN_FVG_RECLAIM": 3,
+        "FVG": 2,
+        "FAILED_BREAKOUT_REVERSAL": 2,
         "FCR_M1_FVG": 2,
+        "TRIANGLE_PENNANT": 2,
+        "FLAG_REFINED": 2,
+        "FLAG": 1,
+        "LIQUIDITY_CANDLE": 1,
+        "SMT_PRO": 1,
+        "SMT": 1,
+        "SNIPER_V2": 1,
+        "STRICT": 1,
+        "FAST": 1,
     }
 
-    default_priority = {
-        "HTF_TREND_PULLBACK": 5,
-        "OB_FVG_COMBO": 5,
-        "BREAKER_BLOCK": 4,
-        "ORDER_BLOCK": 4,
-        "FVG": 3,
-        "FVG_CE_MITIGATION": 2,
-        "LIQUIDITY_TRAP": 4,
-        "FAILED_BREAKOUT_REVERSAL": 4,
-        "FAILED_FVG_REVERSAL": 4,
+    pullback_priority = {
+        "WAVETREND_MOMENTUM": 10,
+        "BREAKER_BLOCK": 9,
+        "HTF_TREND_PULLBACK": 8,
+        "RELIEF_RALLY": 7,
+        "ORDER_BLOCK": 6,
+        "FVG_CE_MITIGATION": 5,
+        "STRUCTURE_LIQUIDITY": 5,
+        "MICRO_SR_SWEEP_RECLAIM": 4,
+        "OB_FVG_COMBO": 4,
+        "HTF_FIB_CONFLUENCE": 4,
+        "MTF_SR_FVG_RECLAIM": 4,
+        "SUPPLY_DEMAND_RETEST": 3,
+        "IFVG_RETEST_CONFLUENCE": 3,
+        "FVG": 2,
+        "WAVETREND_PIVOT": 2,
+        "LIQUIDITY_CANDLE": 1,
+        "SNIPER_V2": 1,
+        "STRICT": 1,
     }
+
+    ranging_priority = {
+        "BREAKER_BLOCK": 10,
+        "FAILED_FVG_REVERSAL": 9,
+        "FAILED_BREAKOUT_REVERSAL": 8,
+        "LIQUIDITY_TRAP": 7,
+        "VWAP_RANGE_MEAN_REVERSION": 6,
+        "VWAP_RECLAIM": 5,
+        "HEAD_SHOULDERS": 5,
+        "ORDER_BLOCK": 4,
+        "STRUCTURE_LIQUIDITY": 4,
+        "FRACTAL_SWEEP": 4,
+        "SUPPLY_DEMAND_RETEST": 3,
+        "IFVG_RETEST_CONFLUENCE": 3,
+        "MTF_SR_FVG_RECLAIM": 3,
+        "EXTREME_SWEEP_RECLAIM": 3,
+        "CRT_TBS": 3,
+        "LIQUIDITY_POOL_OB": 3,
+        "AMD_FVG": 2,
+        "MICRO_SR_SWEEP_RECLAIM": 2,
+        "WAVETREND_PIVOT": 2,
+        "LIQUIDITY_SWEEP": 2,
+        "LIQUIDITY_CANDLE": 2,
+        "SMT_PRO": 1,
+        "SMT": 1,
+        "FAST": 1,
+        "SNIPER_V2": 1,
+        "RANGE_SWEEP_RECLAIM": 1,
+    }
+
+    volatile_priority = {
+        "FAILED_BREAKOUT_REVERSAL": 10,
+        "FAILED_FVG_REVERSAL": 9,
+        "LIQUIDITY_TRAP": 8,
+        "FRACTAL_SWEEP": 7,
+        "EXTREME_SWEEP_RECLAIM": 7,
+        "VWAP_RECLAIM": 6,
+        "MICRO_SR_SWEEP_RECLAIM": 5,
+        "BREAKER_BLOCK": 5,
+        "STRUCTURE_LIQUIDITY": 5,
+        "SESSION_ORB_RETEST": 4,
+        "WAVETREND_MOMENTUM": 4,
+        "IFVG_RETEST_CONFLUENCE": 4,
+        "MTF_SR_FVG_RECLAIM": 3,
+        "SUPPLY_DEMAND_RETEST": 3,
+        "CRT_TBS": 3,
+        "SMT_PRO": 3,
+        "SMT": 2,
+        "LIQUIDITY_POOL_OB": 2,
+        "AMD_FVG": 2,
+        "LVN_FVG_RECLAIM": 2,
+        "ORB": 2,
+        "ORB_V00": 2,
+        "FVG_CE_MITIGATION": 2,
+        "ORDER_BLOCK": 2,
+        "FCR_M1_FVG": 1,
+        "LIQUIDITY_SWEEP": 1,
+        "LIQUIDITY_CANDLE": 1,
+        "STRICT": 1,
+        "FVG": 1,
+    }
+
+    if market_condition == "TRENDING":
+        return trending_priority.get(strategy_name, 0)
+
+    if market_condition == "PULLBACK_TREND":
+        return pullback_priority.get(strategy_name, 0)
 
     if market_condition == "RANGING":
         return ranging_priority.get(strategy_name, 0)
 
-    return default_priority.get(strategy_name, 0)
+    if market_condition == "VOLATILE":
+        return volatile_priority.get(strategy_name, 0)
+
+    return 0
 
 
 def get_session_selection_adjustment(session_name):
     session_name = str(session_name or "").upper()
 
     if session_name == "OFF_HOURS":
-        return -6
+        return -4
 
     if session_name in ["NEWYORK", "LONDON", "LONDON_NEWYORK", "NY_OVERLAP"]:
-        return 3
+        return 1
 
     if session_name == "ASIA":
-        return -2
+        return -1
 
     return 0
 
