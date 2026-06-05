@@ -201,6 +201,11 @@ from config.settings import (
     TELEGRAM_NOTIFY_CANDIDATE_REJECTED_LOW_RR,
     TELEGRAM_NOTIFY_CANDIDATE_RECOVERY_INVALIDATED,
     TELEGRAM_NOTIFY_GENERIC_CANDIDATE_REJECTED,
+    ENABLE_SMC_FAILED_LOW_RR_SL_ZONE_RECOVERY,
+    SMC_FAILED_LOW_RR_SL_ZONE_RATIO,
+    SMC_FAILED_LOW_RR_ALLOW_POST_SL_SWEEP_RECLAIM,
+    SMC_FAILED_LOW_RR_SL_ZONE_STRATEGIES,
+    SMC_FAILED_LOW_RR_SL_ZONE_EXPIRY_MINUTES,
 )
 
 from src.candidate_rejection_recovery import (
@@ -3334,6 +3339,137 @@ def process_wait_delayed_entry_setups(df, tick, account_info, market_condition, 
 
     return False
 
+def low_rr_smc_zone_recovery_enabled(strategy_name, reason_type):
+    if not ENABLE_SMC_FAILED_LOW_RR_SL_ZONE_RECOVERY:
+        return False
+
+    if reason_type != "LOW_RR":
+        return False
+
+    strategy_key = str(strategy_name or "").upper()
+
+    return strategy_key in SMC_FAILED_LOW_RR_SL_ZONE_STRATEGIES
+
+
+def smc_still_weak_for_low_rr_recovery(df, signal):
+    try:
+        from src.smart_money_layer import smart_money_confirm
+
+        smc_check = smart_money_confirm(df, signal)
+
+        return not smc_check.get("confirmed"), smc_check.get("reasons")
+
+    except Exception as e:
+        logger.error(f"[SMC LOW RR ZONE] SMC check error: {e}")
+        return False, ["smc_check_error"]
+
+
+def price_inside_sl_recovery_zone(signal, tick, trade_plan, zone_ratio):
+    entry = trade_plan.get("entry_price")
+    stop_loss = trade_plan.get("stop_loss")
+
+    if entry is None or stop_loss is None:
+        return False, "missing_entry_or_sl", None
+
+    entry = float(entry)
+    stop_loss = float(stop_loss)
+
+    risk_distance = abs(entry - stop_loss)
+
+    if risk_distance <= 0:
+        return False, "invalid_risk_distance", None
+
+    zone_size = round(risk_distance * float(zone_ratio), 2)
+
+    if signal == "SELL":
+        current_price = float(tick.bid)
+
+        pre_sl_zone_start = stop_loss - zone_size
+        pre_sl_zone_end = stop_loss
+
+        if pre_sl_zone_start <= current_price <= pre_sl_zone_end:
+            return True, "pre_sl_zone", {
+                "current_price": current_price,
+                "stop_loss": stop_loss,
+                "risk_distance": round(risk_distance, 2),
+                "zone_size": zone_size,
+                "zone_start": round(pre_sl_zone_start, 2),
+                "zone_end": round(pre_sl_zone_end, 2),
+            }
+
+        if (
+            SMC_FAILED_LOW_RR_ALLOW_POST_SL_SWEEP_RECLAIM
+            and stop_loss < current_price <= stop_loss + zone_size
+        ):
+            return False, "post_sl_sweep_wait_reclaim", {
+                "current_price": current_price,
+                "stop_loss": stop_loss,
+                "risk_distance": round(risk_distance, 2),
+                "zone_size": zone_size,
+                "zone_start": round(pre_sl_zone_start, 2),
+                "zone_end": round(pre_sl_zone_end, 2),
+            }
+
+        return False, "not_near_sell_sl_zone", {
+            "current_price": current_price,
+            "stop_loss": stop_loss,
+            "risk_distance": round(risk_distance, 2),
+            "zone_size": zone_size,
+            "zone_start": round(pre_sl_zone_start, 2),
+            "zone_end": round(pre_sl_zone_end, 2),
+        }
+
+    if signal == "BUY":
+        current_price = float(tick.ask)
+
+        pre_sl_zone_start = stop_loss
+        pre_sl_zone_end = stop_loss + zone_size
+
+        if pre_sl_zone_start <= current_price <= pre_sl_zone_end:
+            return True, "pre_sl_zone", {
+                "current_price": current_price,
+                "stop_loss": stop_loss,
+                "risk_distance": round(risk_distance, 2),
+                "zone_size": zone_size,
+                "zone_start": round(pre_sl_zone_start, 2),
+                "zone_end": round(pre_sl_zone_end, 2),
+            }
+
+        if (
+            SMC_FAILED_LOW_RR_ALLOW_POST_SL_SWEEP_RECLAIM
+            and stop_loss - zone_size <= current_price < stop_loss
+        ):
+            return False, "post_sl_sweep_wait_reclaim", {
+                "current_price": current_price,
+                "stop_loss": stop_loss,
+                "risk_distance": round(risk_distance, 2),
+                "zone_size": zone_size,
+                "zone_start": round(pre_sl_zone_start, 2),
+                "zone_end": round(pre_sl_zone_end, 2),
+            }
+
+        return False, "not_near_buy_sl_zone", {
+            "current_price": current_price,
+            "stop_loss": stop_loss,
+            "risk_distance": round(risk_distance, 2),
+            "zone_size": zone_size,
+            "zone_start": round(pre_sl_zone_start, 2),
+            "zone_end": round(pre_sl_zone_end, 2),
+        }
+
+    return False, "invalid_signal", None
+
+def smc_low_rr_zone_wait_expired(item):
+    try:
+        created_at = datetime.fromisoformat(item.get("created_at"))
+    except Exception:
+        return False
+
+    max_wait_seconds = SMC_FAILED_LOW_RR_SL_ZONE_EXPIRY_MINUTES * 60
+    elapsed_seconds = (datetime.now() - created_at).total_seconds()
+
+    return elapsed_seconds > max_wait_seconds
+
 def get_recovery_reference_price(signal_data, keys):
     for key in keys:
         value = signal_data.get(key)
@@ -3576,6 +3712,84 @@ def process_candidate_rejection_recovery_setups(
                 f"rr={rr_value} required={min_rr}"
             )
             continue
+        
+        if low_rr_smc_zone_recovery_enabled(strategy_name, reason_type):
+            if smc_low_rr_zone_wait_expired(item):
+                mark_recovery_candidate_invalidated(
+                    recovery_id,
+                    "smc_low_rr_sl_zone_expired",
+                )
+
+                logger.info(
+                    f"[SMC LOW RR ZONE] Expired | "
+                    f"id={recovery_id} strategy={strategy_name} signal={signal}"
+                )
+
+                log_setup_event(
+                    setup_id=setup_id,
+                    event="CANDIDATE_RECOVERY_INVALIDATED",
+                    strategy=strategy_name,
+                    signal=signal,
+                    entry_model=signal_data.get("entry_model"),
+                    score=signal_data.get("score"),
+                    session=session_name,
+                    market_condition=market_condition,
+                    reason="smc_low_rr_sl_zone_expired",
+                    extra={
+                        "recovery_id": recovery_id,
+                        "max_wait_minutes": SMC_FAILED_LOW_RR_SL_ZONE_EXPIRY_MINUTES,
+                    },
+                )
+
+                continue
+            
+            smc_weak, smc_reasons = smc_still_weak_for_low_rr_recovery(df, signal)
+
+            if smc_weak:
+                zone_ok, zone_reason, zone_info = price_inside_sl_recovery_zone(
+                    signal=signal,
+                    tick=tick,
+                    trade_plan=trade_plan,
+                    zone_ratio=SMC_FAILED_LOW_RR_SL_ZONE_RATIO,
+                )
+
+                if not zone_ok:
+                    logger.info(
+                        f"[SMC LOW RR ZONE] Waiting near SL zone | "
+                        f"id={recovery_id} strategy={strategy_name} signal={signal} "
+                        f"reason={zone_reason} smc_reasons={smc_reasons} "
+                        f"zone={zone_info}"
+                    )
+
+                    log_setup_event(
+                        setup_id=setup_id,
+                        event="CANDIDATE_RECOVERY_WAITING_SMC_SL_ZONE",
+                        strategy=strategy_name,
+                        signal=signal,
+                        entry_model=signal_data.get("entry_model"),
+                        score=signal_data.get("score"),
+                        session=session_name,
+                        market_condition=market_condition,
+                        entry=trade_plan.get("entry_price"),
+                        sl=trade_plan.get("stop_loss"),
+                        tp=trade_plan.get("take_profit"),
+                        rr=rr_value,
+                        required_rr=min_rr,
+                        reason=zone_reason,
+                        extra={
+                            "recovery_id": recovery_id,
+                            "smc_reasons": smc_reasons,
+                            "zone": zone_info,
+                        },
+                    )
+
+                    continue
+
+                logger.info(
+                    f"[SMC LOW RR ZONE] SL-zone recovery approved | "
+                    f"id={recovery_id} strategy={strategy_name} signal={signal} "
+                    f"zone={zone_info}"
+                )
 
         trade_allowed, guard_reason = check_trade_guard(signal, tick)
 
