@@ -52,6 +52,11 @@ from src.elliott_fib_context import (
     apply_elliott_fib_confirmation,
 )
 
+from src.setup_outcome_tracker import (
+    register_setup_outcome,
+    update_setup_outcomes,
+)
+
 from config.settings import (
     SYMBOL,
     TIMEFRAME,
@@ -206,6 +211,7 @@ from config.settings import (
     SMC_FAILED_LOW_RR_ALLOW_POST_SL_SWEEP_RECLAIM,
     SMC_FAILED_LOW_RR_SL_ZONE_STRATEGIES,
     SMC_FAILED_LOW_RR_SL_ZONE_EXPIRY_MINUTES,
+    ENABLE_SETUP_OUTCOME_TRACKER,
 )
 
 from src.candidate_rejection_recovery import (
@@ -2244,6 +2250,31 @@ def process_mtf_conflict_candidate(
             "execution_reason": execution_reason,
         },
     )
+    
+    register_setup_outcome(
+        symbol=SYMBOL,
+        setup_id=setup_id,
+        event="MTF_CONFLICT_CANDIDATE_TRACKED",
+        strategy=strategy,
+        signal=signal,
+        entry_model=entry_model,
+        score=candidate.get("score"),
+        session=session_name,
+        market_condition=market_condition,
+        entry=shadow_trade_plan.get("entry_price") if shadow_trade_plan else None,
+        sl=shadow_trade_plan.get("stop_loss") if shadow_trade_plan else None,
+        tp=shadow_trade_plan.get("take_profit") if shadow_trade_plan else None,
+        reason=rejection_reason,
+        extra={
+            "mtf_bias": mtf_bias,
+            "strategy_mode": strategy_mode,
+            "shadow_rr": shadow_rr,
+            "required_rr": required_rr,
+            "execution_allowed": execution_allowed,
+            "execution_reason": execution_reason,
+            "source": "mtf_conflict_candidate_tracked",
+        },
+    )
 
     if not execution_allowed:
         logger.info(
@@ -4079,6 +4110,48 @@ def process_cycle(last_processed_candle_time):
             session_name="PENDING",
         ):
             return current_candle_time
+        
+    # =========================
+    # SETUP OUTCOME TRACKER
+    # Runs every loop, not only on a new M15 candle.
+    # =========================
+    if ENABLE_SETUP_OUTCOME_TRACKER:
+        outcome_milestones = update_setup_outcomes(SYMBOL, tick)
+
+        for milestone in outcome_milestones:
+            item = milestone.get("item", {})
+
+            log_setup_event(
+                setup_id=milestone.get("setup_id"),
+                event=milestone.get("event"),
+                strategy=item.get("strategy"),
+                signal=item.get("signal"),
+                entry_model=item.get("entry_model"),
+                score=item.get("score"),
+                session=item.get("session"),
+                market_condition=item.get("market_condition"),
+                entry=item.get("entry"),
+                sl=item.get("sl"),
+                tp=item.get("tp"),
+                reason=item.get("reason"),
+                extra={
+                    "current_price": milestone.get("current_price"),
+                    "favorable": milestone.get("favorable"),
+                    "adverse": milestone.get("adverse"),
+                    "max_favorable_usd": item.get("max_favorable_usd"),
+                    "max_adverse_usd": item.get("max_adverse_usd"),
+                    "hit_plus_10": item.get("hit_plus_10"),
+                    "hit_tp": item.get("hit_tp"),
+                    "hit_sl": item.get("hit_sl"),
+                    "first_hit": item.get("first_hit"),
+                    "final_outcome": item.get("final_outcome"),
+                    "context_key": item.get("context_key"),
+                    "scenario_key": item.get("scenario_key"),
+                    "nearby_strategies": item.get("nearby_strategies"),
+                    "max_favorable_after_max_adverse": item.get("max_favorable_after_max_adverse"),
+                    "reentry_candidate_after_adverse": item.get("reentry_candidate_after_adverse"),
+                },
+            )
 
     # =========================
     # MTF CONFLICT OPPORTUNITY TRACKER
@@ -4944,6 +5017,27 @@ def process_cycle(last_processed_candle_time):
                     reason=rejection_reason,
                 )
                 
+                register_setup_outcome(
+                    symbol=SYMBOL,
+                    setup_id=validated_candidate.get("setup_id"),
+                    event="CANDIDATE_REJECTED_LOW_RR",
+                    strategy=candidate_strategy,
+                    signal=candidate_signal,
+                    entry_model=validated_candidate.get("entry_model"),
+                    score=validated_candidate.get("score"),
+                    session=session_name,
+                    market_condition=market_condition,
+                    entry=candidate_trade_plan.get("entry_price"),
+                    sl=candidate_trade_plan.get("stop_loss"),
+                    tp=candidate_trade_plan.get("take_profit"),
+                    reason=rejection_reason,
+                    extra={
+                        "rr": rr_value,
+                        "required_rr": min_rr_required,
+                        "source": "candidate_rejected_low_rr",
+                    },
+                )
+                
                 if (
                     ENABLE_CANDIDATE_REJECTION_TELEGRAM_ALERTS
                     and TELEGRAM_NOTIFY_CANDIDATE_REJECTED_LOW_RR
@@ -5173,6 +5267,29 @@ def process_cycle(last_processed_candle_time):
                     reason=reason,
                     extra={
                         "protected_reentry": selected_signal_data.get("protected_reentry"),
+                    },
+                )
+                
+                register_setup_outcome(
+                    symbol=SYMBOL,
+                    setup_id=selected_signal_data.get("setup_id"),
+                    event="SETUP_DETECTED",
+                    strategy=strategy_name,
+                    signal=signal,
+                    entry_model=selected_signal_data.get("entry_model"),
+                    score=score,
+                    session=session_name,
+                    market_condition=market_condition,
+                    entry=close_price,
+                    sl=selected_signal_data.get("sl_reference"),
+                    tp=(
+                        selected_signal_data.get("tp_reference")
+                        or selected_signal_data.get("pivot_target_level")
+                    ),
+                    reason=reason,
+                    extra={
+                        "protected_reentry": selected_signal_data.get("protected_reentry"),
+                        "source": "setup_detected_raw",
                     },
                 )
 
