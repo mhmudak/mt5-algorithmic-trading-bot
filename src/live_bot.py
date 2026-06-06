@@ -519,7 +519,7 @@ def get_trade_setup_id(trade_plan=None, signal_data=None, setup=None):
 
     return None
 
-def check_setup_outcome_memory_guard(signal_data, setup_id, strategy_name, signal):
+def check_setup_outcome_memory_guard(signal_data, setup_id, strategy_name, signal, trade_plan=None):
     if not ENABLE_SETUP_OUTCOME_MEMORY_GUARD:
         return False, None
 
@@ -604,6 +604,37 @@ def check_setup_outcome_memory_guard(signal_data, setup_id, strategy_name, signa
         f"setup_id={setup_id} strategy={strategy_name} signal={signal} "
         f"block={should_block} reason={reason}"
     )
+    
+    if not should_block and not signal_data.get("memory_guard_event_logged"):
+        log_setup_event(
+            setup_id=setup_id,
+            event="SETUP_OUTCOME_MEMORY_GUARD_WARNING",
+            strategy=strategy_name,
+            signal=signal,
+            entry_model=signal_data.get("entry_model") if signal_data else None,
+            score=signal_data.get("score") if signal_data else None,
+            session=signal_data.get("session") if signal_data else None,
+            market_condition=trade_plan.get("market_condition") if trade_plan else None,
+            entry=trade_plan.get("entry_price") if trade_plan else None,
+            sl=trade_plan.get("stop_loss") if trade_plan else None,
+            tp=trade_plan.get("take_profit") if trade_plan else None,
+            reason=reason,
+            extra={
+                "guard": "setup_outcome_memory_guard",
+                "mode": "warning_only",
+                "source": strongest.get("source"),
+                "classification": strongest.get("classification"),
+                "samples": strongest.get("samples"),
+                "w10_rate": strongest.get("w10_rate"),
+                "tp_rate": strongest.get("tp_rate"),
+                "sl_rate": strongest.get("sl_rate"),
+                "avg_favorable": strongest.get("avg_favorable"),
+                "avg_adverse": strongest.get("avg_adverse"),
+                "avg_recovery_swing": strongest.get("avg_recovery_swing"),
+            },
+        )
+
+        signal_data["memory_guard_event_logged"] = True
 
     if MEMORY_GUARD_NOTIFY_ON_WARNING and not signal_data.get("memory_guard_notified"):
         send_telegram_message(
@@ -646,6 +677,7 @@ def is_trade_blocked_by_execution_memory(
         setup_id=setup_id,
         strategy_name=strategy_name,
         signal=signal,
+        trade_plan=trade_plan,
     )
 
     if memory_blocked:
