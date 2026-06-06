@@ -32,7 +32,6 @@ from src.time_filter import is_trading_blackout_active
 from src.reversal_checker import build_blocked_setup_reversal
 from src.external_macro_confirmation import apply_external_macro_confirmation
 from src.position_guard import count_same_direction_positions
-from src.scenario_cluster_memory import notify_scenario_cluster_if_relevant
 
 from src.execution_block_memory import is_setup_execution_blocked
 from src.execution_engine import ExecutionEngine
@@ -46,6 +45,11 @@ from src.protected_reentry import (
 from src.setup_similarity_memory import (
     notify_setup_similarity_if_relevant,
     get_setup_similarity_score_adjustment,
+)
+
+from src.scenario_cluster_memory import (
+    notify_scenario_cluster_if_relevant,
+    get_scenario_cluster_score_adjustment,
 )
 
 from src.supply_demand_context import (
@@ -5855,6 +5859,29 @@ def process_cycle(last_processed_candle_time):
         strategy_name = setup_strategy
         reason = setup_data.get("reason", reason)
         score = setup_score
+
+        cluster_adjustment, cluster_reasons, cluster_report = (
+            get_scenario_cluster_score_adjustment(
+                selected_signal_data.get("setup_id")
+            )
+        )
+
+        if cluster_adjustment:
+            score = max(0, min(score + cluster_adjustment, 100))
+            selected_signal_data["score"] = score
+            selected_signal_data.setdefault("scenario_cluster_reasons", [])
+            selected_signal_data["scenario_cluster_reasons"].extend(cluster_reasons)
+            selected_signal_data["scenario_cluster_memory"] = cluster_report
+
+            reason += f" | SCENARIO_CLUSTER: {','.join(cluster_reasons)}"
+
+            logger.info(
+                f"[SCENARIO CLUSTER SCORING] "
+                f"setup_id={selected_signal_data.get('setup_id')} "
+                f"strategy={strategy_name} signal={signal} "
+                f"adjustment={cluster_adjustment} "
+                f"classification={cluster_report.get('classification') if cluster_report else None}"
+            )
 
     # =========================
     # TRADE PLAN

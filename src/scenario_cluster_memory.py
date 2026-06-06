@@ -6,6 +6,10 @@ from config.settings import (
     SCENARIO_CLUSTER_MIN_SAMPLES,
     SCENARIO_CLUSTER_MIN_W10_RATE,
     SCENARIO_CLUSTER_MAX_SL_RATE,
+    ENABLE_SCENARIO_CLUSTER_SCORING,
+    SCENARIO_CLUSTER_FAVORABLE_SCORE_BOOST,
+    SCENARIO_CLUSTER_DANGEROUS_SCORE_PENALTY,
+    SCENARIO_CLUSTER_NEUTRAL_SCORE_BOOST,
 )
 
 from src.account_context import get_account_file
@@ -223,3 +227,42 @@ def notify_scenario_cluster_if_relevant(setup_id):
     )
 
     return True
+
+def get_scenario_cluster_score_adjustment(setup_id):
+    if not ENABLE_SCENARIO_CLUSTER_SCORING:
+        return 0, [], None
+
+    report = analyze_scenario_cluster(setup_id)
+
+    if not report:
+        return 0, [], None
+
+    classification = report.get("classification")
+    stats = report.get("stats", {})
+
+    if classification == "FAVORABLE_CLUSTER_PATTERN":
+        adjustment = SCENARIO_CLUSTER_FAVORABLE_SCORE_BOOST
+
+    elif classification == "DANGEROUS_CLUSTER_PATTERN":
+        adjustment = -abs(SCENARIO_CLUSTER_DANGEROUS_SCORE_PENALTY)
+
+    elif classification == "NEUTRAL_CLUSTER_PATTERN":
+        adjustment = SCENARIO_CLUSTER_NEUTRAL_SCORE_BOOST
+
+    else:
+        adjustment = 0
+
+    if adjustment == 0:
+        return 0, [], report
+
+    reasons = [
+        (
+            f"scenario_cluster_{classification.lower()} "
+            f"samples={stats.get('total')} "
+            f"w10_rate={stats.get('w10_rate')} "
+            f"sl_rate={stats.get('sl_rate')} "
+            f"adjustment={adjustment}"
+        )
+    ]
+
+    return adjustment, reasons, report
