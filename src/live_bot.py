@@ -54,6 +54,11 @@ from src.scenario_cluster_memory import (
     get_scenario_cluster_score_adjustment,
 )
 
+from src.memory_decision_report import (
+    build_memory_decision_report,
+    save_memory_decision_report,
+)
+
 from src.supply_demand_context import (
     analyze_supply_demand_context,
     apply_supply_demand_confirmation,
@@ -231,6 +236,7 @@ from config.settings import (
     MEMORY_GUARD_NOTIFY_ON_WARNING,
     ENABLE_SCENARIO_SIGNATURE_TELEGRAM_ALERTS,
     SCENARIO_SIGNATURE_TELEGRAM_ALERT_CLASSIFICATIONS,
+    ENABLE_MEMORY_DECISION_REPORT,
 )
 
 from src.candidate_rejection_recovery import (
@@ -6158,6 +6164,23 @@ def process_cycle(last_processed_candle_time):
                 f"adjustment={signature_adjustment} "
                 f"classification={signature_report.get('classification') if signature_report else None}"
             )
+
+        if ENABLE_MEMORY_DECISION_REPORT:
+            memory_report = build_memory_decision_report(
+                setup_id=selected_signal_data.get("setup_id"),
+                strategy=strategy_name,
+                signal=signal,
+                score=score,
+                session=session_name,
+                market_condition=market_condition,
+                reason=reason,
+                signal_data=selected_signal_data,
+                trade_plan=None,
+                decision="PRE_TRADE_PLAN_REVIEW",
+                decision_reason="setup selected before risk/trade plan calculation",
+            )
+
+            save_memory_decision_report(memory_report)
 
     # =========================
     # TRADE PLAN
