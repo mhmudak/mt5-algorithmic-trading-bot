@@ -609,6 +609,79 @@ def get_session_selection_adjustment(session_name):
 
     return 0
 
+def register_rejected_candidate_setup_outcome(
+    *,
+    candidate,
+    rejection_reason,
+    df,
+    tick,
+    account_info,
+    market_condition,
+    session_name,
+):
+    signal = candidate.get("signal")
+    strategy_name = candidate.get("strategy")
+
+    if signal not in ["BUY", "SELL"]:
+        return False
+
+    # Avoid duplicate tracking because MTF conflicts already use MTF_CONFLICT_CANDIDATE_TRACKED
+    if is_mtf_conflict_rejection(rejection_reason):
+        return False
+
+    trade_plan = calculate_trade_plan(
+        df=df,
+        signal=signal,
+        tick=tick,
+        account_balance=account_info.balance,
+        signal_data=candidate,
+    )
+
+    if trade_plan is None:
+        logger.info(
+            f"[SETUP OUTCOME] Generic rejected candidate not tracked | "
+            f"strategy={strategy_name} signal={signal} "
+            f"reason={rejection_reason} trade_plan=None"
+        )
+        return False
+
+    rr_value = calculate_rr_value(trade_plan)
+
+    required_rr = get_min_rr(
+        strategy_name,
+        candidate.get("entry_model"),
+        candidate.get("sl_model"),
+    )
+
+    setup_id = candidate.get("setup_id") or build_stable_candidate_setup_id(
+        candidate=candidate,
+        strategy_name=strategy_name,
+        signal=signal,
+        tick_time=tick.time,
+    )
+
+    candidate["setup_id"] = setup_id
+
+    return register_setup_outcome(
+        symbol=SYMBOL,
+        setup_id=setup_id,
+        event="CANDIDATE_REJECTED",
+        strategy=strategy_name,
+        signal=signal,
+        entry_model=candidate.get("entry_model"),
+        score=candidate.get("score"),
+        session=session_name,
+        market_condition=market_condition,
+        entry=trade_plan.get("entry_price"),
+        sl=trade_plan.get("stop_loss"),
+        tp=trade_plan.get("take_profit"),
+        reason=rejection_reason,
+        extra={
+            "rr": rr_value,
+            "required_rr": required_rr,
+            "source": "candidate_rejected_with_calculated_trade_plan",
+        },
+    )
 
 def calculate_candidate_selection_rank(
     candidate,
@@ -4911,6 +4984,16 @@ def process_cycle(last_processed_candle_time):
                     session=session_name,
                     market_condition=market_condition,
                     reason=rejection_reason,
+                )
+                
+                register_rejected_candidate_setup_outcome(
+                    candidate=candidate,
+                    rejection_reason=rejection_reason,
+                    df=df,
+                    tick=tick,
+                    account_info=account_info,
+                    market_condition=market_condition,
+                    session_name=session_name,
                 )
                 
                 if (
