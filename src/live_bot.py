@@ -33,6 +33,7 @@ from src.reversal_checker import build_blocked_setup_reversal
 from src.external_macro_confirmation import apply_external_macro_confirmation
 from src.position_guard import count_same_direction_positions
 from src.google_sheets_logger import flush_google_sheets_retry_queue
+from src.scenario_signature_confidence import get_scenario_signature_score_adjustment
 
 from src.execution_block_memory import is_setup_execution_blocked
 from src.execution_engine import ExecutionEngine
@@ -6059,6 +6060,49 @@ def process_cycle(last_processed_candle_time):
                 f"strategy={strategy_name} signal={signal} "
                 f"adjustment={cluster_adjustment} "
                 f"classification={cluster_report.get('classification') if cluster_report else None}"
+            )
+            
+        signature_adjustment, signature_reasons, signature_report = (
+            get_scenario_signature_score_adjustment(
+                selected_signal_data.get("setup_id")
+            )
+        )
+
+        if signature_adjustment:
+            score = max(0, min(score + signature_adjustment, 100))
+            selected_signal_data["score"] = score
+            selected_signal_data.setdefault("scenario_signature_reasons", [])
+            selected_signal_data["scenario_signature_reasons"].extend(signature_reasons)
+            selected_signal_data["scenario_signature_memory"] = signature_report
+
+            reason += f" | SCENARIO_SIGNATURE: {','.join(signature_reasons)}"
+
+            log_setup_event(
+                setup_id=selected_signal_data.get("setup_id"),
+                event="SCENARIO_SIGNATURE_CONFIDENCE",
+                strategy=strategy_name,
+                signal=signal,
+                entry_model=selected_signal_data.get("entry_model"),
+                score=score,
+                session=session_name,
+                market_condition=market_condition,
+                reason="scenario signature confidence applied",
+                extra={
+                    "adjustment": signature_adjustment,
+                    "reasons": signature_reasons,
+                    "classification": signature_report.get("classification") if signature_report else None,
+                    "signature_key": signature_report.get("signature_key") if signature_report else None,
+                    "stats": signature_report.get("stats") if signature_report else None,
+                    "nearby_strategies": signature_report.get("nearby_strategies") if signature_report else None,
+                },
+            )
+
+            logger.info(
+                f"[SCENARIO SIGNATURE SCORING] "
+                f"setup_id={selected_signal_data.get('setup_id')} "
+                f"strategy={strategy_name} signal={signal} "
+                f"adjustment={signature_adjustment} "
+                f"classification={signature_report.get('classification') if signature_report else None}"
             )
 
     # =========================
