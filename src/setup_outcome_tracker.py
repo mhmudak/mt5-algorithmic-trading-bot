@@ -247,7 +247,7 @@ def register_setup_outcome(
         "time_to_sl_min": None,
 
         "max_adverse_seen": False,
-        "max_favorable_after_max_adverse": 0.0,
+        "max_recovery_swing_usd": 0.0,
         "recovered_from_adverse": False,
         "reentry_candidate_after_adverse": False,
 
@@ -386,13 +386,19 @@ def update_setup_outcomes(symbol, tick):
             item["max_adverse_seen"] = True
             changed = True
 
-        if item.get("max_adverse_seen") and favorable > float(item.get("max_favorable_after_max_adverse", 0.0)):
-            item["max_favorable_after_max_adverse"] = favorable
+        recovery_swing = round(
+            float(item.get("max_adverse_usd", 0.0) or 0.0)
+            + float(item.get("max_favorable_usd", 0.0) or 0.0),
+            2,
+        )
+
+        if recovery_swing > float(item.get("max_recovery_swing_usd", 0.0) or 0.0):
+            item["max_recovery_swing_usd"] = recovery_swing
             changed = True
 
         if (
             item.get("max_adverse_usd", 0.0) >= SETUP_OUTCOME_MIN_ADVERSE_FOR_REENTRY
-            and item.get("max_favorable_after_max_adverse", 0.0) >= SETUP_OUTCOME_REENTRY_PROFIT_TRIGGER
+            and item.get("max_recovery_swing_usd", 0.0) >= SETUP_OUTCOME_REENTRY_PROFIT_TRIGGER
             and not item.get("reentry_candidate_after_adverse")
         ):
             item["recovered_from_adverse"] = True

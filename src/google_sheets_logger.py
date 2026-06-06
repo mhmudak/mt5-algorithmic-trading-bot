@@ -26,7 +26,7 @@ def send_setup_event_to_google_sheets(event_data):
         response = requests.post(
             GOOGLE_SHEETS_WEBHOOK_URL,
             json=payload,
-            timeout=5,
+            timeout=15,
         )
 
         if response.status_code != 200:
@@ -75,7 +75,7 @@ def send_setup_outcome_to_google_sheets(item):
         "tp": item.get("tp"),
         "max_favorable_usd": item.get("max_favorable_usd"),
         "max_adverse_usd": item.get("max_adverse_usd"),
-        "max_favorable_after_max_adverse": item.get("max_favorable_after_max_adverse"),
+        "max_recovery_swing_usd": item.get("max_recovery_swing_usd"),
         "hit_plus_10": item.get("hit_plus_10"),
         "hit_tp": item.get("hit_tp"),
         "hit_sl": item.get("hit_sl"),
@@ -94,7 +94,7 @@ def send_setup_outcome_to_google_sheets(item):
         response = requests.post(
             GOOGLE_SHEETS_WEBHOOK_URL,
             json=payload,
-            timeout=5,
+            timeout=15,
         )
 
         if response.status_code != 200:

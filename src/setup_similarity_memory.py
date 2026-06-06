@@ -115,8 +115,8 @@ def build_similarity_stats(matches):
         for item in matches
     ])
 
-    avg_after_adverse = _avg([
-        _safe_float(item.get("max_favorable_after_max_adverse"))
+    avg_recovery_swing = _avg([
+        _safe_float(item.get("max_recovery_swing_usd"))
         for item in matches
     ])
 
@@ -130,7 +130,7 @@ def build_similarity_stats(matches):
         "sl_rate": sl_rate,
         "avg_favorable": avg_favorable,
         "avg_adverse": avg_adverse,
-        "avg_after_adverse": avg_after_adverse,
+        "avg_recovery_swing": avg_recovery_swing,
     }
 
 

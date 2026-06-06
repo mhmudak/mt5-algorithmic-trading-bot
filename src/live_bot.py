@@ -4235,7 +4235,7 @@ def process_cycle(last_processed_candle_time):
                     "context_key": item.get("context_key"),
                     "scenario_key": item.get("scenario_key"),
                     "nearby_strategies": item.get("nearby_strategies"),
-                    "max_favorable_after_max_adverse": item.get("max_favorable_after_max_adverse"),
+                    "max_recovery_swing_usd": item.get("max_recovery_swing_usd"),
                     "reentry_candidate_after_adverse": item.get("reentry_candidate_after_adverse"),
                 },
             )
