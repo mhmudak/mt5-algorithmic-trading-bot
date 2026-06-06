@@ -32,6 +32,7 @@ from src.time_filter import is_trading_blackout_active
 from src.reversal_checker import build_blocked_setup_reversal
 from src.external_macro_confirmation import apply_external_macro_confirmation
 from src.position_guard import count_same_direction_positions
+from src.scenario_cluster_memory import notify_scenario_cluster_if_relevant
 
 from src.execution_block_memory import is_setup_execution_blocked
 from src.execution_engine import ExecutionEngine
@@ -2356,6 +2357,7 @@ def process_mtf_conflict_candidate(
     
     if tracked:
         notify_setup_similarity_if_relevant(setup_id)
+        notify_scenario_cluster_if_relevant(setup_id)
 
     if not execution_allowed:
         logger.info(
@@ -4869,13 +4871,13 @@ def process_cycle(last_processed_candle_time):
                         current_time=current_candle_time,
                     )
                 )
-                
+
                 if similarity_adjustment:
                     result["score"] += similarity_adjustment
                     result.setdefault("similarity_reasons", [])
                     result["similarity_reasons"].extend(similarity_reasons)
                     result["similarity_memory"] = similarity_report
-                
+
                     logger.info(
                         f"[SIMILARITY SCORING] "
                         f"strategy={name} signal={result.get('signal')} "
@@ -5028,6 +5030,7 @@ def process_cycle(last_processed_candle_time):
                 
                 if tracked:
                     notify_setup_similarity_if_relevant(candidate.get("setup_id"))
+                    notify_scenario_cluster_if_relevant(candidate.get("setup_id"))
                 
                 if (
                     ENABLE_CANDIDATE_REJECTION_TELEGRAM_ALERTS
@@ -5156,6 +5159,7 @@ def process_cycle(last_processed_candle_time):
                 
                 if tracked:
                     notify_setup_similarity_if_relevant(validated_candidate.get("setup_id"))
+                    notify_scenario_cluster_if_relevant(validated_candidate.get("setup_id"))
                 
                 if (
                     ENABLE_CANDIDATE_REJECTION_TELEGRAM_ALERTS
@@ -5414,6 +5418,7 @@ def process_cycle(last_processed_candle_time):
                 
                 if tracked:
                     notify_setup_similarity_if_relevant(selected_signal_data.get("setup_id"))
+                    notify_scenario_cluster_if_relevant(selected_signal_data.get("setup_id"))
 
             original_signal = signal
             original_strategy_name = strategy_name
