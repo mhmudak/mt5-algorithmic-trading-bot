@@ -1,10 +1,16 @@
 import json
 
+from datetime import datetime
+
 from config.settings import (
     ENABLE_SETUP_SIMILARITY_MEMORY,
     SETUP_SIMILARITY_MIN_SAMPLES,
     SETUP_SIMILARITY_MIN_W10_RATE,
     SETUP_SIMILARITY_MAX_SL_RATE,
+    ENABLE_SETUP_SIMILARITY_SCORING,
+    SETUP_SIMILARITY_FAVORABLE_SCORE_BOOST,
+    SETUP_SIMILARITY_DANGEROUS_SCORE_PENALTY,
+    SETUP_SIMILARITY_NEUTRAL_SCORE_BOOST,
 )
 
 from src.account_context import get_account_file
@@ -248,3 +254,151 @@ def notify_setup_similarity_if_relevant(setup_id):
     )
 
     return True
+
+def _score_bucket(score):
+    try:
+        score = int(float(score))
+    except Exception:
+        return "SCORE_UNKNOWN"
+
+    if score >= 95:
+        return "SCORE_95_100"
+
+    if score >= 90:
+        return "SCORE_90_94"
+
+    if score >= 80:
+        return "SCORE_80_89"
+
+    return "SCORE_LOW"
+
+
+def _time_window(dt):
+    hour = dt.hour
+
+    if hour < 7:
+        return "ASIA_HOURS"
+
+    if 7 <= hour < 10:
+        return "LONDON_OPEN"
+
+    if 10 <= hour < 13:
+        return "MIDDAY"
+
+    if 13 <= hour < 16:
+        return "NEWYORK_OPEN"
+
+    if 16 <= hour < 20:
+        return "NEWYORK_LATE"
+
+    return "OFF_HOURS"
+
+
+def build_candidate_context_key(candidate, session_name, market_condition, current_time=None):
+    now = current_time or datetime.now()
+
+    parts = [
+        candidate.get("strategy", "UNKNOWN"),
+        candidate.get("signal", "NA"),
+        candidate.get("entry_model", "NA"),
+        session_name or candidate.get("session", "UNKNOWN"),
+        market_condition or candidate.get("market_condition", "UNKNOWN"),
+        now.strftime("%A").upper(),
+        _time_window(now),
+        _score_bucket(candidate.get("score")),
+    ]
+
+    return "|".join(str(part).upper() for part in parts)
+
+
+def _matches_for_context_key(context_key, items):
+    matches = []
+
+    for item in items.values():
+        if item.get("context_key") != context_key:
+            continue
+
+        if item.get("status") == "TRACKING":
+            continue
+
+        matches.append(item)
+
+    return matches
+
+
+def analyze_candidate_similarity(candidate, session_name, market_condition, current_time=None):
+    if not ENABLE_SETUP_SIMILARITY_MEMORY:
+        return None
+
+    context_key = build_candidate_context_key(
+        candidate=candidate,
+        session_name=session_name,
+        market_condition=market_condition,
+        current_time=current_time,
+    )
+
+    items = load_setup_outcomes()
+    matches = _matches_for_context_key(context_key, items)
+    stats = build_similarity_stats(matches)
+
+    if not stats:
+        return None
+
+    classification = classify_similarity(stats)
+
+    return {
+        "classification": classification,
+        "context_key": context_key,
+        "strategy": candidate.get("strategy"),
+        "signal": candidate.get("signal"),
+        "entry_model": candidate.get("entry_model"),
+        "session": session_name,
+        "market_condition": market_condition,
+        "score": candidate.get("score"),
+        "stats": stats,
+    }
+
+
+def get_setup_similarity_score_adjustment(candidate, session_name, market_condition, current_time=None):
+    if not ENABLE_SETUP_SIMILARITY_SCORING:
+        return 0, [], None
+
+    report = analyze_candidate_similarity(
+        candidate=candidate,
+        session_name=session_name,
+        market_condition=market_condition,
+        current_time=current_time,
+    )
+
+    if not report:
+        return 0, [], None
+
+    classification = report.get("classification")
+    stats = report.get("stats", {})
+
+    if classification == "FAVORABLE_REPETITIVE_PATTERN":
+        adjustment = SETUP_SIMILARITY_FAVORABLE_SCORE_BOOST
+
+    elif classification == "DANGEROUS_REPETITIVE_PATTERN":
+        adjustment = -abs(SETUP_SIMILARITY_DANGEROUS_SCORE_PENALTY)
+
+    elif classification == "NEUTRAL_REPETITIVE_PATTERN":
+        adjustment = SETUP_SIMILARITY_NEUTRAL_SCORE_BOOST
+
+    else:
+        adjustment = 0
+
+    if adjustment == 0:
+        return 0, [], report
+
+    reasons = [
+        (
+            f"similarity_memory_{classification.lower()} "
+            f"samples={stats.get('total')} "
+            f"w10_rate={stats.get('w10_rate')} "
+            f"sl_rate={stats.get('sl_rate')} "
+            f"adjustment={adjustment}"
+        )
+    ]
+
+    return adjustment, reasons, report

@@ -32,7 +32,7 @@ from src.time_filter import is_trading_blackout_active
 from src.reversal_checker import build_blocked_setup_reversal
 from src.external_macro_confirmation import apply_external_macro_confirmation
 from src.position_guard import count_same_direction_positions
-from src.setup_similarity_memory import notify_setup_similarity_if_relevant
+
 from src.execution_block_memory import is_setup_execution_blocked
 from src.execution_engine import ExecutionEngine
 execution_engine = ExecutionEngine()
@@ -40,6 +40,11 @@ execution_engine = ExecutionEngine()
 from src.protected_reentry import (
     get_protected_reentry_context,
     apply_protected_reentry_confirmation,
+)
+
+from src.setup_similarity_memory import (
+    notify_setup_similarity_if_relevant,
+    get_setup_similarity_score_adjustment,
 )
 
 from src.supply_demand_context import (
@@ -4855,6 +4860,28 @@ def process_cycle(last_processed_candle_time):
                     result["score"] += session_boost
                     result.setdefault("session_reasons", [])
                     result["session_reasons"].extend(session_reasons)
+                    
+                similarity_adjustment, similarity_reasons, similarity_report = (
+                    get_setup_similarity_score_adjustment(
+                        candidate=result,
+                        session_name=session_name,
+                        market_condition=market_condition,
+                        current_time=current_candle_time,
+                    )
+                )
+                
+                if similarity_adjustment:
+                    result["score"] += similarity_adjustment
+                    result.setdefault("similarity_reasons", [])
+                    result["similarity_reasons"].extend(similarity_reasons)
+                    result["similarity_memory"] = similarity_report
+                
+                    logger.info(
+                        f"[SIMILARITY SCORING] "
+                        f"strategy={name} signal={result.get('signal')} "
+                        f"adjustment={similarity_adjustment} "
+                        f"classification={similarity_report.get('classification') if similarity_report else None}"
+                    )
 
                 result["score"] = max(0, min(result["score"], 100))
 
