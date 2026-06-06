@@ -32,6 +32,7 @@ from src.time_filter import is_trading_blackout_active
 from src.reversal_checker import build_blocked_setup_reversal
 from src.external_macro_confirmation import apply_external_macro_confirmation
 from src.position_guard import count_same_direction_positions
+from src.google_sheets_logger import flush_google_sheets_retry_queue
 
 from src.execution_block_memory import is_setup_execution_blocked
 from src.execution_engine import ExecutionEngine
@@ -4127,6 +4128,11 @@ def process_cycle(last_processed_candle_time):
     manage_positions(SYMBOL)
     update_trade_lifecycle(SYMBOL)
     rebuild_dashboard()
+
+    try:
+        flush_google_sheets_retry_queue(max_items=5)
+    except Exception as e:
+        logger.error(f"[GOOGLE SHEETS QUEUE] Flush error: {e}")
 
     # =========================
     # WAIT FOR BETTER ENTRY CHECK
