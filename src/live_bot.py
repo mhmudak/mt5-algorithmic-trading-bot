@@ -229,6 +229,8 @@ from config.settings import (
     MEMORY_GUARD_MIN_SAMPLES_FOR_WARNING,
     MEMORY_GUARD_MIN_SAMPLES_FOR_BLOCK,
     MEMORY_GUARD_NOTIFY_ON_WARNING,
+    ENABLE_SCENARIO_SIGNATURE_TELEGRAM_ALERTS,
+    SCENARIO_SIGNATURE_TELEGRAM_ALERT_CLASSIFICATIONS,
 )
 
 from src.candidate_rejection_recovery import (
@@ -6116,6 +6118,38 @@ def process_cycle(last_processed_candle_time):
                     "nearby_strategies": signature_report.get("nearby_strategies") if signature_report else None,
                 },
             )
+            
+            signature_classification = (
+                signature_report.get("classification")
+                if signature_report
+                else None
+            )
+
+            if (
+                ENABLE_SCENARIO_SIGNATURE_TELEGRAM_ALERTS
+                and signature_classification in SCENARIO_SIGNATURE_TELEGRAM_ALERT_CLASSIFICATIONS
+                and not selected_signal_data.get("scenario_signature_notified")
+            ):
+                stats = signature_report.get("stats", {}) if signature_report else {}
+
+                send_telegram_message(
+                    f"🧠 Scenario Signature Confidence\n"
+                    f"Setup ID: {selected_signal_data.get('setup_id')}\n"
+                    f"Strategy: {strategy_name}\n"
+                    f"Signal: {signal}\n"
+                    f"Classification: {signature_classification}\n"
+                    f"Adjustment: {signature_adjustment}\n\n"
+                    f"Samples: {stats.get('total')}\n"
+                    f"W10 Rate: {stats.get('w10_rate')}\n"
+                    f"TP Rate: {stats.get('tp_rate')}\n"
+                    f"SL Rate: {stats.get('sl_rate')}\n"
+                    f"Avg Favorable: {stats.get('avg_favorable')}\n"
+                    f"Avg Adverse: {stats.get('avg_adverse')}\n"
+                    f"Avg Recovery Swing: {stats.get('avg_recovery_swing')}\n\n"
+                    f"Signature: {signature_report.get('signature_key') if signature_report else None}"
+                )
+
+                selected_signal_data["scenario_signature_notified"] = True
 
             logger.info(
                 f"[SCENARIO SIGNATURE SCORING] "
