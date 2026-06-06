@@ -706,6 +706,53 @@ def save_trade_plan_memory_report(
 
     return save_memory_decision_report(memory_report)
 
+def save_execution_memory_report(
+    *,
+    selected_signal_data,
+    strategy_name,
+    signal,
+    score,
+    session_name,
+    market_condition,
+    reason,
+    trade_plan,
+    decision,
+    decision_reason,
+    rr_value=None,
+    required_rr=None,
+    execution_result=None,
+    extra=None,
+):
+    if not ENABLE_MEMORY_DECISION_REPORT:
+        return False
+
+    extra = extra or {}
+
+    if execution_result is not None:
+        extra["execution_result"] = str(execution_result)
+
+    memory_report = build_memory_decision_report(
+        setup_id=selected_signal_data.get("setup_id"),
+        strategy=strategy_name,
+        signal=signal,
+        score=score,
+        session=session_name,
+        market_condition=market_condition,
+        reason=reason,
+        signal_data=selected_signal_data,
+        trade_plan=trade_plan,
+        decision=decision,
+        decision_reason=decision_reason,
+        extra={
+            "rr": rr_value,
+            "required_rr": required_rr,
+            "stage": "execution",
+            **extra,
+        },
+    )
+
+    return save_memory_decision_report(memory_report)
+
 def is_trade_blocked_by_execution_memory(
     *,
     trade_plan,
@@ -6868,6 +6915,21 @@ def process_cycle(last_processed_candle_time):
             if "best_setup" in locals():
                 best_setup["state"] = "SKIPPED"
                 best_setup["wait_reason"] = "Skipped because opposite position exists"
+                
+            save_execution_memory_report(
+                selected_signal_data=selected_signal_data,
+                strategy_name=strategy_name,
+                signal=signal,
+                score=score,
+                session_name=session_name,
+                market_condition=market_condition,
+                reason=reason,
+                trade_plan=trade_plan,
+                decision="EXECUTION_SKIPPED_OPPOSITE_POSITION",
+                decision_reason="opposite position exists",
+                rr_value=rr_value,
+                required_rr=min_rr_required,
+            )
 
             return current_candle_time
 
@@ -7263,13 +7325,74 @@ def process_cycle(last_processed_candle_time):
             strategy_name=strategy_name,
             signal=signal,
         ):
+            save_execution_memory_report(
+                selected_signal_data=selected_signal_data,
+                strategy_name=strategy_name,
+                signal=signal,
+                score=score,
+                session_name=session_name,
+                market_condition=market_condition,
+                reason=reason,
+                trade_plan=trade_plan,
+                decision="EXECUTION_BLOCKED_BY_MEMORY",
+                decision_reason="execution memory blocked this setup",
+                rr_value=rr_value,
+                required_rr=min_rr_required,
+            )
+
             return current_candle_time
+        
+        save_execution_memory_report(
+            selected_signal_data=selected_signal_data,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=score,
+            session_name=session_name,
+            market_condition=market_condition,
+            reason=reason,
+            trade_plan=trade_plan,
+            decision="EXECUTION_ATTEMPT",
+            decision_reason="sending normal order to MT5",
+            rr_value=rr_value,
+            required_rr=min_rr_required,
+        )
 
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
 
         if execution_result:
+            save_execution_memory_report(
+                selected_signal_data=selected_signal_data,
+                strategy_name=strategy_name,
+                signal=signal,
+                score=score,
+                session_name=session_name,
+                market_condition=market_condition,
+                reason=reason,
+                trade_plan=trade_plan,
+                decision="EXECUTION_SUCCESS",
+                decision_reason="normal MT5 order execution returned success",
+                rr_value=rr_value,
+                required_rr=min_rr_required,
+                execution_result=execution_result,
+            )
+
             execution_engine.mark_executed(best_setup)
         else:
+            save_execution_memory_report(
+                selected_signal_data=selected_signal_data,
+                strategy_name=strategy_name,
+                signal=signal,
+                score=score,
+                session_name=session_name,
+                market_condition=market_condition,
+                reason=reason,
+                trade_plan=trade_plan,
+                decision="EXECUTION_FAILED",
+                decision_reason="normal execute_trade returned False",
+                rr_value=rr_value,
+                required_rr=min_rr_required,
+                execution_result=execution_result,
+            )
             if hasattr(execution_engine, "mark_execution_failed"):
                 execution_engine.mark_execution_failed(
                     best_setup,
