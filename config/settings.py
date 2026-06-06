@@ -139,6 +139,15 @@ AUTO_NEWS_KEYWORDS = [
 ]
 
 # =========================
+# News context memory
+# =========================
+ENABLE_NEWS_CONTEXT_MEMORY = True
+
+# Used for scenario memory after news, not only blocking.
+NEWS_CONTEXT_BEFORE_MINUTES = 30
+NEWS_CONTEXT_AFTER_MINUTES = 180
+
+# =========================
 # Execution / Risk Settings
 # =========================
 POSITION_MODE = "fixed"   # "fixed" or "risk"

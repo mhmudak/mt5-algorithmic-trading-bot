@@ -40,17 +40,51 @@ def _safe_text(value):
 
 
 def _detect_news_tag(item):
+    extra = item.get("extra", {}) or {}
+
+    if isinstance(extra, dict):
+        direct_tag = extra.get("news_tag")
+
+        if direct_tag:
+            return _safe_text(direct_tag)
+
+        news_context = extra.get("news_context", {}) or {}
+
+        if isinstance(news_context, dict):
+            context_tag = news_context.get("news_tag")
+
+            if context_tag:
+                return _safe_text(context_tag)
+
+            context_event = news_context.get("news_event")
+
+            if context_event:
+                text = _safe_text(context_event)
+            else:
+                text = ""
+        else:
+            text = _safe_text(news_context)
+
+    else:
+        text = _safe_text(extra)
+
     text = " ".join([
+        text,
         _safe_text(item.get("reason")),
         _safe_text(item.get("context_key")),
         _safe_text(item.get("scenario_key")),
-        _safe_text(item.get("extra")),
     ])
 
     news_keywords = {
-        "NFP": ["NFP", "NON FARM", "NONFARM", "PAYROLL"],
+        "NFP": ["NFP", "NON FARM", "NON-FARM", "NONFARM", "PAYROLL"],
         "CPI": ["CPI", "INFLATION"],
+        "PPI": ["PPI"],
         "FOMC": ["FOMC", "FED", "POWELL", "RATE DECISION", "INTEREST RATE"],
+        "PCE": ["PCE"],
+        "GDP": ["GDP"],
+        "RETAIL_SALES": ["RETAIL SALES"],
+        "PMI": ["PMI", "ISM"],
+        "JOBS": ["UNEMPLOYMENT", "JOBLESS", "CLAIMS", "ADP", "JOLTS"],
         "NEWS": ["NEWS", "HIGH_IMPACT", "BLACKOUT"],
     }
 
@@ -61,10 +95,91 @@ def _detect_news_tag(item):
 
     return "NO_NEWS_TAG"
 
+def _get_extra(item):
+    extra = item.get("extra", {}) or {}
+    return extra if isinstance(extra, dict) else {}
+
+
+def _get_nested(extra, parent_key, child_key):
+    parent = extra.get(parent_key, {}) or {}
+
+    if isinstance(parent, dict):
+        return parent.get(child_key)
+
+    return None
+
+
+def _score_bucket(score):
+    try:
+        score = float(score)
+    except Exception:
+        return "SCORE_NA"
+
+    if score >= 95:
+        return "SCORE_95_PLUS"
+
+    if score >= 90:
+        return "SCORE_90_94"
+
+    if score >= 80:
+        return "SCORE_80_89"
+
+    return "SCORE_LT_80"
+
+
+def _rr_bucket(value):
+    try:
+        rr = float(value)
+    except Exception:
+        return None
+
+    if rr < 1.2:
+        return "RR_LT_1_2"
+
+    if rr < 2.0:
+        return "RR_1_2_TO_2"
+
+    return "RR_2_PLUS"
+
+
+def _count_bucket(value):
+    try:
+        count = int(value)
+    except Exception:
+        return None
+
+    if count <= 1:
+        return "CONFLUENCE_1"
+
+    if count <= 3:
+        return "CONFLUENCE_2_3"
+
+    if count <= 5:
+        return "CONFLUENCE_4_5"
+
+    return "CONFLUENCE_6_PLUS"
+
+
+def _currency_relevance(symbol, news_currency):
+    symbol = _safe_text(symbol)
+    news_currency = _safe_text(news_currency)
+
+    if not news_currency:
+        return None
+
+    if news_currency == "USD" and any(key in symbol for key in ["XAU", "USD", "NAS", "US30", "SPX", "BTC"]):
+        return "NEWS_CURRENCY_RELEVANT"
+
+    if news_currency and news_currency in symbol:
+        return "NEWS_CURRENCY_RELEVANT"
+
+    return "NEWS_CURRENCY_SECONDARY"
 
 def build_scenario_signature_keys(item):
     if not item:
         return []
+
+    extra = _get_extra(item)
 
     strategies = _normalize_list(item.get("nearby_strategies"))
 
@@ -88,21 +203,99 @@ def build_scenario_signature_keys(item):
     day_of_week = _safe_text(item.get("day_of_week"))
     time_window = _safe_text(item.get("time_window"))
     entry_model = _safe_text(item.get("entry_model"))
+    score_bucket = _score_bucket(item.get("score"))
+
     news_tag = _detect_news_tag(item)
+    news_currency = (
+        extra.get("news_currency")
+        or _get_nested(extra, "news_context", "news_currency")
+    )
+    news_relevance = _currency_relevance(symbol, news_currency)
+
+    rr_bucket = _rr_bucket(
+        item.get("rr")
+        or extra.get("rr")
+        or extra.get("shadow_rr")
+        or extra.get("required_rr")
+    )
+
+    htf_bias = _safe_text(
+        item.get("htf_bias")
+        or extra.get("htf_bias")
+        or extra.get("mtf_bias")
+    )
+
+    mtf_bias = _safe_text(
+        item.get("mtf_bias")
+        or extra.get("mtf_bias")
+    )
+
+    timeframe = _safe_text(
+        item.get("timeframe")
+        or extra.get("timeframe")
+    )
+
+    volatility_regime = _safe_text(
+        item.get("volatility_regime")
+        or extra.get("volatility_regime")
+    )
+
+    confluence_bucket = _count_bucket(len(strategies))
 
     keys = [
+        # Strictest key
         f"SIG_STRICT|{symbol}|{signal}|{session}|{market_condition}|{day_of_week}|{time_window}|{combo}",
+
+        # Core practical keys
         f"SIG_SESSION_MARKET|{symbol}|{signal}|{session}|{market_condition}|{combo}",
         f"SIG_SESSION|{symbol}|{signal}|{session}|{combo}",
         f"SIG_MARKET|{symbol}|{signal}|{market_condition}|{combo}",
         f"SIG_COMBO|{symbol}|{signal}|{combo}",
+
+        # Entry / quality keys
         f"SIG_ENTRY_MODEL|{symbol}|{signal}|{session}|{market_condition}|{entry_model}|{combo}",
+        f"SIG_SCORE_BUCKET|{symbol}|{signal}|{session}|{market_condition}|{score_bucket}|{combo}",
+        f"SIG_CONFLUENCE_COUNT|{symbol}|{signal}|{session}|{market_condition}|{confluence_bucket}|{combo}",
+
+        # Time behavior
+        f"SIG_TIME_WINDOW|{symbol}|{signal}|{time_window}|{combo}",
+        f"SIG_DAY|{symbol}|{signal}|{day_of_week}|{combo}",
     ]
+
+    if timeframe:
+        keys.append(
+            f"SIG_TIMEFRAME|{symbol}|{signal}|{timeframe}|{combo}"
+        )
+
+    if htf_bias:
+        keys.append(
+            f"SIG_HTF_BIAS|{symbol}|{signal}|{session}|{market_condition}|{htf_bias}|{combo}"
+        )
+
+    if mtf_bias:
+        keys.append(
+            f"SIG_MTF_BIAS|{symbol}|{signal}|{session}|{market_condition}|{mtf_bias}|{combo}"
+        )
+
+    if volatility_regime:
+        keys.append(
+            f"SIG_VOLATILITY|{symbol}|{signal}|{session}|{volatility_regime}|{combo}"
+        )
+
+    if rr_bucket:
+        keys.append(
+            f"SIG_RR_BUCKET|{symbol}|{signal}|{session}|{market_condition}|{rr_bucket}|{combo}"
+        )
 
     if news_tag != "NO_NEWS_TAG":
         keys.append(
             f"SIG_NEWS|{symbol}|{signal}|{news_tag}|{session}|{market_condition}|{combo}"
         )
+
+        if news_relevance:
+            keys.append(
+                f"SIG_NEWS_RELEVANCE|{symbol}|{signal}|{news_tag}|{news_relevance}|{session}|{market_condition}|{combo}"
+            )
 
     return keys
 

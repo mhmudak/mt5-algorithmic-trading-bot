@@ -27,7 +27,7 @@ from src.dashboard import rebuild_dashboard
 from src.mtf_confirmation import get_mtf_bias
 from src.htf_filter import get_htf_context, htf_allows_signal
 from src.liquidity_context import get_liquidity_context, liquidity_allows_signal
-from src.news_filter import is_news_blackout_active
+from src.news_filter import is_news_blackout_active, get_active_news_context
 from src.time_filter import is_trading_blackout_active
 from src.reversal_checker import build_blocked_setup_reversal
 from src.external_macro_confirmation import apply_external_macro_confirmation
@@ -1170,6 +1170,14 @@ def get_scalp_sl_reference(df, signal, entry_price, signal_data):
 
     return None, None
 
+def attach_news_context_to_signal_data(signal_data):
+    news_context = get_active_news_context()
+
+    if news_context and signal_data is not None:
+        signal_data["news_context"] = news_context
+        signal_data["news_tag"] = news_context.get("news_tag")
+
+    return news_context
 
 def try_build_scalp_trade_plan(
     df,
@@ -2507,7 +2515,9 @@ def process_mtf_conflict_candidate(
             "execution_reason": execution_reason,
         },
     )
-    
+
+    news_context = attach_news_context_to_signal_data(candidate)
+
     tracked = register_setup_outcome(
         symbol=SYMBOL,
         setup_id=setup_id,
@@ -2530,6 +2540,8 @@ def process_mtf_conflict_candidate(
             "execution_allowed": execution_allowed,
             "execution_reason": execution_reason,
             "source": "mtf_conflict_candidate_tracked",
+            "news_context": news_context,
+            "news_tag": news_context.get("news_tag") if news_context else None,
         },
     )
     
@@ -5319,6 +5331,8 @@ def process_cycle(last_processed_candle_time):
                     reason=rejection_reason,
                 )
                 
+                news_context = attach_news_context_to_signal_data(validated_candidate)
+                
                 tracked = register_setup_outcome(
                     symbol=SYMBOL,
                     setup_id=validated_candidate.get("setup_id"),
@@ -5337,6 +5351,8 @@ def process_cycle(last_processed_candle_time):
                         "rr": rr_value,
                         "required_rr": min_rr_required,
                         "source": "candidate_rejected_low_rr",
+                        "news_context": news_context,
+                        "news_tag": news_context.get("news_tag") if news_context else None,
                     },
                 )
                 
@@ -5576,6 +5592,8 @@ def process_cycle(last_processed_candle_time):
                     },
                 )
                 
+                news_context = attach_news_context_to_signal_data(selected_signal_data)
+                
                 tracked = register_setup_outcome(
                     symbol=SYMBOL,
                     setup_id=selected_signal_data.get("setup_id"),
@@ -5596,6 +5614,8 @@ def process_cycle(last_processed_candle_time):
                     extra={
                         "protected_reentry": selected_signal_data.get("protected_reentry"),
                         "source": "setup_detected_raw",
+                        "news_context": news_context,
+                        "news_tag": news_context.get("news_tag") if news_context else None,
                     },
                 )
                 

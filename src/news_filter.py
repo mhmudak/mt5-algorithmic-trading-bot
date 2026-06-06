@@ -15,6 +15,9 @@ from config.settings import (
     AUTO_NEWS_CURRENCIES,
     AUTO_NEWS_IMPACT,
     AUTO_NEWS_KEYWORDS,
+    ENABLE_NEWS_CONTEXT_MEMORY,
+    NEWS_CONTEXT_BEFORE_MINUTES,
+    NEWS_CONTEXT_AFTER_MINUTES,
 )
 from src.logger import logger
 
@@ -216,6 +219,103 @@ def _auto_news_blackout(now):
 
     return False, "no_auto_news_blackout"
 
+def classify_news_event_name(name):
+    text = str(name or "").upper()
+
+    if any(key in text for key in ["NFP", "NON-FARM", "NON FARM", "NONFARM", "PAYROLL"]):
+        return "NFP"
+
+    if "CPI" in text or "INFLATION" in text:
+        return "CPI"
+
+    if "PPI" in text:
+        return "PPI"
+
+    if any(key in text for key in ["FOMC", "FED", "POWELL", "FEDERAL FUNDS", "RATE DECISION", "INTEREST RATE"]):
+        return "FOMC"
+
+    if "PCE" in text:
+        return "PCE"
+
+    if "GDP" in text:
+        return "GDP"
+
+    if "RETAIL SALES" in text:
+        return "RETAIL_SALES"
+
+    if "ISM" in text or "PMI" in text:
+        return "PMI"
+
+    if "JOLTS" in text:
+        return "JOLTS"
+
+    if "ADP" in text:
+        return "ADP"
+
+    if "UNEMPLOYMENT" in text or "JOBLESS" in text or "CLAIMS" in text:
+        return "JOBS"
+
+    return "HIGH_IMPACT_NEWS"
+
+
+def get_active_news_context(now=None):
+    if not ENABLE_NEWS_CONTEXT_MEMORY:
+        return None
+
+    if now is None:
+        now = datetime.now()
+
+    candidates = []
+
+    # Manual news
+    for event in NEWS_BLACKOUT_WINDOWS:
+        try:
+            event_time = _parse_manual_news_time(event["time"])
+            event_name = event.get("name", "High-impact news")
+
+            start = event_time - timedelta(minutes=NEWS_CONTEXT_BEFORE_MINUTES)
+            end = event_time + timedelta(minutes=NEWS_CONTEXT_AFTER_MINUTES)
+
+            if start <= now <= end:
+                candidates.append({
+                    "news_tag": classify_news_event_name(event_name),
+                    "news_event": event_name,
+                    "news_currency": event.get("currency", ""),
+                    "news_impact": event.get("impact", "Manual"),
+                    "news_time": event_time.strftime("%Y-%m-%d %H:%M"),
+                    "news_source": "MANUAL",
+                    "minutes_from_news": round((now - event_time).total_seconds() / 60, 1),
+                })
+
+        except Exception:
+            continue
+
+    # Auto news
+    for event in _get_auto_news_events():
+        event_time = event["time"]
+
+        start = event_time - timedelta(minutes=NEWS_CONTEXT_BEFORE_MINUTES)
+        end = event_time + timedelta(minutes=NEWS_CONTEXT_AFTER_MINUTES)
+
+        if start <= now <= end:
+            candidates.append({
+                "news_tag": classify_news_event_name(event.get("name")),
+                "news_event": event.get("name"),
+                "news_currency": event.get("currency"),
+                "news_impact": event.get("impact"),
+                "news_time": event_time.strftime("%Y-%m-%d %H:%M"),
+                "news_source": event.get("source"),
+                "minutes_from_news": round((now - event_time).total_seconds() / 60, 1),
+            })
+
+    if not candidates:
+        return None
+
+    # Pick nearest event by absolute time distance.
+    return min(
+        candidates,
+        key=lambda item: abs(float(item.get("minutes_from_news", 999999)))
+    )
 
 def is_news_blackout_active(now=None):
     if not ENABLE_NEWS_FILTER:
