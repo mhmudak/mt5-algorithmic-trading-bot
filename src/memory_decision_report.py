@@ -56,9 +56,11 @@ def build_memory_decision_report(
     trade_plan=None,
     decision="OBSERVE",
     decision_reason=None,
+    extra=None,
 ):
     signal_data = signal_data or {}
     trade_plan = trade_plan or {}
+    extra = extra or {}
 
     return {
         "created_at": datetime.now().isoformat(),
@@ -79,7 +81,19 @@ def build_memory_decision_report(
         "entry": trade_plan.get("entry_price"),
         "sl": trade_plan.get("stop_loss"),
         "tp": trade_plan.get("take_profit"),
-        "rr": trade_plan.get("rr") or trade_plan.get("risk_reward"),
+        "lot": trade_plan.get("lot"),
+        "stop_distance": trade_plan.get("stop_distance"),
+        "tp_buffer": trade_plan.get("tp_buffer"),
+        "risk_mode": trade_plan.get("risk_mode"),
+        "risk_pct": trade_plan.get("risk_pct"),
+        "account_balance": trade_plan.get("account_balance"),
+        "rr": (
+            extra.get("rr")
+            or trade_plan.get("rr")
+            or trade_plan.get("risk_reward")
+        ),
+        "extra": extra,
+        "required_rr": extra.get("required_rr"),
 
         "memory": {
             "similarity": signal_data.get("similarity_memory"),

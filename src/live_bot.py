@@ -667,6 +667,45 @@ def check_setup_outcome_memory_guard(signal_data, setup_id, strategy_name, signa
 
     return should_block, reason
 
+def save_trade_plan_memory_report(
+    *,
+    selected_signal_data,
+    strategy_name,
+    signal,
+    score,
+    session_name,
+    market_condition,
+    reason,
+    trade_plan,
+    decision,
+    decision_reason,
+    rr_value=None,
+    required_rr=None,
+):
+    if not ENABLE_MEMORY_DECISION_REPORT:
+        return False
+
+    memory_report = build_memory_decision_report(
+        setup_id=selected_signal_data.get("setup_id"),
+        strategy=strategy_name,
+        signal=signal,
+        score=score,
+        session=session_name,
+        market_condition=market_condition,
+        reason=reason,
+        signal_data=selected_signal_data,
+        trade_plan=trade_plan,
+        decision=decision,
+        decision_reason=decision_reason,
+        extra={
+            "rr": rr_value,
+            "required_rr": required_rr,
+            "stage": "post_trade_plan",
+        },
+    )
+
+    return save_memory_decision_report(memory_report)
+
 def is_trade_blocked_by_execution_memory(
     *,
     trade_plan,
@@ -5280,6 +5319,19 @@ def process_cycle(last_processed_candle_time):
                     f"score={validated_candidate.get('score')} "
                     f"reason={rejection_reason}"
                 )
+                
+                save_trade_plan_memory_report(
+                    selected_signal_data=validated_candidate,
+                    strategy_name=candidate_strategy,
+                    signal=candidate_signal,
+                    score=validated_candidate.get("score"),
+                    session_name=session_name,
+                    market_condition=market_condition,
+                    reason=rejection_reason,
+                    trade_plan=None,
+                    decision="CANDIDATE_TRADE_PLAN_FAILED",
+                    decision_reason="candidate calculate_trade_plan returned None",
+                )
 
                 continue
 
@@ -5316,6 +5368,21 @@ def process_cycle(last_processed_candle_time):
                     f"signal={candidate_signal} "
                     f"score={validated_candidate.get('score')} "
                     f"rr={rr_value} required={min_rr_required}"
+                )
+                
+                save_trade_plan_memory_report(
+                    selected_signal_data=validated_candidate,
+                    strategy_name=candidate_strategy,
+                    signal=candidate_signal,
+                    score=validated_candidate.get("score"),
+                    session_name=session_name,
+                    market_condition=market_condition,
+                    reason=rejection_reason,
+                    trade_plan=candidate_trade_plan,
+                    decision="CANDIDATE_REJECTED_LOW_RR",
+                    decision_reason="candidate trade plan calculated but RR below required threshold",
+                    rr_value=rr_value,
+                    required_rr=min_rr_required,
                 )
 
                 log_setup_event(
@@ -6200,6 +6267,19 @@ def process_cycle(last_processed_candle_time):
         trade_plan["reason"] = reason
         trade_plan["session"] = selected_signal_data.get("session", session_name)
         trade_plan["setup_id"] = selected_signal_data.get("setup_id", "N/A")
+        
+        save_trade_plan_memory_report(
+            selected_signal_data=selected_signal_data,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=score,
+            session_name=session_name,
+            market_condition=market_condition,
+            reason=reason,
+            trade_plan=trade_plan,
+            decision="TRADE_PLAN_READY",
+            decision_reason="trade plan calculated successfully before RR review",
+        )
 
     if signal in ["BUY", "SELL"] and trade_plan is None:
         logger.info(
@@ -6207,6 +6287,19 @@ def process_cycle(last_processed_candle_time):
             f"strategy={strategy_name} "
             f"signal={signal} "
             f"data_keys={list(selected_signal_data.keys())}"
+        )
+        
+        save_trade_plan_memory_report(
+            selected_signal_data=selected_signal_data,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=score,
+            session_name=session_name,
+            market_condition=market_condition,
+            reason=reason,
+            trade_plan=None,
+            decision="TRADE_PLAN_FAILED",
+            decision_reason="calculate_trade_plan returned None",
         )
 
         send_telegram_message(
@@ -6258,6 +6351,21 @@ def process_cycle(last_processed_candle_time):
             rr=rr_value,
             required_rr=min_rr_required,
             reason=reason,
+        )
+        
+        save_trade_plan_memory_report(
+            selected_signal_data=selected_signal_data,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=score,
+            session_name=session_name,
+            market_condition=market_condition,
+            reason=reason,
+            trade_plan=trade_plan,
+            decision="RISK_REVIEW_READY",
+            decision_reason="trade plan and RR review available",
+            rr_value=rr_value,
+            required_rr=min_rr_required,
         )
         
         structural_key = attach_structural_execution_key(
@@ -6355,6 +6463,22 @@ def process_cycle(last_processed_candle_time):
     if is_cooldown_active() and signal in ["BUY", "SELL"]:
         trade_allowed = False
         guard_reason = "Cooldown after stop loss is active"
+
+    if signal in ["BUY", "SELL"] and trade_plan is not None:
+        save_trade_plan_memory_report(
+            selected_signal_data=selected_signal_data,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=score,
+            session_name=session_name,
+            market_condition=market_condition,
+            reason=reason,
+            trade_plan=trade_plan,
+            decision="RISK_REVIEW_RESULT",
+            decision_reason=guard_reason if not trade_allowed else "trade guard passed",
+            rr_value=rr_value,
+            required_rr=min_rr_required,
+        )
 
     # =========================
     # DEBUG
