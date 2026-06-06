@@ -243,7 +243,7 @@ def notify_setup_similarity_if_relevant(setup_id):
         f"({round(stats.get('sl_rate', 0) * 100, 1)}%)\n"
         f"Avg Favorable: {stats.get('avg_favorable')}\n"
         f"Avg Adverse: {stats.get('avg_adverse')}\n"
-        f"Avg After Adverse: {stats.get('avg_after_adverse')}\n\n"
+        f"Avg Recovery Swing: {stats.get('avg_recovery_swing')}\n\n"
         f"Nearby Strategies: {report.get('nearby_strategies')}\n"
         f"Context: {report.get('context_key')}"
     )

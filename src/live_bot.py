@@ -223,6 +223,11 @@ from config.settings import (
     SMC_FAILED_LOW_RR_SL_ZONE_STRATEGIES,
     SMC_FAILED_LOW_RR_SL_ZONE_EXPIRY_MINUTES,
     ENABLE_SETUP_OUTCOME_TRACKER,
+    ENABLE_SETUP_OUTCOME_MEMORY_GUARD,
+    MEMORY_GUARD_BLOCK_DANGEROUS_PATTERNS,
+    MEMORY_GUARD_MIN_SAMPLES_FOR_WARNING,
+    MEMORY_GUARD_MIN_SAMPLES_FOR_BLOCK,
+    MEMORY_GUARD_NOTIFY_ON_WARNING,
 )
 
 from src.candidate_rejection_recovery import (
@@ -514,6 +519,113 @@ def get_trade_setup_id(trade_plan=None, signal_data=None, setup=None):
 
     return None
 
+def check_setup_outcome_memory_guard(signal_data, setup_id, strategy_name, signal):
+    if not ENABLE_SETUP_OUTCOME_MEMORY_GUARD:
+        return False, None
+
+    if not signal_data:
+        return False, None
+
+    dangerous_reports = []
+
+    memory_sources = [
+        {
+            "name": "similarity",
+            "key": "similarity_memory",
+            "dangerous_classification": "DANGEROUS_REPETITIVE_PATTERN",
+        },
+        {
+            "name": "scenario_cluster",
+            "key": "scenario_cluster_memory",
+            "dangerous_classification": "DANGEROUS_CLUSTER_PATTERN",
+        },
+    ]
+
+    for source in memory_sources:
+        report = signal_data.get(source["key"])
+
+        if not report:
+            continue
+
+        classification = report.get("classification")
+        stats = report.get("stats", {}) or {}
+        samples = int(stats.get("total", 0) or 0)
+
+        if classification != source["dangerous_classification"]:
+            continue
+
+        if samples < MEMORY_GUARD_MIN_SAMPLES_FOR_WARNING:
+            continue
+
+        dangerous_reports.append(
+            {
+                "source": source["name"],
+                "classification": classification,
+                "samples": samples,
+                "w10_rate": stats.get("w10_rate"),
+                "tp_rate": stats.get("tp_rate"),
+                "sl_rate": stats.get("sl_rate"),
+                "avg_favorable": stats.get("avg_favorable"),
+                "avg_adverse": stats.get("avg_adverse"),
+                "avg_recovery_swing": stats.get("avg_recovery_swing"),
+            }
+        )
+
+    if not dangerous_reports:
+        return False, None
+
+    strongest = max(
+        dangerous_reports,
+        key=lambda item: (
+            float(item.get("sl_rate", 0) or 0),
+            int(item.get("samples", 0) or 0),
+        ),
+    )
+
+    reason = (
+        f"memory_guard_dangerous_{strongest['source']} "
+        f"classification={strongest['classification']} "
+        f"samples={strongest['samples']} "
+        f"w10_rate={strongest.get('w10_rate')} "
+        f"tp_rate={strongest.get('tp_rate')} "
+        f"sl_rate={strongest.get('sl_rate')} "
+        f"avg_favorable={strongest.get('avg_favorable')} "
+        f"avg_adverse={strongest.get('avg_adverse')} "
+        f"avg_recovery_swing={strongest.get('avg_recovery_swing')}"
+    )
+
+    should_block = (
+        MEMORY_GUARD_BLOCK_DANGEROUS_PATTERNS
+        and strongest["samples"] >= MEMORY_GUARD_MIN_SAMPLES_FOR_BLOCK
+    )
+
+    logger.warning(
+        f"[SETUP OUTCOME MEMORY GUARD] "
+        f"setup_id={setup_id} strategy={strategy_name} signal={signal} "
+        f"block={should_block} reason={reason}"
+    )
+
+    if MEMORY_GUARD_NOTIFY_ON_WARNING and not signal_data.get("memory_guard_notified"):
+        send_telegram_message(
+            f"⚠️ Setup Outcome Memory Guard\n"
+            f"Setup ID: {setup_id}\n"
+            f"Strategy: {strategy_name}\n"
+            f"Signal: {signal}\n"
+            f"Mode: {'BLOCK' if should_block else 'WARNING ONLY'}\n\n"
+            f"Source: {strongest['source']}\n"
+            f"Classification: {strongest['classification']}\n"
+            f"Samples: {strongest['samples']}\n"
+            f"W10 Rate: {strongest.get('w10_rate')}\n"
+            f"TP Rate: {strongest.get('tp_rate')}\n"
+            f"SL Rate: {strongest.get('sl_rate')}\n"
+            f"Avg Favorable: {strongest.get('avg_favorable')}\n"
+            f"Avg Adverse: {strongest.get('avg_adverse')}\n"
+            f"Avg Recovery Swing: {strongest.get('avg_recovery_swing')}"
+        )
+
+        signal_data["memory_guard_notified"] = True
+
+    return should_block, reason
 
 def is_trade_blocked_by_execution_memory(
     *,
@@ -528,6 +640,34 @@ def is_trade_blocked_by_execution_memory(
         signal_data=signal_data,
         setup=setup,
     )
+    
+        memory_blocked, memory_reason = check_setup_outcome_memory_guard(
+        signal_data=signal_data,
+        setup_id=setup_id,
+        strategy_name=strategy_name,
+        signal=signal,
+    )
+
+    if memory_blocked:
+        log_setup_event(
+            setup_id=setup_id,
+            event="SETUP_OUTCOME_MEMORY_GUARD_BLOCKED",
+            strategy=strategy_name,
+            signal=signal,
+            entry_model=signal_data.get("entry_model") if signal_data else None,
+            score=signal_data.get("score") if signal_data else None,
+            session=signal_data.get("session") if signal_data else None,
+            market_condition=trade_plan.get("market_condition") if trade_plan else None,
+            entry=trade_plan.get("entry_price") if trade_plan else None,
+            sl=trade_plan.get("stop_loss") if trade_plan else None,
+            tp=trade_plan.get("take_profit") if trade_plan else None,
+            reason=memory_reason,
+            extra={
+                "guard": "setup_outcome_memory_guard",
+            },
+        )
+
+        return True
 
     blocked, block = is_setup_execution_blocked(setup_id)
 
