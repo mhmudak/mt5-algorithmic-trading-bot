@@ -2138,6 +2138,16 @@ def process_mtf_conflict_candidate(
 
     shadow_rr = None
     required_rr = None
+    
+    if shadow_trade_plan is None:
+        logger.info(
+            f"[MTF CONFLICT] shadow trade plan failed | "
+            f"setup_id={setup_id} strategy={strategy} signal={signal} "
+            f"entry_price={price_at_rejection} "
+            f"sl_reference={candidate.get('sl_reference')} "
+            f"tp_reference={candidate.get('tp_reference')} "
+            f"entry_model={entry_model}"
+        )
 
     if shadow_trade_plan is not None:
         shadow_trade_plan["score"] = candidate.get("score", 0)
