@@ -641,7 +641,7 @@ def is_trade_blocked_by_execution_memory(
         setup=setup,
     )
     
-        memory_blocked, memory_reason = check_setup_outcome_memory_guard(
+    memory_blocked, memory_reason = check_setup_outcome_memory_guard(
         signal_data=signal_data,
         setup_id=setup_id,
         strategy_name=strategy_name,
