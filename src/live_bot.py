@@ -32,7 +32,7 @@ from src.time_filter import is_trading_blackout_active
 from src.reversal_checker import build_blocked_setup_reversal
 from src.external_macro_confirmation import apply_external_macro_confirmation
 from src.position_guard import count_same_direction_positions
-
+from src.setup_similarity_memory import notify_setup_similarity_if_relevant
 from src.execution_block_memory import is_setup_execution_blocked
 from src.execution_engine import ExecutionEngine
 execution_engine = ExecutionEngine()
@@ -2324,7 +2324,7 @@ def process_mtf_conflict_candidate(
         },
     )
     
-    register_setup_outcome(
+    tracked = register_setup_outcome(
         symbol=SYMBOL,
         setup_id=setup_id,
         event="MTF_CONFLICT_CANDIDATE_TRACKED",
@@ -2348,6 +2348,9 @@ def process_mtf_conflict_candidate(
             "source": "mtf_conflict_candidate_tracked",
         },
     )
+    
+    if tracked:
+        notify_setup_similarity_if_relevant(setup_id)
 
     if not execution_allowed:
         logger.info(
@@ -4986,7 +4989,7 @@ def process_cycle(last_processed_candle_time):
                     reason=rejection_reason,
                 )
                 
-                register_rejected_candidate_setup_outcome(
+                tracked = register_rejected_candidate_setup_outcome(
                     candidate=candidate,
                     rejection_reason=rejection_reason,
                     df=df,
@@ -4995,6 +4998,9 @@ def process_cycle(last_processed_candle_time):
                     market_condition=market_condition,
                     session_name=session_name,
                 )
+                
+                if tracked:
+                    notify_setup_similarity_if_relevant(candidate.get("setup_id"))
                 
                 if (
                     ENABLE_CANDIDATE_REJECTION_TELEGRAM_ALERTS
@@ -5100,7 +5106,7 @@ def process_cycle(last_processed_candle_time):
                     reason=rejection_reason,
                 )
                 
-                register_setup_outcome(
+                tracked = register_setup_outcome(
                     symbol=SYMBOL,
                     setup_id=validated_candidate.get("setup_id"),
                     event="CANDIDATE_REJECTED_LOW_RR",
@@ -5120,6 +5126,9 @@ def process_cycle(last_processed_candle_time):
                         "source": "candidate_rejected_low_rr",
                     },
                 )
+                
+                if tracked:
+                    notify_setup_similarity_if_relevant(validated_candidate.get("setup_id"))
                 
                 if (
                     ENABLE_CANDIDATE_REJECTION_TELEGRAM_ALERTS
@@ -5353,7 +5362,7 @@ def process_cycle(last_processed_candle_time):
                     },
                 )
                 
-                register_setup_outcome(
+                tracked = register_setup_outcome(
                     symbol=SYMBOL,
                     setup_id=selected_signal_data.get("setup_id"),
                     event="SETUP_DETECTED",
@@ -5375,6 +5384,9 @@ def process_cycle(last_processed_candle_time):
                         "source": "setup_detected_raw",
                     },
                 )
+                
+                if tracked:
+                    notify_setup_similarity_if_relevant(selected_signal_data.get("setup_id"))
 
             original_signal = signal
             original_strategy_name = strategy_name
