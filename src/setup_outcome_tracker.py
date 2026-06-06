@@ -14,6 +14,7 @@ from config.settings import (
 from src.account_context import get_account_file
 from src.logger import logger
 
+from src.google_sheets_logger import send_setup_outcome_to_google_sheets
 
 def get_setup_outcomes_file():
     return get_account_file("setup_outcomes.json")
@@ -187,16 +188,23 @@ def register_setup_outcome(
 
     if existing:
         source_events = existing.get("source_events", [])
-
+    
         if event not in source_events:
             source_events.append(event)
-
+    
         existing["source_events"] = source_events
         existing["last_seen_at"] = now.isoformat()
-
+        existing["updated_at"] = now.isoformat()
+    
         save_setup_outcomes(items)
+    
+        try:
+            send_setup_outcome_to_google_sheets(existing)
+        except Exception as e:
+            logger.error(f"[SETUP OUTCOME] Google Sheets sync failed: {e}")
+    
         return True
-
+    
     item = {
         "setup_id": setup_id,
         "symbol": symbol,
@@ -257,6 +265,11 @@ def register_setup_outcome(
             stored_item["nearby_strategies"] = nearby
 
     save_setup_outcomes(items)
+    
+    try:
+        send_setup_outcome_to_google_sheets(item)
+    except Exception as e:
+        logger.error(f"[SETUP OUTCOME] Google Sheets sync failed: {e}")
 
     logger.info(
         f"[SETUP OUTCOME] Registered | "
@@ -447,5 +460,24 @@ def update_setup_outcomes(symbol, tick):
 
     if changed:
         save_setup_outcomes(items)
+        
+        synced_setup_ids = set()
+
+    for milestone in milestones:
+        setup_id = milestone.get("setup_id")
+
+        if not setup_id or setup_id in synced_setup_ids:
+            continue
+
+        item = items.get(setup_id)
+
+        if not item:
+            continue
+
+        try:
+            send_setup_outcome_to_google_sheets(item)
+            synced_setup_ids.add(setup_id)
+        except Exception as e:
+            logger.error(f"[SETUP OUTCOME] Google Sheets milestone sync failed: {e}")
 
     return milestones
