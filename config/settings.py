@@ -151,7 +151,7 @@ NEWS_CONTEXT_AFTER_MINUTES = 180
 # Execution / Risk Settings
 # =========================
 POSITION_MODE = "fixed"   # "fixed" or "risk"
-FIXED_LOT = 0.05
+FIXED_LOT = 0.04
 RISK_PER_TRADE_PCT = 0.25
 
 # =========================
@@ -1227,6 +1227,29 @@ ORB_TICK_BREAKOUT_MIN_DISTANCE = 0.30
 ORB_TICK_BREAKOUT_MIN_RR = 2.0
 
 ORB_TICK_BREAKOUT_REQUIRE_M5_CONFIRMATION = False
+
+# =========================
+# Generic Tick Sniper Execution Engine
+# =========================
+ENABLE_TICK_SNIPER_EXECUTION = True
+
+TICK_SNIPER_ALLOWED_STRATEGIES = [
+    "LIQUIDITY_SWEEP",
+    "LIQUIDITY_TRAP",
+    "STRUCTURE_LIQUIDITY"
+]
+
+TICK_SNIPER_MIN_SCORE = 95
+TICK_SNIPER_MIN_RR = 1.2
+
+# Price must move in the trade direction from the reference entry before execution.
+TICK_SNIPER_MIN_MOVE_PRICE = 0.30
+
+TICK_SNIPER_EXPIRY_SECONDS = 180
+TICK_SNIPER_NOTIFY_TELEGRAM = True
+
+# Keep this false first. Later we can add M5 confirmation strategy-by-strategy.
+TICK_SNIPER_REQUIRE_M5_CONFIRMATION = False
 
 # =========================
 # Candidate Rejection Notifications

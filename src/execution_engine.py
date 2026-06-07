@@ -189,6 +189,7 @@ class ExecutionEngine:
                 "EXPIRED",
                 "WAIT_BETTER_ENTRY",
                 "WAIT_DELAYED_ENTRY",
+                "WAIT_TICK_SNIPER",
                 "EXECUTION_FAILED",
                 "SKIPPED",
             ]:
@@ -506,6 +507,40 @@ class ExecutionEngine:
             if datetime.utcnow() > setup["expires_at"]:
                 setup["state"] = "EXPIRED"
                 setup["wait_reason"] = "ORB tick breakout watcher expired"
+                continue
+
+            valid_setups.append(setup)
+
+        return valid_setups
+    
+    def mark_wait_tick_sniper(
+        self,
+        setup,
+        expiry_seconds,
+        min_rr,
+        min_score,
+        min_move_price,
+        reference_price,
+    ):
+        setup["state"] = "WAIT_TICK_SNIPER"
+        setup["wait_reason"] = "Waiting for generic tick sniper confirmation"
+        setup["tick_sniper_started_at"] = datetime.utcnow()
+        setup["tick_sniper_min_rr"] = min_rr
+        setup["tick_sniper_min_score"] = min_score
+        setup["tick_sniper_min_move_price"] = min_move_price
+        setup["tick_sniper_reference_price"] = reference_price
+        setup["expires_at"] = datetime.utcnow() + timedelta(seconds=expiry_seconds)
+
+    def get_wait_tick_sniper_setups(self):
+        valid_setups = []
+
+        for setup in self.active_setups:
+            if setup.get("state") != "WAIT_TICK_SNIPER":
+                continue
+
+            if datetime.utcnow() > setup["expires_at"]:
+                setup["state"] = "EXPIRED"
+                setup["wait_reason"] = "Tick sniper watcher expired"
                 continue
 
             valid_setups.append(setup)

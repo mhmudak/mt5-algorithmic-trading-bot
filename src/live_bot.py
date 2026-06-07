@@ -244,6 +244,14 @@ from config.settings import (
     AI_SHADOW_ADVISOR_BLOCK_RECOMMENDATIONS,
     AI_SHADOW_ADVISOR_ALLOW_RECOMMENDATIONS,
     AI_SHADOW_ADVISOR_MIN_SAMPLES_FOR_CONTROL,
+    ENABLE_TICK_SNIPER_EXECUTION,
+    TICK_SNIPER_ALLOWED_STRATEGIES,
+    TICK_SNIPER_MIN_SCORE,
+    TICK_SNIPER_MIN_RR,
+    TICK_SNIPER_MIN_MOVE_PRICE,
+    TICK_SNIPER_EXPIRY_SECONDS,
+    TICK_SNIPER_NOTIFY_TELEGRAM,
+    TICK_SNIPER_REQUIRE_M5_CONFIRMATION,
 )
 
 from src.candidate_rejection_recovery import (
@@ -1606,6 +1614,7 @@ def is_structural_execution_locked(structural_key, current_setup=None):
         "WAIT_DELAYED_ENTRY",
         "WAIT_FVG_STAGED_ENTRY",
         "WAIT_ORB_TICK_BREAKOUT",
+        "WAIT_TICK_SNIPER",
         "EXECUTED",
     }
 
@@ -1640,6 +1649,7 @@ def is_setup_id_already_active(setup_id):
         "WAIT_DELAYED_ENTRY",
         "WAIT_FVG_STAGED_ENTRY",
         "WAIT_ORB_TICK_BREAKOUT",
+        "WAIT_TICK_SNIPER",
         "EXECUTED",
     }
 
@@ -2047,6 +2057,62 @@ def orb_tick_breakout_ready(signal, tick, signal_data, min_distance):
         return False, current_price, breakout_level, round(breakout_distance, 2)
 
     return False, None, None, None
+
+def should_use_tick_sniper_watcher(strategy_name, signal_data):
+    if not ENABLE_TICK_SNIPER_EXECUTION:
+        return False
+
+    strategy_key = str(strategy_name or "").upper()
+
+    if strategy_key not in TICK_SNIPER_ALLOWED_STRATEGIES:
+        return False
+
+    signal = signal_data.get("signal")
+
+    if signal not in ["BUY", "SELL"]:
+        return False
+
+    score = signal_data.get("score", 0)
+
+    try:
+        score = float(score)
+    except Exception:
+        score = 0
+
+    if score < TICK_SNIPER_MIN_SCORE:
+        return False
+
+    return True
+
+
+def tick_sniper_ready(signal, tick, setup_data, setup):
+    reference_price = setup.get("tick_sniper_reference_price")
+
+    if reference_price is None:
+        return False, None, None
+
+    try:
+        reference_price = float(reference_price)
+    except Exception:
+        return False, None, None
+
+    min_move = setup.get("tick_sniper_min_move_price", TICK_SNIPER_MIN_MOVE_PRICE)
+
+    try:
+        min_move = float(min_move)
+    except Exception:
+        min_move = TICK_SNIPER_MIN_MOVE_PRICE
+
+    if signal == "BUY":
+        current_price = float(tick.ask)
+        move = current_price - reference_price
+    elif signal == "SELL":
+        current_price = float(tick.bid)
+        move = reference_price - current_price
+    else:
+        return False, None, None
+
+    return move >= min_move, current_price, move
 
 def get_fvg_zone(candidate):
     fvg_top = (
@@ -3833,6 +3899,289 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
 
     return False
 
+def process_wait_tick_sniper_setups(df, tick, account_info, market_condition, session_name):
+    sniper_setups = execution_engine.get_wait_tick_sniper_setups()
+
+    if not sniper_setups:
+        return False
+
+    sniper_setups = sorted(
+        sniper_setups,
+        key=lambda setup: setup["data"].get("score", 0),
+        reverse=True,
+    )
+
+    for setup in sniper_setups:
+        setup_data = setup.get("data", {})
+        setup_id = setup_data.get("setup_id")
+        strategy_name = setup_data.get("strategy")
+        signal = setup_data.get("signal")
+        active_session = setup_data.get("session", session_name)
+        active_market_condition = setup_data.get("market_condition", market_condition)
+
+        if signal not in ["BUY", "SELL"]:
+            continue
+
+        ready, current_price, sniper_move = tick_sniper_ready(
+            signal=signal,
+            tick=tick,
+            setup_data=setup_data,
+            setup=setup,
+        )
+
+        if not ready:
+            logger.info(
+                f"[TICK SNIPER] Not ready | "
+                f"setup_id={setup_id} strategy={strategy_name} signal={signal} "
+                f"move={sniper_move}"
+            )
+            continue
+
+        if TICK_SNIPER_REQUIRE_M5_CONFIRMATION:
+            m5_confirmed, m5_reason = extra_entry_confirmation_ok(signal)
+
+            if not m5_confirmed:
+                logger.info(
+                    f"[TICK SNIPER] M5 confirmation failed | "
+                    f"setup_id={setup_id} signal={signal} reason={m5_reason}"
+                )
+                continue
+
+        news_blocked, news_reason = is_news_blackout_active()
+        if news_blocked:
+            logger.info(
+                f"[TICK SNIPER] News blocked | "
+                f"setup_id={setup_id} reason={news_reason}"
+            )
+            continue
+
+        time_blocked, time_reason = is_trading_blackout_active()
+        if time_blocked:
+            logger.info(
+                f"[TICK SNIPER] Time blocked | "
+                f"setup_id={setup_id} reason={time_reason}"
+            )
+            continue
+
+        trade_plan = calculate_trade_plan(
+            df=df,
+            signal=signal,
+            tick=tick,
+            account_balance=account_info.balance,
+            signal_data=setup_data,
+        )
+
+        if trade_plan is None:
+            logger.info(
+                f"[TICK SNIPER] Trade plan invalid | "
+                f"setup_id={setup_id} strategy={strategy_name}"
+            )
+            continue
+
+        trade_plan["strategy"] = strategy_name
+        trade_plan["signal"] = signal
+        trade_plan["score"] = setup_data.get("score")
+        trade_plan["market_condition"] = active_market_condition
+        trade_plan["session"] = active_session
+        trade_plan["setup_id"] = setup_id
+        trade_plan["reason"] = (
+            f"{setup_data.get('reason', 'N/A')} | "
+            f"TICK_SNIPER move={sniper_move}"
+        )
+
+        rr_value = calculate_rr_value(trade_plan)
+        required_rr = setup.get("tick_sniper_min_rr", TICK_SNIPER_MIN_RR)
+
+        if rr_value is None or rr_value < required_rr:
+            logger.info(
+                f"[TICK SNIPER] RR too low | "
+                f"setup_id={setup_id} rr={rr_value} required={required_rr}"
+            )
+            continue
+
+        trade_allowed, guard_reason = check_trade_guard(signal, tick)
+
+        if not trade_allowed:
+            logger.info(
+                f"[TICK SNIPER] Guard blocked | "
+                f"setup_id={setup_id} reason={guard_reason}"
+            )
+            continue
+
+        if is_trade_blocked_by_execution_memory(
+            trade_plan=trade_plan,
+            signal_data=setup_data,
+            setup=setup,
+            strategy_name=strategy_name,
+            signal=signal,
+        ):
+            save_execution_memory_report(
+                selected_signal_data=setup_data,
+                strategy_name=strategy_name,
+                signal=signal,
+                score=setup_data.get("score"),
+                session_name=active_session,
+                market_condition=active_market_condition,
+                reason="tick sniper skipped by execution memory",
+                trade_plan=trade_plan,
+                decision="TICK_SNIPER_BLOCKED_BY_MEMORY",
+                decision_reason="tick sniper skipped by execution memory",
+                rr_value=rr_value,
+                required_rr=required_rr,
+                extra={
+                    "setup_state": setup.get("state"),
+                    "wait_reason": setup.get("wait_reason"),
+                    "sniper_move": sniper_move,
+                    "current_price": current_price,
+                },
+            )
+
+            return True
+
+        if TICK_SNIPER_NOTIFY_TELEGRAM:
+            send_telegram_message(
+                f"🎯 Tick Sniper Executing\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Strategy: {strategy_name}\n"
+                f"Signal: {signal}\n"
+                f"Setup ID: {setup_id}\n\n"
+                f"Entry: {trade_plan.get('entry_price')}\n"
+                f"SL: {trade_plan.get('stop_loss')}\n"
+                f"TP: {trade_plan.get('take_profit')}\n"
+                f"RR: {rr_value} / Required: {required_rr}\n"
+                f"Move: {sniper_move}"
+            )
+
+        log_setup_event(
+            setup_id=setup_id,
+            event="TICK_SNIPER_EXECUTION_ATTEMPT",
+            strategy=strategy_name,
+            signal=signal,
+            entry_model=setup_data.get("entry_model"),
+            score=setup_data.get("score"),
+            session=active_session,
+            market_condition=active_market_condition,
+            entry=trade_plan.get("entry_price"),
+            sl=trade_plan.get("stop_loss"),
+            tp=trade_plan.get("take_profit"),
+            rr=rr_value,
+            required_rr=required_rr,
+            reason="generic tick sniper execution attempt",
+            extra={
+                "sniper_move": sniper_move,
+                "current_price": current_price,
+            },
+        )
+
+        save_execution_memory_report(
+            selected_signal_data=setup_data,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=setup_data.get("score"),
+            session_name=active_session,
+            market_condition=active_market_condition,
+            reason="generic tick sniper execution attempt",
+            trade_plan=trade_plan,
+            decision="TICK_SNIPER_EXECUTION_ATTEMPT",
+            decision_reason="sending tick sniper order to MT5",
+            rr_value=rr_value,
+            required_rr=required_rr,
+            extra={
+                "sniper_move": sniper_move,
+                "current_price": current_price,
+            },
+        )
+
+        execution_result = execute_trade(signal, trade_plan, SYMBOL)
+
+        if execution_result:
+            save_execution_memory_report(
+                selected_signal_data=setup_data,
+                strategy_name=strategy_name,
+                signal=signal,
+                score=setup_data.get("score"),
+                session_name=active_session,
+                market_condition=active_market_condition,
+                reason="generic tick sniper execution success",
+                trade_plan=trade_plan,
+                decision="TICK_SNIPER_EXECUTION_SUCCESS",
+                decision_reason="tick sniper MT5 order returned success",
+                rr_value=rr_value,
+                required_rr=required_rr,
+                execution_result=execution_result,
+                extra={
+                    "sniper_move": sniper_move,
+                    "current_price": current_price,
+                },
+            )
+
+            execution_engine.mark_executed(setup)
+
+            log_setup_event(
+                setup_id=setup_id,
+                event="TICK_SNIPER_EXECUTED",
+                strategy=strategy_name,
+                signal=signal,
+                entry_model=setup_data.get("entry_model"),
+                score=setup_data.get("score"),
+                session=active_session,
+                market_condition=active_market_condition,
+                entry=trade_plan.get("entry_price"),
+                sl=trade_plan.get("stop_loss"),
+                tp=trade_plan.get("take_profit"),
+                rr=rr_value,
+                required_rr=required_rr,
+                reason="generic tick sniper execution success",
+            )
+
+            return True
+
+        save_execution_memory_report(
+            selected_signal_data=setup_data,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=setup_data.get("score"),
+            session_name=active_session,
+            market_condition=active_market_condition,
+            reason="generic tick sniper execution failed",
+            trade_plan=trade_plan,
+            decision="TICK_SNIPER_EXECUTION_FAILED",
+            decision_reason="tick sniper execute_trade returned False",
+            rr_value=rr_value,
+            required_rr=required_rr,
+            execution_result=execution_result,
+            extra={
+                "sniper_move": sniper_move,
+                "current_price": current_price,
+            },
+        )
+
+        execution_engine.mark_execution_failed(
+            setup,
+            "Tick sniper execution failed",
+        )
+
+        log_setup_event(
+            setup_id=setup_id,
+            event="TICK_SNIPER_EXECUTION_FAILED",
+            strategy=strategy_name,
+            signal=signal,
+            entry_model=setup_data.get("entry_model"),
+            score=setup_data.get("score"),
+            session=active_session,
+            market_condition=active_market_condition,
+            entry=trade_plan.get("entry_price"),
+            sl=trade_plan.get("stop_loss"),
+            tp=trade_plan.get("take_profit"),
+            rr=rr_value,
+            required_rr=required_rr,
+            reason="tick sniper execute_trade returned False",
+        )
+
+        return True
+
+    return False
+
 def register_execution_failure_retry_as_better_entry(
     *,
     signal_data,
@@ -4971,6 +5320,20 @@ def process_cycle(last_processed_candle_time):
     # =========================
     if ENABLE_ORB_TICK_BREAKOUT_WATCHER:
         if process_wait_orb_tick_breakout_setups(
+            df=df,
+            tick=tick,
+            account_info=account_info,
+            market_condition="PENDING",
+            session_name="PENDING",
+        ):
+            return current_candle_time
+
+    # =========================
+    # GENERIC TICK SNIPER WATCHER
+    # Runs every loop, not only on a new M15 candle.
+    # =========================
+    if ENABLE_TICK_SNIPER_EXECUTION:
+        if process_wait_tick_sniper_setups(
             df=df,
             tick=tick,
             account_info=account_info,
@@ -7781,6 +8144,81 @@ def process_cycle(last_processed_candle_time):
                     f"Min Distance: {ORB_TICK_BREAKOUT_MIN_DISTANCE}\n"
                     f"Expiry: {ORB_TICK_BREAKOUT_EXPIRY_MINUTES} minutes"
                 )
+
+                return current_candle_time
+            
+            if should_use_tick_sniper_watcher(strategy_name, selected_signal_data):
+                reference_price = trade_plan.get("entry_price")
+                
+                if not selected_signal_data.get("session"):
+                    selected_signal_data["session"] = session_name
+                
+                if not selected_signal_data.get("market_condition"):
+                    selected_signal_data["market_condition"] = market_condition
+
+                execution_engine.mark_wait_tick_sniper(
+                    setup=best_setup,
+                    expiry_seconds=TICK_SNIPER_EXPIRY_SECONDS,
+                    min_rr=TICK_SNIPER_MIN_RR,
+                    min_score=TICK_SNIPER_MIN_SCORE,
+                    min_move_price=TICK_SNIPER_MIN_MOVE_PRICE,
+                    reference_price=reference_price,
+                )
+
+                log_setup_event(
+                    setup_id=selected_signal_data.get("setup_id"),
+                    event="TICK_SNIPER_WATCHING",
+                    strategy=strategy_name,
+                    signal=signal,
+                    entry_model=selected_signal_data.get("entry_model"),
+                    score=score,
+                    session=session_name,
+                    market_condition=market_condition,
+                    entry=trade_plan.get("entry_price"),
+                    sl=trade_plan.get("stop_loss"),
+                    tp=trade_plan.get("take_profit"),
+                    rr=rr_value,
+                    required_rr=TICK_SNIPER_MIN_RR,
+                    reason="generic tick sniper watcher registered",
+                    extra={
+                        "reference_price": reference_price,
+                        "expiry_seconds": TICK_SNIPER_EXPIRY_SECONDS,
+                        "min_move_price": TICK_SNIPER_MIN_MOVE_PRICE,
+                    },
+                )
+
+                save_execution_memory_report(
+                    selected_signal_data=selected_signal_data,
+                    strategy_name=strategy_name,
+                    signal=signal,
+                    score=score,
+                    session_name=session_name,
+                    market_condition=market_condition,
+                    reason="generic tick sniper watcher registered",
+                    trade_plan=trade_plan,
+                    decision="TICK_SNIPER_WATCHING",
+                    decision_reason="setup moved to generic tick sniper watcher",
+                    rr_value=rr_value,
+                    required_rr=TICK_SNIPER_MIN_RR,
+                    extra={
+                        "reference_price": reference_price,
+                        "expiry_seconds": TICK_SNIPER_EXPIRY_SECONDS,
+                        "min_move_price": TICK_SNIPER_MIN_MOVE_PRICE,
+                    },
+                )
+
+                if TICK_SNIPER_NOTIFY_TELEGRAM:
+                    send_telegram_message(
+                        f"🎯 Tick Sniper Watcher Registered\n"
+                        f"Symbol: {SYMBOL}\n"
+                        f"Strategy: {strategy_name}\n"
+                        f"Signal: {signal}\n"
+                        f"Setup ID: {selected_signal_data.get('setup_id')}\n\n"
+                        f"Reference: {reference_price}\n"
+                        f"Min Move: {TICK_SNIPER_MIN_MOVE_PRICE}\n"
+                        f"Expiry: {TICK_SNIPER_EXPIRY_SECONDS}s\n"
+                        f"Required RR: {TICK_SNIPER_MIN_RR}"
+                    )
 
                 return current_candle_time
 
