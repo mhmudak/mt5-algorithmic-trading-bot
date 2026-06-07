@@ -2274,6 +2274,9 @@ def evaluate_intrabar_price_event_trigger(
             sell_reclaimed = sell_reclaimed and bid < float(current.get("open", bid))
 
         if trigger == "REVERSAL_RECLAIM":
+            if not ENABLE_INTRABAR_PRICE_EVENT_REVERSAL_FILTER:
+                return None
+
             if not current_body_atr_ok(current, atr):
                 return None
 
@@ -2309,6 +2312,9 @@ def evaluate_intrabar_price_event_trigger(
     # STRUCTURE CONTINUATION
     # =========================
     elif trigger == "STRUCTURE_CONTINUATION":
+        if not ENABLE_INTRABAR_PRICE_EVENT_STRUCTURE_FILTER:
+            return None
+        
         structure_break = INTRABAR_PRICE_EVENT_MIN_STRUCTURE_BREAK_PRICE
 
         if (
@@ -2339,6 +2345,9 @@ def evaluate_intrabar_price_event_trigger(
     # VWAP RECLAIM
     # =========================
     elif trigger == "VWAP_RECLAIM":
+        if not ENABLE_INTRABAR_PRICE_EVENT_VWAP_FILTER:
+            return None
+        
         if vwap is None:
             return None
 
@@ -2518,6 +2527,7 @@ def build_intrabar_price_event_signal_data(df, tick, session_name, market_condit
             "session": session_name,
             "market_condition": market_condition,
             "setup_id": setup_id,
+            "vwap": round(vwap, 2) if vwap is not None else None,
             "intrabar_trigger": trigger,
             "intrabar_profile": profile,
             "required_rr": profile["min_rr"],
