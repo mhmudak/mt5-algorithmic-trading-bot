@@ -6789,23 +6789,6 @@ def process_cycle(last_processed_candle_time):
                 f"classification={signature_report.get('classification') if signature_report else None}"
             )
 
-        if ENABLE_MEMORY_DECISION_REPORT:
-            memory_report = build_memory_decision_report(
-                setup_id=selected_signal_data.get("setup_id"),
-                strategy=strategy_name,
-                signal=signal,
-                score=score,
-                session=session_name,
-                market_condition=market_condition,
-                reason=reason,
-                signal_data=selected_signal_data,
-                trade_plan=None,
-                decision="PRE_TRADE_PLAN_REVIEW",
-                decision_reason="setup selected before risk/trade plan calculation",
-            )
-
-            save_memory_decision_report(memory_report)
-
         ai_shadow_advice = get_ai_shadow_advice(
             selected_signal_data,
             session_name=session_name,
@@ -6876,6 +6859,27 @@ def process_cycle(last_processed_candle_time):
                     "control_mode": AI_SHADOW_ADVISOR_EXECUTION_CONTROL_MODE,
                 },
             )
+            
+            if ENABLE_MEMORY_DECISION_REPORT:
+                memory_report = build_memory_decision_report(
+                    setup_id=selected_signal_data.get("setup_id"),
+                    strategy=strategy_name,
+                    signal=signal,
+                    score=score,
+                    session=session_name,
+                    market_condition=market_condition,
+                    reason=reason,
+                    signal_data=selected_signal_data,
+                    trade_plan=None,
+                    decision="AI_ADVISOR_CONTROL_BLOCKED",
+                    decision_reason=ai_execution_reason,
+                    extra={
+                        "ai_shadow_advice": ai_shadow_advice,
+                        "control_mode": AI_SHADOW_ADVISOR_EXECUTION_CONTROL_MODE,
+                    },
+                )
+
+                save_memory_decision_report(memory_report)
 
             send_telegram_message(
                 f"🤖 AI Advisor Control Blocked\n"
@@ -6888,6 +6892,23 @@ def process_cycle(last_processed_candle_time):
             )
 
             return current_candle_time
+        
+        if ENABLE_MEMORY_DECISION_REPORT:
+            memory_report = build_memory_decision_report(
+                setup_id=selected_signal_data.get("setup_id"),
+                strategy=strategy_name,
+                signal=signal,
+                score=score,
+                session=session_name,
+                market_condition=market_condition,
+                reason=reason,
+                signal_data=selected_signal_data,
+                trade_plan=None,
+                decision="PRE_TRADE_PLAN_REVIEW",
+                decision_reason="setup selected before risk/trade plan calculation",
+            )
+
+            save_memory_decision_report(memory_report)
 
     # =========================
     # TRADE PLAN
