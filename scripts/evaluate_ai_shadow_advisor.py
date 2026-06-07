@@ -1,13 +1,14 @@
+import argparse
 import json
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
-
-from src.account_context import get_account_file
+from ai_export_common import (
+    add_account_argument,
+    get_ai_account_file,
+    load_json_file,
+)
 from src.logger import logger
 
 
@@ -28,19 +29,14 @@ def _rate(count, total):
     return round(count / total, 4)
 
 
-def _load_ai_memory_dataset():
-    path = get_account_file("ai_memory_dataset.json")
+def _load_ai_memory_dataset(account=None):
+    path = get_ai_account_file("ai_memory_dataset.json", account)
 
     if not path.exists():
         print(f"Dataset not found: {path}")
         return []
 
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        logger.error(f"[AI SHADOW EVALUATION] Failed to load dataset: {e}")
-        return []
+    return load_json_file(path, [])
 
 
 def _is_favorable(record):
@@ -167,8 +163,8 @@ def _summarize(records, group_key):
     )
 
 
-def evaluate_ai_shadow_advisor():
-    dataset = _load_ai_memory_dataset()
+def evaluate_ai_shadow_advisor(account=None):
+    dataset = _load_ai_memory_dataset(account)
 
     if not dataset:
         print("No AI memory dataset to evaluate.")
@@ -191,7 +187,7 @@ def evaluate_ai_shadow_advisor():
         "records": evaluated,
     }
 
-    output_path = get_account_file("ai_shadow_advisor_evaluation.json")
+    output_path = get_ai_account_file("ai_shadow_advisor_evaluation.json", account)
 
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, ensure_ascii=False)
@@ -202,4 +198,8 @@ def evaluate_ai_shadow_advisor():
 
 
 if __name__ == "__main__":
-    evaluate_ai_shadow_advisor()
+    parser = argparse.ArgumentParser()
+    add_account_argument(parser)
+    args = parser.parse_args()
+
+    evaluate_ai_shadow_advisor(account=args.account)

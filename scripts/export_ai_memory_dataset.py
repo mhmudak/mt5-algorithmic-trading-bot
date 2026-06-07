@@ -1,13 +1,16 @@
+import argparse
 import json
 import sys
 from datetime import datetime
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
-
-from src.account_context import get_account_file
+from ai_export_common import (
+    add_account_argument,
+    get_ai_account_file,
+    load_memory_reports,
+    load_outcomes,
+    logger,
+)
 from src.logger import logger
 from src.memory_decision_report import load_memory_decision_reports
 from src.setup_outcome_tracker import load_setup_outcomes
@@ -83,12 +86,12 @@ def _build_ai_record(report, outcome):
     }
 
 
-def export_ai_memory_dataset():
-    reports = load_memory_decision_reports()
-    outcomes = load_setup_outcomes()
+def export_ai_memory_dataset(account=None):
+    reports = load_memory_reports(account)
+    outcomes = load_outcomes(account)
 
-    output_jsonl = get_account_file("ai_memory_dataset.jsonl")
-    output_json = get_account_file("ai_memory_dataset.json")
+    output_jsonl = get_ai_account_file("ai_memory_dataset.jsonl", account)
+    output_json = get_ai_account_file("ai_memory_dataset.json", account)
 
     records = []
 
@@ -118,4 +121,8 @@ def export_ai_memory_dataset():
 
 
 if __name__ == "__main__":
-    export_ai_memory_dataset()
+    parser = argparse.ArgumentParser()
+    add_account_argument(parser)
+    args = parser.parse_args()
+
+    export_ai_memory_dataset(account=args.account)
