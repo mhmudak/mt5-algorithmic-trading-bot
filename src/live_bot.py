@@ -2385,6 +2385,61 @@ def evaluate_intrabar_price_event_trigger(
             momentum = "bearish_intrabar_vwap_reclaim"
             direction_context = "buy_side_sweep_vwap_reclaimed"
 
+    # =========================
+    # VWAP LIQUIDITY RECLAIM
+    # =========================
+    elif trigger == "VWAP_LIQUIDITY_RECLAIM":
+        if not ENABLE_INTRABAR_PRICE_EVENT_VWAP_FILTER:
+            return None
+
+        if vwap is None:
+            return None
+
+        try:
+            vwap = float(vwap)
+            current_open = float(current.get("open", ask))
+        except Exception:
+            return None
+
+        buy_sweep_depth = lower_level - current_low
+        sell_sweep_depth = current_high - upper_level
+
+        buy_level_reclaimed = ask >= lower_level + reclaim_buffer
+        buy_vwap_reclaimed = ask >= vwap + reclaim_buffer
+
+        sell_level_reclaimed = bid <= upper_level - reclaim_buffer
+        sell_vwap_reclaimed = bid <= vwap - reclaim_buffer
+
+        if (
+            buy_sweep_depth >= min_break
+            and buy_sweep_depth <= max_break
+            and buy_level_reclaimed
+            and buy_vwap_reclaimed
+            and ask > current_open
+        ):
+            signal = "BUY"
+            current_price = ask
+            breakout_distance = ask - vwap
+            sweep_depth = buy_sweep_depth
+            entry_model = f"INTRABAR_{strategy}_VWAP_LIQUIDITY_RECLAIM"
+            momentum = "bullish_intrabar_vwap_liquidity_reclaim"
+            direction_context = "sell_side_sweep_level_and_vwap_reclaimed"
+
+        elif (
+            sell_sweep_depth >= min_break
+            and sell_sweep_depth <= max_break
+            and sell_level_reclaimed
+            and sell_vwap_reclaimed
+            and bid < current_open
+        ):
+            signal = "SELL"
+            current_price = bid
+            breakout_distance = vwap - bid
+            sweep_depth = sell_sweep_depth
+            entry_model = f"INTRABAR_{strategy}_VWAP_LIQUIDITY_RECLAIM"
+            momentum = "bearish_intrabar_vwap_liquidity_reclaim"
+            direction_context = "buy_side_sweep_level_and_vwap_reclaimed"
+
     if signal is None:
         return None
 
@@ -2532,6 +2587,7 @@ def build_intrabar_price_event_signal_data(df, tick, session_name, market_condit
             "intrabar_profile": profile,
             "required_rr": profile["min_rr"],
             "reason": (
+                f"VWAP {round(vwap, 2) if vwap is not None else 'N/A'} -> "
                 f"Intrabar {strategy} {signal} -> trigger {trigger} before M15 close -> "
                 f"range {round(lower_level, 2)}-{round(upper_level, 2)} -> "
                 f"distance {round(breakout_distance, 2)} -> "

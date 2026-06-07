@@ -1244,6 +1244,7 @@ INTRABAR_PRICE_EVENT_ALLOWED_STRATEGIES = [
     "EXTREME_SWEEP_RECLAIM",
     "RANGE_SWEEP_RECLAIM",
     "VWAP_RECLAIM",
+    "INTRABAR_VWAP_LIQUIDITY_RECLAIM",
 ]
 
 INTRABAR_PRICE_EVENT_MIN_SCORE = 95
@@ -1371,6 +1372,18 @@ INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = {
         "min_break_distance": 0.20,
         "max_break_distance": 3.00,
         "reclaim_buffer": 0.20,
+        "require_ema_alignment": False,
+    },
+    
+    "INTRABAR_VWAP_LIQUIDITY_RECLAIM": {
+        "trigger": "VWAP_LIQUIDITY_RECLAIM",
+        "level_source": "RECENT_RANGE",
+        "lookback_bars": 14,
+        "min_score": 97,
+        "min_rr": 1.35,
+        "min_break_distance": 0.30,
+        "max_break_distance": 4.00,
+        "reclaim_buffer": 0.25,
         "require_ema_alignment": False,
     },
 }
