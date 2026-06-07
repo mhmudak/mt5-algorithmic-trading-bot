@@ -1377,3 +1377,21 @@ ENABLE_AI_SHADOW_ADVISOR = True
 AI_SHADOW_ADVISOR_MIN_SAMPLES = 5
 AI_SHADOW_ADVISOR_BLOCK_SL_RATE = 0.6
 AI_SHADOW_ADVISOR_ALLOW_W10_RATE = 0.6
+
+AI_SHADOW_ADVISOR_NOTIFY_TELEGRAM = True
+
+# IMPORTANT:
+# False = AI can advise only, it cannot control execution.
+# Later, when mature, set this to True.
+AI_SHADOW_ADVISOR_EXECUTION_CONTROL_ENABLED = False
+
+# Modes:
+# SHADOW_ONLY      = never blocks, only logs and notifies
+# WARN_ONLY        = warns but never blocks
+# BLOCK_ONLY       = blocks only when AI recommendation is BLOCK
+# REQUIRE_ALLOW    = blocks unless AI recommendation is ALLOW
+AI_SHADOW_ADVISOR_EXECUTION_CONTROL_MODE = "SHADOW_ONLY"
+
+AI_SHADOW_ADVISOR_BLOCK_RECOMMENDATIONS = ["BLOCK"]
+AI_SHADOW_ADVISOR_ALLOW_RECOMMENDATIONS = ["ALLOW"]
+AI_SHADOW_ADVISOR_MIN_SAMPLES_FOR_CONTROL = 20

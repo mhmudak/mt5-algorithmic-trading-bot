@@ -34,6 +34,7 @@ from src.external_macro_confirmation import apply_external_macro_confirmation
 from src.position_guard import count_same_direction_positions
 from src.google_sheets_logger import flush_google_sheets_retry_queue
 from src.scenario_signature_confidence import get_scenario_signature_score_adjustment
+from src.ai_shadow_advisor import get_ai_shadow_advice
 
 from src.execution_block_memory import is_setup_execution_blocked
 from src.execution_engine import ExecutionEngine
@@ -237,6 +238,12 @@ from config.settings import (
     ENABLE_SCENARIO_SIGNATURE_TELEGRAM_ALERTS,
     SCENARIO_SIGNATURE_TELEGRAM_ALERT_CLASSIFICATIONS,
     ENABLE_MEMORY_DECISION_REPORT,
+    AI_SHADOW_ADVISOR_NOTIFY_TELEGRAM,
+    AI_SHADOW_ADVISOR_EXECUTION_CONTROL_ENABLED,
+    AI_SHADOW_ADVISOR_EXECUTION_CONTROL_MODE,
+    AI_SHADOW_ADVISOR_BLOCK_RECOMMENDATIONS,
+    AI_SHADOW_ADVISOR_ALLOW_RECOMMENDATIONS,
+    AI_SHADOW_ADVISOR_MIN_SAMPLES_FOR_CONTROL,
 )
 
 from src.candidate_rejection_recovery import (
@@ -834,6 +841,41 @@ def is_trade_blocked_by_execution_memory(
         )
 
     return True
+
+def apply_ai_shadow_advisor_execution_control(ai_shadow_advice):
+    if not AI_SHADOW_ADVISOR_EXECUTION_CONTROL_ENABLED:
+        return True, "ai_execution_control_disabled"
+
+    if not ai_shadow_advice:
+        return True, "no_ai_shadow_advice"
+
+    mode = str(AI_SHADOW_ADVISOR_EXECUTION_CONTROL_MODE or "SHADOW_ONLY").upper()
+    recommendation = str(ai_shadow_advice.get("recommendation") or "NO_ADVICE").upper()
+    stats = ai_shadow_advice.get("stats", {}) or {}
+    samples = int(stats.get("total", 0) or 0)
+
+    if mode in ["SHADOW_ONLY", "WARN_ONLY"]:
+        return True, f"ai_mode_{mode.lower()}"
+
+    if samples < AI_SHADOW_ADVISOR_MIN_SAMPLES_FOR_CONTROL:
+        return True, (
+            f"ai_control_not_enough_samples "
+            f"samples={samples} required={AI_SHADOW_ADVISOR_MIN_SAMPLES_FOR_CONTROL}"
+        )
+
+    if mode == "BLOCK_ONLY":
+        if recommendation in AI_SHADOW_ADVISOR_BLOCK_RECOMMENDATIONS:
+            return False, f"ai_recommendation_blocked recommendation={recommendation}"
+
+        return True, f"ai_block_only_allowed recommendation={recommendation}"
+
+    if mode == "REQUIRE_ALLOW":
+        if recommendation in AI_SHADOW_ADVISOR_ALLOW_RECOMMENDATIONS:
+            return True, f"ai_require_allow_passed recommendation={recommendation}"
+
+        return False, f"ai_require_allow_blocked recommendation={recommendation}"
+
+    return True, f"unknown_ai_control_mode_{mode}"
 
 def get_strategy_selection_priority(strategy_name, market_condition):
     strategy_name = str(strategy_name or "").upper()
@@ -6763,6 +6805,89 @@ def process_cycle(last_processed_candle_time):
             )
 
             save_memory_decision_report(memory_report)
+
+        ai_shadow_advice = get_ai_shadow_advice(
+            selected_signal_data,
+            session_name=session_name,
+            market_condition=market_condition,
+        )
+
+        selected_signal_data["ai_shadow_advice"] = ai_shadow_advice
+
+        logger.info(
+            f"[AI SHADOW ADVISOR] "
+            f"setup_id={selected_signal_data.get('setup_id')} "
+            f"strategy={strategy_name} signal={signal} "
+            f"recommendation={ai_shadow_advice.get('recommendation')} "
+            f"reason={ai_shadow_advice.get('reason')}"
+        )
+
+        if (
+            AI_SHADOW_ADVISOR_NOTIFY_TELEGRAM
+            and ai_shadow_advice.get("recommendation") in ["ALLOW", "WARN", "BLOCK"]
+        ):
+            stats = ai_shadow_advice.get("stats", {})
+
+            send_telegram_message(
+                f"🤖 AI Shadow Advisor\n"
+                f"Setup ID: {selected_signal_data.get('setup_id')}\n"
+                f"Strategy: {strategy_name}\n"
+                f"Signal: {signal}\n"
+                f"Recommendation: {ai_shadow_advice.get('recommendation')}\n"
+                f"Reason: {ai_shadow_advice.get('reason')}\n\n"
+                f"Match: {ai_shadow_advice.get('match_type')}\n"
+                f"Samples: {stats.get('total')}\n"
+                f"W10 Rate: {stats.get('w10_rate')}\n"
+                f"TP Rate: {stats.get('tp_rate')}\n"
+                f"SL Rate: {stats.get('sl_rate')}\n\n"
+                f"Mode: {AI_SHADOW_ADVISOR_EXECUTION_CONTROL_MODE}\n"
+                f"Execution Control Enabled: {AI_SHADOW_ADVISOR_EXECUTION_CONTROL_ENABLED}"
+            )
+            
+        ai_execution_allowed, ai_execution_reason = apply_ai_shadow_advisor_execution_control(
+            ai_shadow_advice
+        )
+
+        selected_signal_data["ai_execution_allowed"] = ai_execution_allowed
+        selected_signal_data["ai_execution_reason"] = ai_execution_reason
+
+        logger.info(
+            f"[AI SHADOW ADVISOR CONTROL] "
+            f"setup_id={selected_signal_data.get('setup_id')} "
+            f"strategy={strategy_name} signal={signal} "
+            f"allowed={ai_execution_allowed} "
+            f"mode={AI_SHADOW_ADVISOR_EXECUTION_CONTROL_MODE} "
+            f"reason={ai_execution_reason}"
+        )
+
+        if not ai_execution_allowed:
+            log_setup_event(
+                setup_id=selected_signal_data.get("setup_id"),
+                event="AI_ADVISOR_CONTROL_BLOCKED",
+                strategy=strategy_name,
+                signal=signal,
+                entry_model=selected_signal_data.get("entry_model"),
+                score=score,
+                session=session_name,
+                market_condition=market_condition,
+                reason=ai_execution_reason,
+                extra={
+                    "ai_shadow_advice": ai_shadow_advice,
+                    "control_mode": AI_SHADOW_ADVISOR_EXECUTION_CONTROL_MODE,
+                },
+            )
+
+            send_telegram_message(
+                f"🤖 AI Advisor Control Blocked\n"
+                f"Setup ID: {selected_signal_data.get('setup_id')}\n"
+                f"Strategy: {strategy_name}\n"
+                f"Signal: {signal}\n"
+                f"Recommendation: {ai_shadow_advice.get('recommendation')}\n"
+                f"Reason: {ai_execution_reason}\n\n"
+                f"Mode: {AI_SHADOW_ADVISOR_EXECUTION_CONTROL_MODE}"
+            )
+
+            return current_candle_time
 
     # =========================
     # TRADE PLAN
