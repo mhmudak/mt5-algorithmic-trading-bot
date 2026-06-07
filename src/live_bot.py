@@ -275,6 +275,19 @@ from config.settings import (
     INTRABAR_PRICE_EVENT_MAX_PER_CANDLE,
     INTRABAR_PRICE_EVENT_MAX_PER_STRATEGY_PER_CANDLE,
     INTRABAR_PRICE_EVENT_LOG_DUPLICATE_SKIPS,
+    ENABLE_INTRABAR_M5_CONFIRMATION_FILTERS,
+    INTRABAR_M5_CONFIRMATION_TIMEFRAME,
+    INTRABAR_M5_CONFIRMATION_BARS,
+    INTRABAR_M5_CONFIRMATION_STRATEGIES,
+    INTRABAR_M5_USE_HEIKIN_ASHI,
+    INTRABAR_M5_USE_PARABOLIC_SAR,
+    INTRABAR_M5_PSAR_STEP,
+    INTRABAR_M5_PSAR_MAX_STEP,
+    INTRABAR_M5_REQUIRE_ALL_FILTERS,
+    ENABLE_GENERIC_REJECTED_CANDIDATE_TRADE_PLAN,
+    GENERIC_REJECTED_CANDIDATE_MIN_RR_TO_TRACK,
+    GENERIC_REJECTED_CANDIDATE_RECOVERY_REASONS,
+    GENERIC_REJECTED_CANDIDATE_NOTIFY_TELEGRAM,
 )
 
 from src.candidate_rejection_recovery import (
@@ -1071,6 +1084,247 @@ def calculate_candidate_selection_rank(
         "session_adjustment": session_adjustment,
         "final_rank": final_rank,
     }
+
+def try_build_rejected_candidate_trade_plan(
+    *,
+    df,
+    tick,
+    account_info,
+    candidate,
+    candidate_strategy,
+    candidate_signal,
+    session_name,
+    market_condition,
+    rejection_reason,
+):
+    if not ENABLE_GENERIC_REJECTED_CANDIDATE_TRADE_PLAN:
+        return None, None
+
+    if candidate_signal not in ["BUY", "SELL"]:
+        return None, None
+
+    candidate["strategy"] = candidate_strategy
+    candidate["signal"] = candidate_signal
+    candidate["session"] = candidate.get("session", session_name)
+    candidate["market_condition"] = candidate.get("market_condition", market_condition)
+
+    trade_plan = calculate_trade_plan(
+        df=df,
+        signal=candidate_signal,
+        tick=tick,
+        account_balance=account_info.balance,
+        signal_data=candidate,
+    )
+
+    if trade_plan is None:
+        return None, "rejected_candidate_trade_plan_failed"
+
+    trade_plan["strategy"] = candidate_strategy
+    trade_plan["signal"] = candidate_signal
+    trade_plan["score"] = candidate.get("score")
+    trade_plan["session"] = candidate.get("session", session_name)
+    trade_plan["market_condition"] = candidate.get("market_condition", market_condition)
+    trade_plan["setup_id"] = candidate.get("setup_id", "N/A")
+    trade_plan["reason"] = (
+        f"{candidate.get('reason', 'N/A')} | "
+        f"rejected_candidate_recovery_source={rejection_reason}"
+    )
+
+    rr_value = calculate_rr_value(trade_plan)
+
+    return trade_plan, rr_value
+
+def handle_generic_rejected_candidate_trade_plan(
+    *,
+    df,
+    tick,
+    account_info,
+    candidate,
+    candidate_strategy,
+    candidate_signal,
+    session_name,
+    market_condition,
+    rejection_reason,
+    news_context=None,
+):
+    if rejection_reason == "low_rr":
+        return False
+
+    if not ENABLE_GENERIC_REJECTED_CANDIDATE_TRADE_PLAN:
+        return False
+
+    candidate_trade_plan, candidate_rr = try_build_rejected_candidate_trade_plan(
+        df=df,
+        tick=tick,
+        account_info=account_info,
+        candidate=candidate,
+        candidate_strategy=candidate_strategy,
+        candidate_signal=candidate_signal,
+        session_name=session_name,
+        market_condition=market_condition,
+        rejection_reason=rejection_reason,
+    )
+
+    candidate_required_rr = get_min_rr(
+        strategy=candidate_strategy,
+        market_condition=market_condition,
+        session=session_name,
+    )
+
+    if candidate_trade_plan is None:
+        save_trade_plan_memory_report(
+            selected_signal_data=candidate,
+            strategy_name=candidate_strategy,
+            signal=candidate_signal,
+            score=candidate.get("score"),
+            session_name=session_name,
+            market_condition=market_condition,
+            reason=rejection_reason,
+            trade_plan=None,
+            decision="CANDIDATE_REJECTED_TRADE_PLAN_FAILED",
+            decision_reason="generic rejected candidate trade plan could not be calculated",
+        )
+
+        return False
+
+    save_trade_plan_memory_report(
+        selected_signal_data=candidate,
+        strategy_name=candidate_strategy,
+        signal=candidate_signal,
+        score=candidate.get("score"),
+        session_name=session_name,
+        market_condition=market_condition,
+        reason=rejection_reason,
+        trade_plan=candidate_trade_plan,
+        decision="CANDIDATE_REJECTED_WITH_TRADE_PLAN",
+        decision_reason="generic rejected candidate trade plan calculated for recovery tracking",
+        rr_value=candidate_rr,
+        required_rr=candidate_required_rr,
+    )
+
+    log_setup_event(
+        setup_id=candidate.get("setup_id"),
+        event="CANDIDATE_REJECTED_WITH_TRADE_PLAN",
+        strategy=candidate_strategy,
+        signal=candidate_signal,
+        entry_model=candidate.get("entry_model"),
+        score=candidate.get("score"),
+        session=session_name,
+        market_condition=market_condition,
+        entry=candidate_trade_plan.get("entry_price"),
+        sl=candidate_trade_plan.get("stop_loss"),
+        tp=candidate_trade_plan.get("take_profit"),
+        rr=candidate_rr,
+        required_rr=candidate_required_rr,
+        reason=rejection_reason,
+        extra={
+            "source": "generic_rejected_candidate_trade_plan",
+            "news_context": news_context,
+            "news_tag": news_context.get("news_tag") if news_context else None,
+            "candidate_reason": candidate.get("reason"),
+            "rejection_reason": rejection_reason,
+        },
+    )
+
+    return register_generic_rejected_candidate_recovery_if_eligible(
+        candidate=candidate,
+        candidate_strategy=candidate_strategy,
+        candidate_signal=candidate_signal,
+        trade_plan=candidate_trade_plan,
+        rr_value=candidate_rr,
+        min_rr_required=candidate_required_rr,
+        rejection_reason=rejection_reason,
+        session_name=session_name,
+        market_condition=market_condition,
+        news_context=news_context,
+    )
+
+def register_generic_rejected_candidate_recovery_if_eligible(
+    *,
+    candidate,
+    candidate_strategy,
+    candidate_signal,
+    trade_plan,
+    rr_value,
+    min_rr_required,
+    rejection_reason,
+    session_name,
+    market_condition,
+    news_context=None,
+):
+    if trade_plan is None:
+        return False
+
+    if rr_value is None:
+        return False
+
+    if rr_value < GENERIC_REJECTED_CANDIDATE_MIN_RR_TO_TRACK:
+        return False
+
+    recovery_reason = str(rejection_reason or "").lower()
+
+    eligible_reason = any(
+        allowed_reason in recovery_reason
+        for allowed_reason in GENERIC_REJECTED_CANDIDATE_RECOVERY_REASONS
+    )
+
+    if not eligible_reason:
+        return False
+
+    candidate["rejected_trade_plan"] = {
+        "entry_price": trade_plan.get("entry_price"),
+        "stop_loss": trade_plan.get("stop_loss"),
+        "take_profit": trade_plan.get("take_profit"),
+        "lot": trade_plan.get("lot"),
+        "rr": rr_value,
+        "required_rr": min_rr_required,
+        "reason": trade_plan.get("reason"),
+    }
+
+    candidate["recovery_source"] = "generic_rejected_candidate"
+    candidate["recovery_reason_type"] = rejection_reason
+    candidate["session"] = candidate.get("session", session_name)
+    candidate["market_condition"] = candidate.get("market_condition", market_condition)
+
+    recovery_id = register_rejected_candidate_for_recovery(
+        symbol=SYMBOL,
+        signal=candidate_signal,
+        strategy=candidate_strategy,
+        score=candidate.get("score"),
+        reason_type="generic_rejected_candidate",
+        rejection_reason=rejection_reason,
+        signal_data=candidate,
+        required_rr=min_rr_required,
+        current_rr=rr_value,
+    )
+
+    logger.info(
+        f"[GENERIC REJECTED RECOVERY] Registered | "
+        f"recovery_id={recovery_id} "
+        f"setup_id={candidate.get('setup_id')} "
+        f"strategy={candidate_strategy} signal={candidate_signal} "
+        f"rr={rr_value} required={min_rr_required} "
+        f"reason={rejection_reason}"
+    )
+    
+    if GENERIC_REJECTED_CANDIDATE_NOTIFY_TELEGRAM:
+        send_telegram_message(
+            f"⚠️ Generic Rejected Candidate Tracked\n"
+            f"Symbol: {SYMBOL}\n"
+            f"Strategy: {candidate_strategy}\n"
+            f"Signal: {candidate_signal}\n"
+            f"Setup ID: {candidate.get('setup_id', 'N/A')}\n"
+            f"Entry Model: {candidate.get('entry_model')}\n"
+            f"Reason: {rejection_reason}\n"
+            f"Candidate Reason: {candidate.get('reason', 'N/A')}\n\n"
+            f"Entry: {trade_plan.get('entry_price')}\n"
+            f"SL: {trade_plan.get('stop_loss')}\n"
+            f"TP: {trade_plan.get('take_profit')}\n"
+            f"RR: {rr_value} / Required: {min_rr_required}\n\n"
+            f"Action: moved to generic rejected candidate recovery if eligible."
+        )
+
+    return True
 
 def extra_entry_confirmation_ok(signal):
     if not REQUIRE_M5_CONFIRMATION_FOR_EXTRA:
@@ -7272,6 +7526,19 @@ def process_cycle(last_processed_candle_time):
                         "reason": rejection_reason,
                     }
                 )
+                
+                handle_generic_rejected_candidate_trade_plan(
+                    df=df,
+                    tick=tick,
+                    account_info=account_info,
+                    candidate=candidate,
+                    candidate_strategy=candidate.get("strategy"),
+                    candidate_signal=candidate.get("signal"),
+                    session_name=session_name,
+                    market_condition=market_condition,
+                    rejection_reason=rejection_reason,
+                    news_context=news_context,
+                )
 
                 logger.info(
                     f"[CANDIDATE REJECTED] "
@@ -7348,6 +7615,19 @@ def process_cycle(last_processed_candle_time):
                         "reason": rejection_reason,
                     }
                 )
+                
+                handle_generic_rejected_candidate_trade_plan(
+                    df=df,
+                    tick=tick,
+                    account_info=account_info,
+                    candidate=validated_candidate,
+                    candidate_strategy=candidate_strategy,
+                    candidate_signal=candidate_signal,
+                    session_name=session_name,
+                    market_condition=market_condition,
+                    rejection_reason=rejection_reason,
+                    news_context=news_context,
+                )
 
                 logger.info(
                     f"[CANDIDATE REJECTED] "
@@ -7397,6 +7677,19 @@ def process_cycle(last_processed_candle_time):
                         "score": validated_candidate.get("score"),
                         "reason": rejection_reason,
                     }
+                )
+                
+                handle_generic_rejected_candidate_trade_plan(
+                    df=df,
+                    tick=tick,
+                    account_info=account_info,
+                    candidate=validated_candidate,
+                    candidate_strategy=candidate_strategy,
+                    candidate_signal=candidate_signal,
+                    session_name=session_name,
+                    market_condition=market_condition,
+                    rejection_reason=rejection_reason,
+                    news_context=news_context,
                 )
 
                 logger.info(
@@ -7482,6 +7775,9 @@ def process_cycle(last_processed_candle_time):
                         f"Strategy: {candidate_strategy}\n"
                         f"Signal: {candidate_signal}\n"
                         f"Setup ID: {validated_candidate.get('setup_id', 'N/A')}\n\n"
+                        f"Entry Model: {validated_candidate.get('entry_model')}\n"
+                        f"Reason: {rejection_reason}\n"
+                        f"Candidate Reason: {validated_candidate.get('reason', 'N/A')}\n\n"
                         f"Entry: {candidate_trade_plan.get('entry_price')}\n"
                         f"SL: {candidate_trade_plan.get('stop_loss')}\n"
                         f"TP: {candidate_trade_plan.get('take_profit')}\n"

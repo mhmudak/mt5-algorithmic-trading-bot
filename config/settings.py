@@ -1043,6 +1043,23 @@ CANDIDATE_REJECTION_RECOVERY_STRATEGIES = [
 
 CANDIDATE_REJECTION_RECOVERY_REQUIRE_M5_CONFIRMATION = True
 CANDIDATE_REJECTION_RECOVERY_MIN_RECOVERED_RR = 1.2
+
+# =========================
+# Generic Rejected Candidate Trade Plan Recovery
+# =========================
+ENABLE_GENERIC_REJECTED_CANDIDATE_TRADE_PLAN = True
+
+GENERIC_REJECTED_CANDIDATE_RECOVERY_REASONS = [
+    "mtf_conflict",
+    "htf_liquidity_rejected",
+    "orb_too_extended",
+    "continuation_safety",
+    "candidate_rejected",
+]
+
+GENERIC_REJECTED_CANDIDATE_MIN_RR_TO_TRACK = 0.20
+GENERIC_REJECTED_CANDIDATE_NOTIFY_TELEGRAM = True
+
 # Continuation Safety Guard
 # =========================
 ENABLE_CONTINUATION_SAFETY_GUARD = True
