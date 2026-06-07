@@ -2155,10 +2155,51 @@ def process_wait_fvg_staged_entry_setups(df, tick, account_info, market_conditio
                     "stage": stage,
                 },
             )
+            
+            save_execution_memory_report(
+                selected_signal_data=setup_data,
+                strategy_name=strategy_name,
+                signal=signal,
+                score=setup_data.get("score"),
+                session_name=session_name,
+                market_condition=market_condition,
+                reason=f"FVG staged entry {stage.get('stage_name')}",
+                trade_plan=trade_plan,
+                decision="FVG_STAGED_ENTRY_EXECUTION_ATTEMPT",
+                decision_reason="sending FVG staged entry order to MT5",
+                rr_value=None,
+                required_rr=None,
+                extra={
+                    "parent_setup_id": setup_id,
+                    "stage": stage,
+                    "stage_name": stage.get("stage_name"),
+                },
+            )
 
             execution_result = execute_trade(signal, trade_plan, SYMBOL)
 
             if execution_result:
+                save_execution_memory_report(
+                    selected_signal_data=setup_data,
+                    strategy_name=strategy_name,
+                    signal=signal,
+                    score=setup_data.get("score"),
+                    session_name=session_name,
+                    market_condition=market_condition,
+                    reason=f"FVG staged entry {stage.get('stage_name')}",
+                    trade_plan=trade_plan,
+                    decision="FVG_STAGED_ENTRY_EXECUTION_SUCCESS",
+                    decision_reason="FVG staged entry MT5 order returned success",
+                    rr_value=None,
+                    required_rr=None,
+                    execution_result=execution_result,
+                    extra={
+                        "parent_setup_id": setup_id,
+                        "stage": stage,
+                        "stage_name": stage.get("stage_name"),
+                    },
+                )
+
                 stage["executed"] = True
 
                 log_setup_event(
@@ -2184,6 +2225,27 @@ def process_wait_fvg_staged_entry_setups(df, tick, account_info, market_conditio
                     execution_engine.mark_executed(setup)
 
                 return True
+            
+            save_execution_memory_report(
+                selected_signal_data=setup_data,
+                strategy_name=strategy_name,
+                signal=signal,
+                score=setup_data.get("score"),
+                session_name=session_name,
+                market_condition=market_condition,
+                reason="FVG staged entry execution failed",
+                trade_plan=trade_plan,
+                decision="FVG_STAGED_ENTRY_EXECUTION_FAILED",
+                decision_reason="FVG staged entry execute_trade returned False",
+                rr_value=None,
+                required_rr=None,
+                execution_result=execution_result,
+                extra={
+                    "parent_setup_id": setup_id,
+                    "stage": stage,
+                    "stage_name": stage.get("stage_name"),
+                },
+            )
 
             log_setup_event(
                 setup_id=trade_plan.get("setup_id"),
@@ -2773,6 +2835,27 @@ def process_mtf_conflict_candidate(
         strategy_name=mtf_trade_plan.get("strategy"),
         signal=signal,
     ):
+        save_execution_memory_report(
+            selected_signal_data=candidate,
+            strategy_name=mtf_trade_plan.get("strategy"),
+            signal=signal,
+            score=candidate.get("score"),
+            session_name=session_name,
+            market_condition=market_condition,
+            reason=rejection_reason,
+            trade_plan=mtf_trade_plan,
+            decision="MTF_CONFLICT_BLOCKED_BY_MEMORY",
+            decision_reason="MTF conflict execution skipped by execution memory",
+            rr_value=mtf_rr,
+            required_rr=required_rr,
+            extra={
+                "source_setup_id": setup_id,
+                "source_strategy": strategy,
+                "mtf_bias": mtf_bias,
+                "mtf_conflict_mode": execution_mode,
+            },
+        )
+
         mark_mtf_conflict_opportunity_failed(
             setup_id,
             "Skipped by execution memory",
@@ -2836,6 +2919,27 @@ def process_mtf_conflict_candidate(
         f"lot={mtf_trade_plan.get('lot')} "
         f"rr={mtf_rr}"
     )
+    
+    save_execution_memory_report(
+        selected_signal_data=candidate,
+        strategy_name=mtf_trade_plan.get("strategy"),
+        signal=signal,
+        score=candidate.get("score"),
+        session_name=session_name,
+        market_condition=market_condition,
+        reason=rejection_reason,
+        trade_plan=mtf_trade_plan,
+        decision="MTF_CONFLICT_EXECUTION_ATTEMPT",
+        decision_reason="sending MTF conflict execution order to MT5",
+        rr_value=mtf_rr,
+        required_rr=required_rr,
+        extra={
+            "source_setup_id": setup_id,
+            "source_strategy": strategy,
+            "mtf_bias": mtf_bias,
+            "mtf_conflict_mode": execution_mode,
+        },
+    )
 
     execution_result = execute_trade(signal, mtf_trade_plan, SYMBOL)
     
@@ -2847,6 +2951,28 @@ def process_mtf_conflict_candidate(
     )
 
     if execution_result:
+        save_execution_memory_report(
+            selected_signal_data=candidate,
+            strategy_name=mtf_trade_plan.get("strategy"),
+            signal=signal,
+            score=candidate.get("score"),
+            session_name=session_name,
+            market_condition=market_condition,
+            reason="mtf_conflict_execution_success",
+            trade_plan=mtf_trade_plan,
+            decision="MTF_CONFLICT_EXECUTION_SUCCESS",
+            decision_reason="MTF conflict MT5 order returned success",
+            rr_value=mtf_rr,
+            required_rr=required_rr,
+            execution_result=execution_result,
+            extra={
+                "source_setup_id": setup_id,
+                "source_strategy": strategy,
+                "mtf_bias": mtf_bias,
+                "mtf_conflict_mode": execution_mode,
+            },
+        )
+        
         mark_mtf_conflict_opportunity_executed(
             setup_id,
             executed_setup_id=mtf_trade_plan.get("setup_id"),
@@ -2877,6 +3003,28 @@ def process_mtf_conflict_candidate(
         )
 
         return True
+    
+    save_execution_memory_report(
+        selected_signal_data=candidate,
+        strategy_name=mtf_trade_plan.get("strategy"),
+        signal=signal,
+        score=candidate.get("score"),
+        session_name=session_name,
+        market_condition=market_condition,
+        reason="mtf_conflict_execution_failed",
+        trade_plan=mtf_trade_plan,
+        decision="MTF_CONFLICT_EXECUTION_FAILED",
+        decision_reason="MTF conflict execute_trade returned False",
+        rr_value=mtf_rr,
+        required_rr=required_rr,
+        execution_result=execution_result,
+        extra={
+            "source_setup_id": setup_id,
+            "source_strategy": strategy,
+            "mtf_bias": mtf_bias,
+            "mtf_conflict_mode": execution_mode,
+        },
+    )
 
     if ENABLE_MTF_CONFLICT_HIGH_SLIPPAGE_RETRY:
         candidate["setup_id"] = setup_id
@@ -3233,6 +3381,25 @@ def process_wait_better_entry_setups(df, tick, account_info, market_condition, s
             strategy_name=strategy_name,
             signal=signal,
         ):
+            save_execution_memory_report(
+                selected_signal_data=setup_data,
+                strategy_name=strategy_name,
+                signal=signal,
+                score=setup_data.get("score"),
+                session_name=session_name,
+                market_condition=market_condition,
+                reason="better entry skipped by execution memory",
+                trade_plan=trade_plan,
+                decision="BETTER_ENTRY_BLOCKED_BY_MEMORY",
+                decision_reason="better entry skipped by execution memory",
+                rr_value=rr_value,
+                required_rr=required_rr,
+                extra={
+                    "setup_state": setup.get("state"),
+                    "wait_reason": setup.get("wait_reason"),
+                },
+            )
+
             return True
 
         send_telegram_message(
@@ -3245,12 +3412,71 @@ def process_wait_better_entry_setups(df, tick, account_info, market_condition, s
             f"TP: {trade_plan['take_profit']}\n"
             f"RR: {rr_value} / Required: {required_rr}"
         )
+        
+        save_execution_memory_report(
+            selected_signal_data=setup_data,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=setup_data.get("score"),
+            session_name=session_name,
+            market_condition=market_condition,
+            reason="better entry execution attempt",
+            trade_plan=trade_plan,
+            decision="BETTER_ENTRY_EXECUTION_ATTEMPT",
+            decision_reason="sending better entry order to MT5",
+            rr_value=rr_value,
+            required_rr=required_rr,
+            extra={
+                "setup_state": setup.get("state"),
+                "wait_reason": setup.get("wait_reason"),
+            },
+        )
 
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
 
         if execution_result:
+            save_execution_memory_report(
+                selected_signal_data=setup_data,
+                strategy_name=strategy_name,
+                signal=signal,
+                score=setup_data.get("score"),
+                session_name=session_name,
+                market_condition=market_condition,
+                reason="better entry execution success",
+                trade_plan=trade_plan,
+                decision="BETTER_ENTRY_EXECUTION_SUCCESS",
+                decision_reason="better entry MT5 order returned success",
+                rr_value=rr_value,
+                required_rr=required_rr,
+                execution_result=execution_result,
+                extra={
+                    "setup_state": setup.get("state"),
+                    "wait_reason": setup.get("wait_reason"),
+                },
+            )
+
             execution_engine.mark_executed(setup)
             return True
+        
+        save_execution_memory_report(
+            selected_signal_data=setup_data,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=setup_data.get("score"),
+            session_name=session_name,
+            market_condition=market_condition,
+            reason="better entry execution failed",
+            trade_plan=trade_plan,
+            decision="BETTER_ENTRY_EXECUTION_FAILED",
+            decision_reason="better entry execute_trade returned False",
+            rr_value=rr_value,
+            required_rr=required_rr,
+            execution_result=execution_result,
+            extra={
+                "setup_state": setup.get("state"),
+                "wait_reason": setup.get("wait_reason"),
+            },
+        )
 
         if hasattr(execution_engine, "mark_execution_failed"):
             execution_engine.mark_execution_failed(
@@ -3394,6 +3620,25 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
             strategy_name=strategy_name,
             signal=signal,
         ):
+            save_execution_memory_report(
+                selected_signal_data=setup_data,
+                strategy_name=strategy_name,
+                signal=signal,
+                score=setup_data.get("score"),
+                session_name=session_name,
+                market_condition=market_condition,
+                reason="orb tick breakout skipped by execution memory",
+                trade_plan=trade_plan,
+                decision="ORB_TICK_BREAKOUT_BLOCKED_BY_MEMORY",
+                decision_reason="ORB tick breakout skipped by execution memory",
+                rr_value=rr_value,
+                required_rr=required_rr,
+                extra={
+                    "setup_state": setup.get("state"),
+                    "wait_reason": setup.get("wait_reason"),
+                },
+            )
+
             return True
 
         send_telegram_message(
@@ -3432,10 +3677,49 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
                 "breakout_distance": breakout_distance,
             },
         )
+        
+        save_execution_memory_report(
+            selected_signal_data=setup_data,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=setup_data.get("score"),
+            session_name=session_name,
+            market_condition=market_condition,
+            reason="orb tick breakout execution attempt",
+            trade_plan=trade_plan,
+            decision="ORB_TICK_BREAKOUT_EXECUTION_ATTEMPT",
+            decision_reason="sending ORB tick breakout order to MT5",
+            rr_value=rr_value,
+            required_rr=required_rr,
+            extra={
+                "setup_state": setup.get("state"),
+                "wait_reason": setup.get("wait_reason"),
+            },
+        )
 
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
 
         if execution_result:
+            save_execution_memory_report(
+                selected_signal_data=setup_data,
+                strategy_name=strategy_name,
+                signal=signal,
+                score=setup_data.get("score"),
+                session_name=session_name,
+                market_condition=market_condition,
+                reason="orb tick breakout execution success",
+                trade_plan=trade_plan,
+                decision="ORB_TICK_BREAKOUT_EXECUTION_SUCCESS",
+                decision_reason="ORB tick breakout MT5 order returned success",
+                rr_value=rr_value,
+                required_rr=required_rr,
+                execution_result=execution_result,
+                extra={
+                    "setup_state": setup.get("state"),
+                    "wait_reason": setup.get("wait_reason"),
+                },
+            )
+
             execution_engine.mark_executed(setup)
 
             log_setup_event(
@@ -3457,6 +3741,26 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
 
             return True
 
+        save_execution_memory_report(
+            selected_signal_data=setup_data,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=setup_data.get("score"),
+            session_name=session_name,
+            market_condition=market_condition,
+            reason="orb tick breakout execution failed",
+            trade_plan=trade_plan,
+            decision="ORB_TICK_BREAKOUT_EXECUTION_FAILED",
+            decision_reason="ORB tick breakout execute_trade returned False",
+            rr_value=rr_value,
+            required_rr=required_rr,
+            execution_result=execution_result,
+            extra={
+                "setup_state": setup.get("state"),
+                "wait_reason": setup.get("wait_reason"),
+            },
+        )
+        
         if hasattr(execution_engine, "mark_execution_failed"):
             execution_engine.mark_execution_failed(
                 setup,
@@ -3719,13 +4023,95 @@ def process_wait_delayed_entry_setups(df, tick, account_info, market_condition, 
             strategy_name=strategy_name,
             signal=signal,
         ):
+            save_execution_memory_report(
+                selected_signal_data=setup_data,
+                strategy_name=strategy_name,
+                signal=signal,
+                score=setup_data.get("score"),
+                session_name=setup_data.get("session", session_name),
+                market_condition=market_condition,
+                reason="split delayed entry skipped by execution memory",
+                trade_plan=trade_plan,
+                decision="SPLIT_DELAYED_BLOCKED_BY_MEMORY",
+                decision_reason="split delayed entry skipped by execution memory",
+                rr_value=rr_value,
+                required_rr=min_rr_required,
+                extra={
+                    "setup_state": setup.get("state"),
+                    "wait_reason": setup.get("wait_reason"),
+                    "delayed_target": setup.get("delayed_entry_target"),
+                },
+            )
+
             return True
+        
+        save_execution_memory_report(
+            selected_signal_data=setup_data,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=setup_data.get("score"),
+            session_name=setup_data.get("session", session_name),
+            market_condition=market_condition,
+            reason="split delayed entry execution attempt",
+            trade_plan=trade_plan,
+            decision="SPLIT_DELAYED_EXECUTION_ATTEMPT",
+            decision_reason="sending split delayed entry order to MT5",
+            rr_value=rr_value,
+            required_rr=min_rr_required,
+            extra={
+                "setup_state": setup.get("state"),
+                "wait_reason": setup.get("wait_reason"),
+                "delayed_target": setup.get("delayed_entry_target"),
+            },
+        )
 
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
 
         if execution_result:
+            save_execution_memory_report(
+                selected_signal_data=setup_data,
+                strategy_name=strategy_name,
+                signal=signal,
+                score=setup_data.get("score"),
+                session_name=setup_data.get("session", session_name),
+                market_condition=market_condition,
+                reason="split delayed entry execution success",
+                trade_plan=trade_plan,
+                decision="SPLIT_DELAYED_EXECUTION_SUCCESS",
+                decision_reason="split delayed entry MT5 order returned success",
+                rr_value=rr_value,
+                required_rr=min_rr_required,
+                execution_result=execution_result,
+                extra={
+                    "setup_state": setup.get("state"),
+                    "wait_reason": setup.get("wait_reason"),
+                    "delayed_target": setup.get("delayed_entry_target"),
+                },
+            )
+
             execution_engine.mark_executed(setup)
             return True
+        
+        save_execution_memory_report(
+            selected_signal_data=setup_data,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=setup_data.get("score"),
+            session_name=setup_data.get("session", session_name),
+            market_condition=market_condition,
+            reason="split delayed entry execution failed",
+            trade_plan=trade_plan,
+            decision="SPLIT_DELAYED_EXECUTION_FAILED",
+            decision_reason="split delayed entry execute_trade returned False",
+            rr_value=rr_value,
+            required_rr=min_rr_required,
+            execution_result=execution_result,
+            extra={
+                "setup_state": setup.get("state"),
+                "wait_reason": setup.get("wait_reason"),
+                "delayed_target": setup.get("delayed_entry_target"),
+            },
+        )
 
         if hasattr(execution_engine, "mark_execution_failed"):
             execution_engine.mark_execution_failed(
@@ -4244,6 +4630,26 @@ def process_candidate_rejection_recovery_setups(
             strategy_name=strategy_name,
             signal=signal,
         ):
+            save_execution_memory_report(
+                selected_signal_data=signal_data,
+                strategy_name=strategy_name,
+                signal=signal,
+                score=signal_data.get("score"),
+                session_name=session_name,
+                market_condition=market_condition,
+                reason=f"candidate recovery from {reason_type}",
+                trade_plan=trade_plan,
+                decision="CANDIDATE_RECOVERY_BLOCKED_BY_MEMORY",
+                decision_reason="candidate recovery skipped by execution memory",
+                rr_value=rr_value,
+                required_rr=None,
+                extra={
+                    "recovery_id": recovery_id,
+                    "source_setup_id": setup_id,
+                    "reason_type": reason_type,
+                },
+            )
+
             mark_recovery_candidate_failed(
                 recovery_id,
                 "Skipped by execution memory",
@@ -4279,9 +4685,50 @@ def process_candidate_rejection_recovery_setups(
             reason=f"candidate recovery from {reason_type}",
         )
 
+        save_execution_memory_report(
+            selected_signal_data=signal_data,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=signal_data.get("score"),
+            session_name=session_name,
+            market_condition=market_condition,
+            reason=f"candidate recovery from {reason_type}",
+            trade_plan=trade_plan,
+            decision="CANDIDATE_RECOVERY_EXECUTION_ATTEMPT",
+            decision_reason="sending candidate recovery order to MT5",
+            rr_value=rr_value,
+            required_rr=None,
+            extra={
+                "recovery_id": recovery_id,
+                "source_setup_id": setup_id,
+                "reason_type": reason_type,
+            },
+        )
+        
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
 
         if execution_result:
+            save_execution_memory_report(
+                selected_signal_data=signal_data,
+                strategy_name=strategy_name,
+                signal=signal,
+                score=signal_data.get("score"),
+                session_name=session_name,
+                market_condition=market_condition,
+                reason=f"candidate recovery from {reason_type}",
+                trade_plan=trade_plan,
+                decision="CANDIDATE_RECOVERY_EXECUTION_SUCCESS",
+                decision_reason="candidate recovery MT5 order returned success",
+                rr_value=rr_value,
+                required_rr=None,
+                execution_result=execution_result,
+                extra={
+                    "recovery_id": recovery_id,
+                    "source_setup_id": setup_id,
+                    "reason_type": reason_type,
+                },
+            )
+
             mark_recovery_candidate_executed(recovery_id)
 
             log_setup_event(
@@ -4336,6 +4783,27 @@ def process_candidate_rejection_recovery_setups(
         mark_recovery_candidate_failed(
             recovery_id,
             "execute_trade returned False",
+        )
+        
+        save_execution_memory_report(
+            selected_signal_data=signal_data,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=signal_data.get("score"),
+            session_name=session_name,
+            market_condition=market_condition,
+            reason=f"candidate recovery from {reason_type}",
+            trade_plan=trade_plan,
+            decision="CANDIDATE_RECOVERY_EXECUTION_FAILED",
+            decision_reason="candidate recovery execute_trade returned False",
+            rr_value=rr_value,
+            required_rr=None,
+            execution_result=execution_result,
+            extra={
+                "recovery_id": recovery_id,
+                "source_setup_id": setup_id,
+                "reason_type": reason_type,
+            },
         )
 
         log_setup_event(
@@ -6618,7 +7086,47 @@ def process_cycle(last_processed_candle_time):
                         strategy_name=strategy_name,
                         signal=signal,
                     ):
+                        save_execution_memory_report(
+                            selected_signal_data=selected_signal_data,
+                            strategy_name=strategy_name,
+                            signal=signal,
+                            score=score,
+                            session_name=session_name,
+                            market_condition=market_condition,
+                            reason=scalp_trade_plan.get("reason", "scalp fallback skipped by execution memory"),
+                            trade_plan=scalp_trade_plan,
+                            decision="SCALP_BLOCKED_BY_MEMORY",
+                            decision_reason="scalp fallback skipped by execution memory",
+                            rr_value=None,
+                            required_rr=None,
+                            extra={
+                                "is_scalp": True,
+                                "original_setup_id": selected_signal_data.get("setup_id"),
+                                "scalp_target_distance": scalp_trade_plan.get("scalp_target_distance"),
+                            },
+                        )
+
                         return current_candle_time
+                    
+                    save_execution_memory_report(
+                        selected_signal_data=selected_signal_data,
+                        strategy_name=strategy_name,
+                        signal=signal,
+                        score=score,
+                        session_name=session_name,
+                        market_condition=market_condition,
+                        reason=scalp_trade_plan.get("reason", "scalp fallback execution attempt"),
+                        trade_plan=scalp_trade_plan,
+                        decision="SCALP_EXECUTION_ATTEMPT",
+                        decision_reason="sending scalp fallback order to MT5",
+                        rr_value=None,
+                        required_rr=None,
+                        extra={
+                            "is_scalp": True,
+                            "original_setup_id": selected_signal_data.get("setup_id"),
+                            "scalp_target_distance": scalp_trade_plan.get("scalp_target_distance"),
+                        },
+                    )
 
                     execution_result = execute_trade(
                         signal,
@@ -6628,8 +7136,50 @@ def process_cycle(last_processed_candle_time):
 
                     if execution_result:
                         if "best_setup" in locals():
+                            save_execution_memory_report(
+                                selected_signal_data=selected_signal_data,
+                                strategy_name=strategy_name,
+                                signal=signal,
+                                score=score,
+                                session_name=session_name,
+                                market_condition=market_condition,
+                                reason=scalp_trade_plan.get("reason", "scalp fallback execution success"),
+                                trade_plan=scalp_trade_plan,
+                                decision="SCALP_EXECUTION_SUCCESS",
+                                decision_reason="scalp fallback MT5 order returned success",
+                                rr_value=None,
+                                required_rr=None,
+                                execution_result=execution_result,
+                                extra={
+                                    "is_scalp": True,
+                                    "original_setup_id": selected_signal_data.get("setup_id"),
+                                    "scalp_target_distance": scalp_trade_plan.get("scalp_target_distance"),
+                                },
+                            )
+                            
                             execution_engine.mark_executed(best_setup)
                         return current_candle_time
+                    
+                    save_execution_memory_report(
+                        selected_signal_data=selected_signal_data,
+                        strategy_name=strategy_name,
+                        signal=signal,
+                        score=score,
+                        session_name=session_name,
+                        market_condition=market_condition,
+                        reason=scalp_trade_plan.get("reason", "scalp fallback execution failed"),
+                        trade_plan=scalp_trade_plan,
+                        decision="SCALP_EXECUTION_FAILED",
+                        decision_reason="scalp fallback execute_trade returned False",
+                        rr_value=None,
+                        required_rr=None,
+                        execution_result=execution_result,
+                        extra={
+                            "is_scalp": True,
+                            "original_setup_id": selected_signal_data.get("setup_id"),
+                            "scalp_target_distance": scalp_trade_plan.get("scalp_target_distance"),
+                        },
+                    )
 
                     if "best_setup" in locals() and hasattr(execution_engine, "mark_execution_failed"):
                         execution_engine.mark_execution_failed(
@@ -6781,7 +7331,49 @@ def process_cycle(last_processed_candle_time):
                                     strategy_name=reversal_trade_plan.get("strategy", strategy_name),
                                     signal=reversal_signal,
                                 ):
+                                    save_execution_memory_report(
+                                        selected_signal_data=selected_signal_data,
+                                        strategy_name=reversal_trade_plan.get("strategy", strategy_name),
+                                        signal=reversal_signal,
+                                        score=score,
+                                        session_name=session_name,
+                                        market_condition=market_condition,
+                                        reason=reversal_data.get("reason", "reversal skipped by execution memory"),
+                                        trade_plan=reversal_trade_plan,
+                                        decision="REVERSAL_BLOCKED_BY_MEMORY",
+                                        decision_reason="reversal execution skipped by execution memory",
+                                        rr_value=reversal_rr,
+                                        required_rr=None,
+                                        extra={
+                                            "original_setup_id": selected_signal_data.get("setup_id"),
+                                            "original_signal": signal,
+                                            "reversal_signal": reversal_signal,
+                                            "reversal_reason": reversal_data.get("reason"),
+                                        },
+                                    )
+
                                     return current_candle_time
+                                
+                                save_execution_memory_report(
+                                    selected_signal_data=selected_signal_data,
+                                    strategy_name=reversal_trade_plan.get("strategy", strategy_name),
+                                    signal=reversal_signal,
+                                    score=score,
+                                    session_name=session_name,
+                                    market_condition=market_condition,
+                                    reason=reversal_data.get("reason", "reversal execution attempt"),
+                                    trade_plan=reversal_trade_plan,
+                                    decision="REVERSAL_EXECUTION_ATTEMPT",
+                                    decision_reason="sending reversal order to MT5",
+                                    rr_value=reversal_rr,
+                                    required_rr=None,
+                                    extra={
+                                        "original_setup_id": selected_signal_data.get("setup_id"),
+                                        "original_signal": signal,
+                                        "reversal_signal": reversal_signal,
+                                        "reversal_reason": reversal_data.get("reason"),
+                                    },
+                                )
 
                                 execution_result = execute_trade(
                                     reversal_signal,
@@ -6790,6 +7382,28 @@ def process_cycle(last_processed_candle_time):
                                 )
 
                                 if not execution_result:
+                                    save_execution_memory_report(
+                                        selected_signal_data=selected_signal_data,
+                                        strategy_name=reversal_trade_plan.get("strategy", strategy_name),
+                                        signal=reversal_signal,
+                                        score=score,
+                                        session_name=session_name,
+                                        market_condition=market_condition,
+                                        reason=reversal_data.get("reason", "reversal execution failed"),
+                                        trade_plan=reversal_trade_plan,
+                                        decision="REVERSAL_EXECUTION_FAILED",
+                                        decision_reason="reversal execute_trade returned False",
+                                        rr_value=reversal_rr,
+                                        required_rr=None,
+                                        execution_result=execution_result,
+                                        extra={
+                                            "original_setup_id": selected_signal_data.get("setup_id"),
+                                            "original_signal": signal,
+                                            "reversal_signal": reversal_signal,
+                                            "reversal_reason": reversal_data.get("reason"),
+                                        },
+                                    )
+                                    
                                     if "best_setup" in locals() and hasattr(execution_engine, "mark_execution_failed"):
                                         execution_engine.mark_execution_failed(
                                             best_setup,
@@ -6819,6 +7433,28 @@ def process_cycle(last_processed_candle_time):
                                     )
 
                                 return current_candle_time
+                            
+                            save_execution_memory_report(
+                                    selected_signal_data=selected_signal_data,
+                                    strategy_name=reversal_trade_plan.get("strategy", strategy_name),
+                                    signal=reversal_signal,
+                                    score=score,
+                                    session_name=session_name,
+                                    market_condition=market_condition,
+                                    reason=reversal_data.get("reason", "reversal execution success"),
+                                    trade_plan=reversal_trade_plan,
+                                    decision="REVERSAL_EXECUTION_SUCCESS",
+                                    decision_reason="reversal MT5 order returned success",
+                                    rr_value=reversal_rr,
+                                    required_rr=None,
+                                    execution_result=execution_result,
+                                    extra={
+                                        "original_setup_id": selected_signal_data.get("setup_id"),
+                                        "original_signal": signal,
+                                        "reversal_signal": reversal_signal,
+                                        "reversal_reason": reversal_data.get("reason"),
+                                    },
+                                )
 
             # =========================
             # FINAL BLOCKED MESSAGE
@@ -7197,11 +7833,78 @@ def process_cycle(last_processed_candle_time):
                     strategy_name=strategy_name,
                     signal=signal,
                 ):
+                    save_execution_memory_report(
+                        selected_signal_data=selected_signal_data,
+                        strategy_name=strategy_name,
+                        signal=signal,
+                        score=score,
+                        session_name=session_name,
+                        market_condition=market_condition,
+                        reason=immediate_trade_plan.get("reason", "split immediate skipped by execution memory"),
+                        trade_plan=immediate_trade_plan,
+                        decision="SPLIT_IMMEDIATE_BLOCKED_BY_MEMORY",
+                        decision_reason="split immediate execution skipped by execution memory",
+                        rr_value=rr_value,
+                        required_rr=min_rr_required,
+                        extra={
+                            "is_split_delayed_entry": True,
+                            "parent_setup_id": selected_signal_data.get("setup_id"),
+                            "immediate_lot": immediate_lot,
+                            "delayed_lot": delayed_lot,
+                            "delayed_target": delayed_target,
+                        },
+                    )
+
                     return current_candle_time
+                
+                save_execution_memory_report(
+                    selected_signal_data=selected_signal_data,
+                    strategy_name=strategy_name,
+                    signal=signal,
+                    score=score,
+                    session_name=session_name,
+                    market_condition=market_condition,
+                    reason=immediate_trade_plan.get("reason", "split immediate execution attempt"),
+                    trade_plan=immediate_trade_plan,
+                    decision="SPLIT_IMMEDIATE_EXECUTION_ATTEMPT",
+                    decision_reason="sending split immediate order to MT5",
+                    rr_value=rr_value,
+                    required_rr=min_rr_required,
+                    extra={
+                        "is_split_delayed_entry": True,
+                        "parent_setup_id": selected_signal_data.get("setup_id"),
+                        "immediate_lot": immediate_lot,
+                        "delayed_lot": delayed_lot,
+                        "delayed_target": delayed_target,
+                    },
+                )
 
                 execution_result = execute_trade(signal, immediate_trade_plan, SYMBOL)
 
                 if not execution_result:
+                    save_execution_memory_report(
+                        selected_signal_data=selected_signal_data,
+                        strategy_name=strategy_name,
+                        signal=signal,
+                        score=score,
+                        session_name=session_name,
+                        market_condition=market_condition,
+                        reason=immediate_trade_plan.get("reason", "split immediate execution failed"),
+                        trade_plan=immediate_trade_plan,
+                        decision="SPLIT_IMMEDIATE_EXECUTION_FAILED",
+                        decision_reason="split immediate execute_trade returned False",
+                        rr_value=rr_value,
+                        required_rr=min_rr_required,
+                        execution_result=execution_result,
+                        extra={
+                            "is_split_delayed_entry": True,
+                            "parent_setup_id": selected_signal_data.get("setup_id"),
+                            "immediate_lot": immediate_lot,
+                            "delayed_lot": delayed_lot,
+                            "delayed_target": delayed_target,
+                        },
+                    )
+                                        
                     if hasattr(execution_engine, "mark_execution_failed"):
                         execution_engine.mark_execution_failed(
                             best_setup,
@@ -7233,6 +7936,29 @@ def process_cycle(last_processed_candle_time):
                     )
                 
                     return current_candle_time
+                
+                save_execution_memory_report(
+                    selected_signal_data=selected_signal_data,
+                    strategy_name=strategy_name,
+                    signal=signal,
+                    score=score,
+                    session_name=session_name,
+                    market_condition=market_condition,
+                    reason=immediate_trade_plan.get("reason", "split immediate execution success"),
+                    trade_plan=immediate_trade_plan,
+                    decision="SPLIT_IMMEDIATE_EXECUTION_SUCCESS",
+                    decision_reason="split immediate MT5 order returned success, delayed part scheduled",
+                    rr_value=rr_value,
+                    required_rr=min_rr_required,
+                    execution_result=execution_result,
+                    extra={
+                        "is_split_delayed_entry": True,
+                        "parent_setup_id": selected_signal_data.get("setup_id"),
+                        "immediate_lot": immediate_lot,
+                        "delayed_lot": delayed_lot,
+                        "delayed_target": delayed_target,
+                    },
+                )
 
             execution_engine.mark_wait_delayed_entry(
                 setup=best_setup,
