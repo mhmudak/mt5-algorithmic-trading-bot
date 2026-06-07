@@ -1,7 +1,7 @@
 import json
 import sys
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -42,6 +42,17 @@ def _build_ai_record(report, outcome):
         "decision": report.get("decision"),
         "decision_reason": report.get("decision_reason"),
         "reason": report.get("reason"),
+
+        "ai_recommendation": report.get("ai_recommendation"),
+        "ai_reason": report.get("ai_reason"),
+        "ai_match_type": report.get("ai_match_type"),
+        "ai_samples": report.get("ai_samples"),
+        "ai_w10_rate": report.get("ai_w10_rate"),
+        "ai_tp_rate": report.get("ai_tp_rate"),
+        "ai_sl_rate": report.get("ai_sl_rate"),
+        "ai_execution_allowed": report.get("ai_execution_allowed"),
+        "ai_execution_reason": report.get("ai_execution_reason"),
+        "ai_shadow_advice": report.get("ai_shadow_advice"),
 
         "entry": report.get("entry"),
         "sl": report.get("sl"),

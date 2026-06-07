@@ -6,8 +6,9 @@ from config.settings import (
     MEMORY_DECISION_REPORT_MAX_ITEMS,
 )
 from src.account_context import get_account_file
-from src.logger import logger
 from src.google_sheets_logger import send_memory_decision_report_to_google_sheets
+from src.logger import logger
+
 
 def get_memory_decision_report_file():
     return get_account_file("memory_decision_reports.json")
@@ -62,6 +63,9 @@ def build_memory_decision_report(
     trade_plan = trade_plan or {}
     extra = extra or {}
 
+    ai_shadow_advice = signal_data.get("ai_shadow_advice") or {}
+    ai_stats = ai_shadow_advice.get("stats", {}) or {}
+
     return {
         "created_at": datetime.now().isoformat(),
         "setup_id": setup_id,
@@ -73,6 +77,17 @@ def build_memory_decision_report(
         "reason": reason,
         "decision": decision,
         "decision_reason": decision_reason,
+
+        "ai_recommendation": ai_shadow_advice.get("recommendation"),
+        "ai_reason": ai_shadow_advice.get("reason"),
+        "ai_match_type": ai_shadow_advice.get("match_type"),
+        "ai_samples": ai_stats.get("total"),
+        "ai_w10_rate": ai_stats.get("w10_rate"),
+        "ai_tp_rate": ai_stats.get("tp_rate"),
+        "ai_sl_rate": ai_stats.get("sl_rate"),
+        "ai_execution_allowed": signal_data.get("ai_execution_allowed"),
+        "ai_execution_reason": signal_data.get("ai_execution_reason"),
+        "ai_shadow_advice": ai_shadow_advice,
 
         "entry_model": signal_data.get("entry_model"),
         "setup_news_tag": signal_data.get("news_tag"),
@@ -87,13 +102,15 @@ def build_memory_decision_report(
         "risk_mode": trade_plan.get("risk_mode"),
         "risk_pct": trade_plan.get("risk_pct"),
         "account_balance": trade_plan.get("account_balance"),
+
         "rr": (
             extra.get("rr")
             or trade_plan.get("rr")
             or trade_plan.get("risk_reward")
         ),
-        "extra": extra,
         "required_rr": extra.get("required_rr"),
+
+        "extra": extra,
 
         "memory": {
             "similarity": signal_data.get("similarity_memory"),

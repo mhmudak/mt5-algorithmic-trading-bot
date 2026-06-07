@@ -238,6 +238,16 @@ def build_memory_decision_report_payload(report):
         "adjustments_json": report.get("adjustments"),
         "context_json": report.get("context"),
         "extra_json": report.get("extra"),
+        "ai_recommendation": report.get("ai_recommendation"),
+        "ai_reason": report.get("ai_reason"),
+        "ai_match_type": report.get("ai_match_type"),
+        "ai_samples": report.get("ai_samples"),
+        "ai_w10_rate": report.get("ai_w10_rate"),
+        "ai_tp_rate": report.get("ai_tp_rate"),
+        "ai_sl_rate": report.get("ai_sl_rate"),
+        "ai_execution_allowed": report.get("ai_execution_allowed"),
+        "ai_execution_reason": report.get("ai_execution_reason"),
+        "ai_shadow_advice_json": report.get("ai_shadow_advice"),
     }
 
 
