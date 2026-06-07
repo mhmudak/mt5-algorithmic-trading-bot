@@ -7774,7 +7774,7 @@ def process_cycle(last_processed_candle_time):
                         f"Symbol: {SYMBOL}\n"
                         f"Strategy: {candidate_strategy}\n"
                         f"Signal: {candidate_signal}\n"
-                        f"Setup ID: {validated_candidate.get('setup_id', 'N/A')}\n\n"
+                        f"Setup ID: {validated_candidate.get('setup_id', 'N/A')}\n"
                         f"Entry Model: {validated_candidate.get('entry_model')}\n"
                         f"Reason: {rejection_reason}\n"
                         f"Candidate Reason: {validated_candidate.get('reason', 'N/A')}\n\n"
