@@ -1229,6 +1229,158 @@ ORB_TICK_BREAKOUT_MIN_RR = 2.0
 ORB_TICK_BREAKOUT_REQUIRE_M5_CONFIRMATION = False
 
 # =========================
+# Intrabar ORB / Liquidity Detector
+# =========================
+ENABLE_INTRABAR_PRICE_EVENT_DETECTOR = True
+
+INTRABAR_PRICE_EVENT_ALLOWED_STRATEGIES = [
+    "ORB_V00",
+    "ORB",
+    "LIQUIDITY_SWEEP",
+    "LIQUIDITY_TRAP",
+    "RELIEF_RALLY",
+    "STRUCTURE_LIQUIDITY",
+    "MICRO_SR_SWEEP_RECLAIM",
+    "EXTREME_SWEEP_RECLAIM",
+    "RANGE_SWEEP_RECLAIM",
+    "VWAP_RECLAIM",
+]
+
+INTRABAR_PRICE_EVENT_MIN_SCORE = 95
+INTRABAR_PRICE_EVENT_MIN_RR = 1.5
+INTRABAR_PRICE_EVENT_BREAK_DISTANCE_PRICE = 0.30
+INTRABAR_PRICE_EVENT_MAX_BREAK_DISTANCE_PRICE = 4.00
+INTRABAR_PRICE_EVENT_RECLAIM_BUFFER_PRICE = 0.20
+INTRABAR_PRICE_EVENT_EXPIRY_SECONDS = 180
+
+INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = {
+    "ORB_V00": {
+        "trigger": "DIRECT_BREAKOUT",
+        "level_source": "ORB_RANGE",
+        "lookback_bars": 15,
+        "min_score": 96,
+        "min_rr": 1.5,
+        "min_break_distance": 0.30,
+        "max_break_distance": 3.50,
+        "reclaim_buffer": 0.20,
+        "require_ema_alignment": True,
+    },
+
+    "ORB": {
+        "trigger": "DIRECT_BREAKOUT",
+        "level_source": "ORB_RANGE",
+        "lookback_bars": 15,
+        "min_score": 95,
+        "min_rr": 1.5,
+        "min_break_distance": 0.30,
+        "max_break_distance": 4.00,
+        "reclaim_buffer": 0.20,
+        "require_ema_alignment": True,
+    },
+
+    "LIQUIDITY_SWEEP": {
+        "trigger": "SWEEP_RECLAIM",
+        "level_source": "RECENT_RANGE",
+        "lookback_bars": 12,
+        "min_score": 95,
+        "min_rr": 1.3,
+        "min_break_distance": 0.25,
+        "max_break_distance": 3.50,
+        "reclaim_buffer": 0.20,
+        "require_ema_alignment": True,
+    },
+
+    "LIQUIDITY_TRAP": {
+        "trigger": "TRAP_RECLAIM",
+        "level_source": "RECENT_RANGE",
+        "lookback_bars": 12,
+        "min_score": 96,
+        "min_rr": 1.3,
+        "min_break_distance": 0.30,
+        "max_break_distance": 3.50,
+        "reclaim_buffer": 0.25,
+        "require_ema_alignment": True,
+    },
+
+    "RELIEF_RALLY": {
+        "trigger": "REVERSAL_RECLAIM",
+        "level_source": "RECENT_RANGE",
+        "lookback_bars": 16,
+        "min_score": 96,
+        "min_rr": 1.35,
+        "min_break_distance": 0.35,
+        "max_break_distance": 4.50,
+        "reclaim_buffer": 0.30,
+        "require_ema_alignment": False,
+    },
+
+    "STRUCTURE_LIQUIDITY": {
+        "trigger": "STRUCTURE_CONTINUATION",
+        "level_source": "RECENT_STRUCTURE",
+        "lookback_bars": 18,
+        "min_score": 96,
+        "min_rr": 1.4,
+        "min_break_distance": 0.35,
+        "max_break_distance": 4.00,
+        "reclaim_buffer": 0.25,
+        "require_ema_alignment": True,
+    },
+
+    "MICRO_SR_SWEEP_RECLAIM": {
+        "trigger": "SWEEP_RECLAIM",
+        "level_source": "MICRO_RANGE",
+        "lookback_bars": 8,
+        "min_score": 96,
+        "min_rr": 1.2,
+        "min_break_distance": 0.20,
+        "max_break_distance": 2.50,
+        "reclaim_buffer": 0.15,
+        "require_ema_alignment": False,
+    },
+
+    "EXTREME_SWEEP_RECLAIM": {
+        "trigger": "SWEEP_RECLAIM",
+        "level_source": "EXTREME_RANGE",
+        "lookback_bars": 20,
+        "min_score": 96,
+        "min_rr": 1.4,
+        "min_break_distance": 0.40,
+        "max_break_distance": 5.00,
+        "reclaim_buffer": 0.30,
+        "require_ema_alignment": True,
+    },
+
+    "RANGE_SWEEP_RECLAIM": {
+        "trigger": "SWEEP_RECLAIM",
+        "level_source": "RECENT_RANGE",
+        "lookback_bars": 14,
+        "min_score": 95,
+        "min_rr": 1.25,
+        "min_break_distance": 0.25,
+        "max_break_distance": 3.50,
+        "reclaim_buffer": 0.20,
+        "require_ema_alignment": False,
+    },
+
+    "VWAP_RECLAIM": {
+        "trigger": "VWAP_RECLAIM",
+        "level_source": "VWAP_CONTEXT",
+        "lookback_bars": 10,
+        "min_score": 96,
+        "min_rr": 1.25,
+        "min_break_distance": 0.20,
+        "max_break_distance": 3.00,
+        "reclaim_buffer": 0.20,
+        "require_ema_alignment": False,
+    },
+}
+
+# Safety first: false means no M5 close confirmation required.
+INTRABAR_PRICE_EVENT_REQUIRE_M5_CONFIRMATION = False
+
+INTRABAR_PRICE_EVENT_NOTIFY_TELEGRAM = True
+
+# =========================
 # Generic Tick Sniper Execution Engine
 # =========================
 ENABLE_TICK_SNIPER_EXECUTION = True

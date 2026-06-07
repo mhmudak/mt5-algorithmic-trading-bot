@@ -253,6 +253,17 @@ from config.settings import (
     TICK_SNIPER_NOTIFY_TELEGRAM,
     TICK_SNIPER_REQUIRE_M5_CONFIRMATION,
     TICK_SNIPER_STRATEGY_PROFILES,
+    ENABLE_INTRABAR_PRICE_EVENT_DETECTOR,
+    INTRABAR_PRICE_EVENT_ALLOWED_STRATEGIES,
+    INTRABAR_PRICE_EVENT_MIN_SCORE,
+    INTRABAR_PRICE_EVENT_MIN_RR,
+    INTRABAR_PRICE_EVENT_BREAK_DISTANCE_PRICE,
+    INTRABAR_PRICE_EVENT_RECLAIM_BUFFER_PRICE,
+    INTRABAR_PRICE_EVENT_STRATEGY_PROFILES,
+    INTRABAR_PRICE_EVENT_REQUIRE_M5_CONFIRMATION,
+    INTRABAR_PRICE_EVENT_NOTIFY_TELEGRAM,
+    INTRABAR_PRICE_EVENT_MAX_BREAK_DISTANCE_PRICE,
+    INTRABAR_PRICE_EVENT_EXPIRY_SECONDS
 )
 
 from src.candidate_rejection_recovery import (
@@ -280,6 +291,7 @@ from src.time_context import (
     apply_time_context_confirmation,
 )
 
+INTRABAR_DETECTION_CACHE = {}
 last_signal = None
 reversal_count = 0
 
@@ -2132,6 +2144,514 @@ def tick_sniper_ready(signal, tick, setup_data, setup):
         return False, None, None
 
     return move >= min_move, current_price, move
+
+def get_intrabar_detector_profiles():
+    allowed = {
+        str(strategy or "").upper()
+        for strategy in INTRABAR_PRICE_EVENT_ALLOWED_STRATEGIES
+    }
+
+    profiles = []
+
+    for strategy in INTRABAR_PRICE_EVENT_ALLOWED_STRATEGIES:
+        strategy_key = str(strategy or "").upper()
+
+        if strategy_key not in allowed:
+            continue
+
+        profile = INTRABAR_PRICE_EVENT_STRATEGY_PROFILES.get(strategy_key)
+
+        if not profile:
+            continue
+
+        profiles.append({
+            "strategy": strategy_key,
+            "trigger": profile.get("trigger", "DIRECT_BREAKOUT"),
+            "level_source": profile.get("level_source", "RECENT_RANGE"),
+            "lookback_bars": int(profile.get("lookback_bars", 15)),
+            "min_score": profile.get("min_score", INTRABAR_PRICE_EVENT_MIN_SCORE),
+            "min_rr": profile.get("min_rr", INTRABAR_PRICE_EVENT_MIN_RR),
+            "min_break_distance": profile.get(
+                "min_break_distance",
+                INTRABAR_PRICE_EVENT_BREAK_DISTANCE_PRICE,
+            ),
+            "max_break_distance": profile.get(
+                "max_break_distance",
+                INTRABAR_PRICE_EVENT_MAX_BREAK_DISTANCE_PRICE,
+            ),
+            "reclaim_buffer": profile.get(
+                "reclaim_buffer",
+                INTRABAR_PRICE_EVENT_RECLAIM_BUFFER_PRICE,
+            ),
+        })
+
+    return profiles
+
+
+def build_intrabar_orb_signal_data(df, tick, session_name, market_condition, current_candle_time):
+    if not ENABLE_INTRABAR_PRICE_EVENT_DETECTOR:
+        return None
+
+    if len(df) < 20:
+        return None
+
+    current = df.iloc[-1]
+    signal_candle = df.iloc[-2]
+
+    atr = signal_candle.get("atr_14")
+    ema = signal_candle.get("ema_20")
+
+    if atr is None or ema is None or atr <= 0:
+        return None
+
+    bid = float(tick.bid)
+    ask = float(tick.ask)
+
+    current_high = float(current.get("high", max(bid, ask)))
+    current_low = float(current.get("low", min(bid, ask)))
+
+    for profile in get_intrabar_detector_profiles():
+        strategy = profile["strategy"]
+        trigger = profile["trigger"]
+        lookback_bars = profile["lookback_bars"]
+
+        if len(df) < lookback_bars + 2:
+            continue
+
+        range_data = df.iloc[-(lookback_bars + 1):-1]
+
+        if range_data is None or len(range_data) < 5:
+            continue
+
+        upper_level = float(range_data["high"].max())
+        lower_level = float(range_data["low"].min())
+        range_width = upper_level - lower_level
+
+        if range_width <= 0:
+            continue
+
+        min_break = float(profile["min_break_distance"])
+        max_break = float(profile["max_break_distance"])
+        reclaim_buffer = float(profile["reclaim_buffer"])
+
+        signal = None
+        current_price = None
+        breakout_distance = None
+        sweep_depth = None
+        entry_model = None
+        direction_context = None
+        momentum = None
+
+        # =========================
+        # DIRECT ORB BREAKOUT
+        # =========================
+        if trigger == "DIRECT_BREAKOUT":
+            buy_break_distance = ask - upper_level
+            sell_break_distance = lower_level - bid
+
+            if (
+                buy_break_distance >= min_break
+                and buy_break_distance <= max_break
+                and ask > ema
+            ):
+                signal = "BUY"
+                current_price = ask
+                breakout_distance = buy_break_distance
+                entry_model = f"INTRABAR_{strategy}_BREAKOUT"
+                momentum = "bullish_intrabar_breakout"
+                direction_context = "tick_above_upper_level"
+
+            elif (
+                sell_break_distance >= min_break
+                and sell_break_distance <= max_break
+                and bid < ema
+            ):
+                signal = "SELL"
+                current_price = bid
+                breakout_distance = sell_break_distance
+                entry_model = f"INTRABAR_{strategy}_BREAKOUT"
+                momentum = "bearish_intrabar_breakout"
+                direction_context = "tick_below_lower_level"
+
+        # =========================
+        # LIQUIDITY SWEEP / TRAP RECLAIM
+        # BUY = sell-side sweep below lower level, then reclaim above lower level
+        # SELL = buy-side sweep above upper level, then reclaim below upper level
+        # =========================
+        elif trigger in ["SWEEP_RECLAIM", "TRAP_RECLAIM"]:
+            buy_sweep_depth = lower_level - current_low
+            sell_sweep_depth = current_high - upper_level
+
+            if (
+                buy_sweep_depth >= min_break
+                and buy_sweep_depth <= max_break
+                and ask >= lower_level + reclaim_buffer
+                and ask > ema
+            ):
+                signal = "BUY"
+                current_price = ask
+                breakout_distance = ask - lower_level
+                sweep_depth = buy_sweep_depth
+                entry_model = f"INTRABAR_{strategy}_{trigger}"
+                momentum = "bullish_intrabar_sweep_reclaim"
+                direction_context = "sell_side_sweep_reclaimed"
+
+            elif (
+                sell_sweep_depth >= min_break
+                and sell_sweep_depth <= max_break
+                and bid <= upper_level - reclaim_buffer
+                and bid < ema
+            ):
+                signal = "SELL"
+                current_price = bid
+                breakout_distance = upper_level - bid
+                sweep_depth = sell_sweep_depth
+                entry_model = f"INTRABAR_{strategy}_{trigger}"
+                momentum = "bearish_intrabar_sweep_reclaim"
+                direction_context = "buy_side_sweep_reclaimed"
+
+        if signal is None:
+            continue
+
+        sl_buffer = max(float(atr) * 0.25, 2.0)
+        target_distance = max(float(atr) * 1.5, range_width)
+
+        if signal == "BUY":
+            sl_reference = round(lower_level - sl_buffer, 2)
+            tp_reference = round(current_price + target_distance, 2)
+
+            if sl_reference >= current_price or tp_reference <= current_price:
+                continue
+
+        else:
+            sl_reference = round(upper_level + sl_buffer, 2)
+            tp_reference = round(current_price - target_distance, 2)
+
+            if sl_reference <= current_price or tp_reference >= current_price:
+                continue
+
+        setup_id = f"INTRABAR-{strategy}-{signal}-{str(current_candle_time)}"
+
+        return {
+            "signal": signal,
+            "score": profile["min_score"],
+            "strategy": strategy,
+            "entry_model": entry_model,
+            "pattern_height": range_width,
+            "orb_high": upper_level,
+            "orb_low": lower_level,
+            "intrabar_upper_level": upper_level,
+            "intrabar_lower_level": lower_level,
+            "breakout_distance": round(breakout_distance, 2),
+            "sweep_depth": round(sweep_depth, 2) if sweep_depth is not None else None,
+            "sl_reference": sl_reference,
+            "tp_reference": tp_reference,
+            "target_model": "INTRABAR_RANGE_EXTENSION",
+            "momentum": momentum,
+            "direction_context": direction_context,
+            "session": session_name,
+            "market_condition": market_condition,
+            "setup_id": setup_id,
+            "intrabar_trigger": trigger,
+            "intrabar_profile": profile,
+            "required_rr": profile["min_rr"],
+            "reason": (
+                f"Intrabar {strategy} {signal} -> trigger {trigger} before M15 close -> "
+                f"range {round(lower_level, 2)}-{round(upper_level, 2)} -> "
+                f"distance {round(breakout_distance, 2)} -> "
+                f"sweep {round(sweep_depth, 2) if sweep_depth is not None else 'N/A'} -> "
+                f"SL {sl_reference} -> TP {tp_reference}"
+            ),
+        }
+
+    return None
+    
+def process_intrabar_orb_detector(df, tick, account_info, session_name, market_condition, current_candle_time):
+    signal_data = build_intrabar_orb_signal_data(
+        df=df,
+        tick=tick,
+        session_name=session_name,
+        market_condition=market_condition,
+        current_candle_time=current_candle_time,
+    )
+
+    if not signal_data:
+        return False
+
+    setup_id = signal_data.get("setup_id")
+    if is_intrabar_detection_recent(setup_id, INTRABAR_PRICE_EVENT_EXPIRY_SECONDS):
+        return False
+    
+    strategy_name = signal_data.get("strategy")
+    signal = signal_data.get("signal")
+
+    already_active, active_state = is_setup_id_already_active(setup_id)
+
+    if already_active:
+        logger.info(
+            f"[INTRABAR ORB] Setup already active | "
+            f"setup_id={setup_id} state={active_state}"
+        )
+        return False
+
+    if INTRABAR_PRICE_EVENT_REQUIRE_M5_CONFIRMATION:
+        m5_confirmed, m5_reason = extra_entry_confirmation_ok(signal)
+
+        if not m5_confirmed:
+            logger.info(
+                f"[INTRABAR ORB] M5 confirmation failed | "
+                f"setup_id={setup_id} reason={m5_reason}"
+            )
+            return False
+
+    news_blocked, news_reason = is_news_blackout_active()
+
+    if news_blocked:
+        logger.info(
+            f"[INTRABAR ORB] News blocked | "
+            f"setup_id={setup_id} reason={news_reason}"
+        )
+        return False
+
+    time_blocked, time_reason = is_trading_blackout_active()
+
+    if time_blocked:
+        logger.info(
+            f"[INTRABAR ORB] Time blocked | "
+            f"setup_id={setup_id} reason={time_reason}"
+        )
+        return False
+
+    trade_plan = calculate_trade_plan(
+        df=df,
+        signal=signal,
+        tick=tick,
+        account_balance=account_info.balance,
+        signal_data=signal_data,
+    )
+
+    if trade_plan is None:
+        logger.info(
+            f"[INTRABAR ORB] Trade plan failed | setup_id={setup_id}"
+        )
+        return False
+
+    trade_plan["strategy"] = strategy_name
+    trade_plan["signal"] = signal
+    trade_plan["score"] = signal_data.get("score")
+    trade_plan["session"] = session_name
+    trade_plan["market_condition"] = market_condition
+    trade_plan["setup_id"] = setup_id
+    trade_plan["reason"] = signal_data.get("reason")
+
+    rr_value = calculate_rr_value(trade_plan)
+
+    required_rr = signal_data.get("required_rr", INTRABAR_PRICE_EVENT_MIN_RR)
+
+    if rr_value is None or rr_value < required_rr:
+        logger.info(
+            f"[INTRABAR ORB] RR too low | "
+            f"setup_id={setup_id} rr={rr_value} required={INTRABAR_PRICE_EVENT_MIN_RR}"
+        )
+        return False
+
+    trade_allowed, guard_reason = check_trade_guard(signal, tick)
+
+    if not trade_allowed:
+        logger.info(
+            f"[INTRABAR ORB] Guard blocked | "
+            f"setup_id={setup_id} reason={guard_reason}"
+        )
+        return False
+
+    if is_trade_blocked_by_execution_memory(
+        trade_plan=trade_plan,
+        signal_data=signal_data,
+        setup=None,
+        strategy_name=strategy_name,
+        signal=signal,
+    ):
+        save_execution_memory_report(
+            selected_signal_data=signal_data,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=signal_data.get("score"),
+            session_name=session_name,
+            market_condition=market_condition,
+            reason="intrabar ORB skipped by execution memory",
+            trade_plan=trade_plan,
+            decision="INTRABAR_ORB_BLOCKED_BY_MEMORY",
+            decision_reason="intrabar ORB skipped by execution memory",
+            rr_value=rr_value,
+            required_rr=required_rr,
+            extra={
+                "orb_high": signal_data.get("orb_high"),
+                "orb_low": signal_data.get("orb_low"),
+                "breakout_distance": signal_data.get("breakout_distance"),
+            },
+        )
+
+        return True
+
+    log_setup_event(
+        setup_id=setup_id,
+        event="INTRABAR_ORB_EXECUTION_ATTEMPT",
+        strategy=strategy_name,
+        signal=signal,
+        entry_model=signal_data.get("entry_model"),
+        score=signal_data.get("score"),
+        session=session_name,
+        market_condition=market_condition,
+        entry=trade_plan.get("entry_price"),
+        sl=trade_plan.get("stop_loss"),
+        tp=trade_plan.get("take_profit"),
+        rr=rr_value,
+        required_rr=required_rr,
+        reason="intrabar ORB execution attempt before M15 close",
+        extra={
+            "orb_high": signal_data.get("orb_high"),
+            "orb_low": signal_data.get("orb_low"),
+            "breakout_distance": signal_data.get("breakout_distance"),
+        },
+    )
+
+    save_execution_memory_report(
+        selected_signal_data=signal_data,
+        strategy_name=strategy_name,
+        signal=signal,
+        score=signal_data.get("score"),
+        session_name=session_name,
+        market_condition=market_condition,
+        reason="intrabar ORB execution attempt before M15 close",
+        trade_plan=trade_plan,
+        decision="INTRABAR_ORB_EXECUTION_ATTEMPT",
+        decision_reason="sending intrabar ORB order to MT5",
+        rr_value=rr_value,
+        required_rr=required_rr,
+        extra={
+            "orb_high": signal_data.get("orb_high"),
+            "orb_low": signal_data.get("orb_low"),
+            "breakout_distance": signal_data.get("breakout_distance"),
+        },
+    )
+
+    if INTRABAR_PRICE_EVENT_NOTIFY_TELEGRAM:
+        send_telegram_message(
+            f"⚡ Intrabar Setup Executing\n"
+            f"Symbol: {SYMBOL}\n"
+            f"Strategy: {strategy_name}\n"
+            f"Signal: {signal}\n"
+            f"Setup ID: {setup_id}\n\n"
+            f"ORB High: {signal_data.get('orb_high')}\n"
+            f"ORB Low: {signal_data.get('orb_low')}\n"
+            f"Breakout Distance: {signal_data.get('breakout_distance')}\n"
+            f"Entry: {trade_plan.get('entry_price')}\n"
+            f"SL: {trade_plan.get('stop_loss')}\n"
+            f"TP: {trade_plan.get('take_profit')}\n"
+            f"Trigger: {signal_data.get('intrabar_trigger')}\n"
+            f"RR: {rr_value} / Required: {required_rr}\n"
+            f"Mode: before M15 candle close"
+        )
+
+    execution_result = execute_trade(signal, trade_plan, SYMBOL)
+
+    if execution_result:
+        save_execution_memory_report(
+            selected_signal_data=signal_data,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=signal_data.get("score"),
+            session_name=session_name,
+            market_condition=market_condition,
+            reason="intrabar ORB execution success",
+            trade_plan=trade_plan,
+            decision="INTRABAR_ORB_EXECUTION_SUCCESS",
+            decision_reason="intrabar ORB MT5 order returned success",
+            rr_value=rr_value,
+            required_rr=required_rr,
+            execution_result=execution_result,
+            extra={
+                "orb_high": signal_data.get("orb_high"),
+                "orb_low": signal_data.get("orb_low"),
+                "breakout_distance": signal_data.get("breakout_distance"),
+            },
+        )
+
+        log_setup_event(
+            setup_id=setup_id,
+            event="INTRABAR_ORB_EXECUTED",
+            strategy=strategy_name,
+            signal=signal,
+            entry_model=signal_data.get("entry_model"),
+            score=signal_data.get("score"),
+            session=session_name,
+            market_condition=market_condition,
+            entry=trade_plan.get("entry_price"),
+            sl=trade_plan.get("stop_loss"),
+            tp=trade_plan.get("take_profit"),
+            rr=rr_value,
+            required_rr=required_rr,
+            reason="intrabar ORB executed before M15 close",
+        )
+
+        return True
+
+    save_execution_memory_report(
+        selected_signal_data=signal_data,
+        strategy_name=strategy_name,
+        signal=signal,
+        score=signal_data.get("score"),
+        session_name=session_name,
+        market_condition=market_condition,
+        reason="intrabar ORB execution failed",
+        trade_plan=trade_plan,
+        decision="INTRABAR_ORB_EXECUTION_FAILED",
+        decision_reason="intrabar ORB execute_trade returned False",
+        rr_value=rr_value,
+        required_rr=required_rr,
+        execution_result=execution_result,
+        extra={
+            "orb_high": signal_data.get("orb_high"),
+            "orb_low": signal_data.get("orb_low"),
+            "breakout_distance": signal_data.get("breakout_distance"),
+        },
+    )
+
+    log_setup_event(
+        setup_id=setup_id,
+        event="INTRABAR_ORB_EXECUTION_FAILED",
+        strategy=strategy_name,
+        signal=signal,
+        entry_model=signal_data.get("entry_model"),
+        score=signal_data.get("score"),
+        session=session_name,
+        market_condition=market_condition,
+        entry=trade_plan.get("entry_price"),
+        sl=trade_plan.get("stop_loss"),
+        tp=trade_plan.get("take_profit"),
+        rr=rr_value,
+        required_rr=required_rr,
+        reason="intrabar ORB execute_trade returned False",
+    )
+
+    return True
+
+def is_intrabar_detection_recent(setup_id, expiry_seconds):
+    now_ts = datetime.utcnow().timestamp()
+
+    expired_keys = [
+        key for key, seen_ts in INTRABAR_DETECTION_CACHE.items()
+        if now_ts - seen_ts > expiry_seconds
+    ]
+
+    for key in expired_keys:
+        INTRABAR_DETECTION_CACHE.pop(key, None)
+
+    if setup_id in INTRABAR_DETECTION_CACHE:
+        return True
+
+    INTRABAR_DETECTION_CACHE[setup_id] = now_ts
+    return False
 
 def get_fvg_zone(candidate):
     fvg_top = (
@@ -5431,6 +5951,26 @@ def process_cycle(last_processed_candle_time):
     # =========================
     if ENABLE_MTF_CONFLICT_OPPORTUNITY_TRACKER:
         update_mtf_conflict_opportunities(SYMBOL)
+        
+    # =========================
+    # INTRABAR ORB DETECTOR
+    # Runs before the M15 new-candle gate.
+    # =========================
+    if ENABLE_INTRABAR_PRICE_EVENT_DETECTOR:
+        from src.session_engine import detect_session
+
+        intrabar_session_name = detect_session(current_candle_time)
+        intrabar_market_condition = "INTRABAR_PENDING"
+
+        if process_intrabar_orb_detector(
+            df=df,
+            tick=tick,
+            account_info=account_info,
+            session_name=intrabar_session_name,
+            market_condition=intrabar_market_condition,
+            current_candle_time=current_candle_time,
+        ):
+            return current_candle_time
 
     # =========================
     # NEW CANDLE CHECK
