@@ -1,10 +1,16 @@
 import json
+import sys
+from pathlib import Path
 from datetime import datetime
 
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 from src.account_context import get_account_file
+from src.logger import logger
 from src.memory_decision_report import load_memory_decision_reports
 from src.setup_outcome_tracker import load_setup_outcomes
-from src.logger import logger
 
 
 def _safe_get(data, key, default=None):
