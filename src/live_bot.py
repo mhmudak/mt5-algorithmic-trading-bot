@@ -2631,6 +2631,20 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
 
         return False
 
+    m5_ok, m5_reason = intrabar_m5_confirmation_ok(
+        signal,
+        strategy_name,
+    )
+
+    if not m5_ok:
+        logger.info(
+            f"[INTRABAR PRICE EVENT] M5 confirmation rejected | "
+            f"setup_id={setup_id} strategy={strategy_name} "
+            f"signal={signal} reason={m5_reason}"
+        )
+
+        return False
+
     already_active, active_state = is_setup_id_already_active(setup_id)
 
     if already_active:
@@ -2726,8 +2740,8 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
             market_condition=market_condition,
             reason="intrabar ORB skipped by execution memory",
             trade_plan=trade_plan,
-            decision="INTRABAR_ORB_BLOCKED_BY_MEMORY",
-            decision_reason="intrabar ORB skipped by execution memory",
+            decision="INTRABAR_PRICE_EVENT_BLOCKED_BY_MEMORY",
+            decision_reason="intrabar Price Event skipped by execution memory",
             rr_value=rr_value,
             required_rr=required_rr,
             extra={
@@ -2737,6 +2751,7 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
                 "trigger": signal_data.get("intrabar_trigger"),
                 "vwap": signal_data.get("vwap"),
                 "sweep_depth": signal_data.get("sweep_depth"),
+                "m5_confirmation_reason": m5_reason,
             },
         )
 
@@ -2771,16 +2786,17 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
         score=signal_data.get("score"),
         session_name=session_name,
         market_condition=market_condition,
-        reason="intrabar ORB execution attempt before M15 close",
+        reason="intrabar Price Event execution attempt before M15 close",
         trade_plan=trade_plan,
-        decision="INTRABAR_ORB_EXECUTION_ATTEMPT",
-        decision_reason="sending intrabar ORB order to MT5",
+        decision="INTRABAR_PRICE_EVENT_EXECUTION_ATTEMPT",
+        decision_reason="sending intrabar Price Event order to MT5",
         rr_value=rr_value,
         required_rr=required_rr,
         extra={
             "orb_high": signal_data.get("orb_high"),
             "orb_low": signal_data.get("orb_low"),
             "breakout_distance": signal_data.get("breakout_distance"),
+            "m5_confirmation_reason": m5_reason,
         },
     )
 
@@ -2812,10 +2828,10 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
             score=signal_data.get("score"),
             session_name=session_name,
             market_condition=market_condition,
-            reason="intrabar ORB execution success",
+            reason="intrabar Price Event execution success",
             trade_plan=trade_plan,
-            decision="INTRABAR_ORB_EXECUTION_SUCCESS",
-            decision_reason="intrabar ORB MT5 order returned success",
+            decision="INTRABAR_PRICE_EVENT_EXECUTION_SUCCESS",
+            decision_reason="intrabar Price Event MT5 order returned success",
             rr_value=rr_value,
             required_rr=required_rr,
             execution_result=execution_result,
@@ -2823,6 +2839,7 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
                 "orb_high": signal_data.get("orb_high"),
                 "orb_low": signal_data.get("orb_low"),
                 "breakout_distance": signal_data.get("breakout_distance"),
+                "m5_confirmation_reason": m5_reason,
             },
         )
 
@@ -2852,10 +2869,10 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
         score=signal_data.get("score"),
         session_name=session_name,
         market_condition=market_condition,
-        reason="intrabar ORB execution failed",
+        reason="intrabar Price Event execution failed",
         trade_plan=trade_plan,
-        decision="INTRABAR_ORB_EXECUTION_FAILED",
-        decision_reason="intrabar ORB execute_trade returned False",
+        decision="INTRABAR_PRICE_EVENT_EXECUTION_FAILED",
+        decision_reason="intrabar Price Event execute_trade returned False",
         rr_value=rr_value,
         required_rr=required_rr,
         execution_result=execution_result,
@@ -2863,6 +2880,7 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
             "orb_high": signal_data.get("orb_high"),
             "orb_low": signal_data.get("orb_low"),
             "breakout_distance": signal_data.get("breakout_distance"),
+            "m5_confirmation_reason": m5_reason,
         },
     )
 
@@ -3045,6 +3063,145 @@ def is_intrabar_price_event_duplicate(signal_data, current_candle_time):
     }
 
     return False, key
+
+def calculate_heikin_ashi_direction(df):
+    if df is None or len(df) < 3:
+        return None
+
+    try:
+        ha_close = (
+            df["open"] + df["high"] + df["low"] + df["close"]
+        ) / 4
+
+        ha_open_values = []
+
+        for i in range(len(df)):
+            if i == 0:
+                ha_open_values.append((df.iloc[i]["open"] + df.iloc[i]["close"]) / 2)
+            else:
+                ha_open_values.append((ha_open_values[i - 1] + ha_close.iloc[i - 1]) / 2)
+
+        last_ha_open = float(ha_open_values[-1])
+        last_ha_close = float(ha_close.iloc[-1])
+
+        if last_ha_close > last_ha_open:
+            return "BUY"
+
+        if last_ha_close < last_ha_open:
+            return "SELL"
+
+        return None
+
+    except Exception as e:
+        logger.error(f"[INTRABAR M5 FILTER] Heikin Ashi failed: {e}")
+        return None
+
+
+def calculate_parabolic_sar_direction(df, step=0.02, max_step=0.20):
+    if df is None or len(df) < 10:
+        return None
+
+    try:
+        high = df["high"].astype(float).tolist()
+        low = df["low"].astype(float).tolist()
+        close = df["close"].astype(float).tolist()
+
+        trend = "BUY" if close[1] > close[0] else "SELL"
+        af = step
+        ep = high[0] if trend == "BUY" else low[0]
+        sar = low[0] if trend == "BUY" else high[0]
+
+        for i in range(1, len(df)):
+            previous_sar = sar
+
+            if trend == "BUY":
+                sar = previous_sar + af * (ep - previous_sar)
+
+                if low[i] < sar:
+                    trend = "SELL"
+                    sar = ep
+                    ep = low[i]
+                    af = step
+                else:
+                    if high[i] > ep:
+                        ep = high[i]
+                        af = min(af + step, max_step)
+
+            else:
+                sar = previous_sar + af * (ep - previous_sar)
+
+                if high[i] > sar:
+                    trend = "BUY"
+                    sar = ep
+                    ep = high[i]
+                    af = step
+                else:
+                    if low[i] < ep:
+                        ep = low[i]
+                        af = min(af + step, max_step)
+
+        last_close = close[-1]
+
+        if last_close > sar:
+            return "BUY"
+
+        if last_close < sar:
+            return "SELL"
+
+        return None
+
+    except Exception as e:
+        logger.error(f"[INTRABAR M5 FILTER] PSAR failed: {e}")
+        return None
+
+
+def intrabar_m5_confirmation_ok(signal, strategy_name):
+    if not ENABLE_INTRABAR_M5_CONFIRMATION_FILTERS:
+        return True, "intrabar_m5_filters_disabled"
+
+    strategy_key = str(strategy_name or "").upper()
+
+    if strategy_key not in INTRABAR_M5_CONFIRMATION_STRATEGIES:
+        return True, "strategy_not_using_intrabar_m5_filters"
+
+    rates = mt5.copy_rates_from_pos(
+        SYMBOL,
+        INTRABAR_M5_CONFIRMATION_TIMEFRAME,
+        0,
+        INTRABAR_M5_CONFIRMATION_BARS,
+    )
+
+    if rates is None or len(rates) < 10:
+        return False, "m5_rates_unavailable"
+
+    m5_df = pd.DataFrame(rates)
+
+    confirmations = []
+
+    if INTRABAR_M5_USE_HEIKIN_ASHI:
+        ha_direction = calculate_heikin_ashi_direction(m5_df)
+        confirmations.append(ha_direction == signal)
+
+    if INTRABAR_M5_USE_PARABOLIC_SAR:
+        psar_direction = calculate_parabolic_sar_direction(
+            m5_df,
+            step=INTRABAR_M5_PSAR_STEP,
+            max_step=INTRABAR_M5_PSAR_MAX_STEP,
+        )
+        confirmations.append(psar_direction == signal)
+
+    if not confirmations:
+        return True, "no_intrabar_m5_filters_enabled"
+
+    if INTRABAR_M5_REQUIRE_ALL_FILTERS:
+        passed = all(confirmations)
+    else:
+        passed = any(confirmations)
+
+    if passed:
+        return True, "intrabar_m5_filters_confirmed"
+
+    return False, "intrabar_m5_filters_rejected"
 
 def get_fvg_zone(candidate):
     fvg_top = (
