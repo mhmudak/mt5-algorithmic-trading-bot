@@ -1,15 +1,13 @@
+import argparse
 import json
-import sys
 from datetime import datetime
-from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
-
-from src.account_context import get_account_file
-from src.logger import logger
-
+from ai_export_common import (
+    add_account_argument,
+    get_ai_account_file,
+    load_json_file,
+    logger,
+)
 
 def _load_json(path, default):
     if not path.exists():
@@ -60,9 +58,9 @@ def _top_items(mapping, limit=10):
     return items[:limit]
 
 
-def build_ai_shadow_advisor_report():
-    dataset_path = get_account_file("ai_memory_dataset.json")
-    evaluation_path = get_account_file("ai_shadow_advisor_evaluation.json")
+def build_ai_shadow_advisor_report(account=None):
+    dataset_path = get_ai_account_file("ai_memory_dataset.json", account)
+    evaluation_path = get_ai_account_file("ai_shadow_advisor_evaluation.json", account)
 
     dataset = _load_json(dataset_path, [])
     evaluation = _load_json(evaluation_path, {})
@@ -216,11 +214,11 @@ def export_markdown_report(report):
     return "\n".join(lines)
 
 
-def export_ai_shadow_advisor_report():
-    report = build_ai_shadow_advisor_report()
+def export_ai_shadow_advisor_report(account=None):
+    report = build_ai_shadow_advisor_report(account)
 
-    output_json = get_account_file("ai_shadow_advisor_report.json")
-    output_md = get_account_file("ai_shadow_advisor_report.md")
+    output_json = get_ai_account_file("ai_shadow_advisor_report.json", account)
+    output_md = get_ai_account_file("ai_shadow_advisor_report.md", account)
 
     output_json.parent.mkdir(parents=True, exist_ok=True)
 
@@ -244,4 +242,8 @@ def export_ai_shadow_advisor_report():
 
 
 if __name__ == "__main__":
-    export_ai_shadow_advisor_report()
+    parser = argparse.ArgumentParser()
+    add_account_argument(parser)
+    args = parser.parse_args()
+
+    export_ai_shadow_advisor_report(account=args.account)
