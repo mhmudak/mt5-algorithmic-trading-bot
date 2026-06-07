@@ -241,3 +241,65 @@ def flush_google_sheets_retry_queue(max_items=5):
         logger.info(f"[GOOGLE SHEETS QUEUE] Flushed count={flushed}")
 
     return flushed
+
+def send_memory_decision_report_to_google_sheets(report):
+    if not ENABLE_GOOGLE_SHEETS_LOGGING:
+        return False
+
+    if not GOOGLE_SHEETS_WEBHOOK_URL:
+        logger.info("[GOOGLE SHEETS] Webhook URL missing")
+        return False
+
+    payload = {
+        "secret": GOOGLE_SHEETS_WEBHOOK_SECRET,
+        "sheet": "MemoryDecisionReports",
+        "action": "APPEND",
+        "setup_id": report.get("setup_id"),
+        "created_at": report.get("created_at"),
+        "decision": report.get("decision"),
+        "decision_reason": report.get("decision_reason"),
+        "strategy": report.get("strategy"),
+        "signal": report.get("signal"),
+        "score": report.get("score"),
+        "session": report.get("session"),
+        "market_condition": report.get("market_condition"),
+        "entry_model": report.get("entry_model"),
+        "news_tag": report.get("setup_news_tag"),
+        "entry": report.get("entry"),
+        "sl": report.get("sl"),
+        "tp": report.get("tp"),
+        "lot": report.get("lot"),
+        "rr": report.get("rr"),
+        "required_rr": report.get("required_rr"),
+        "reason": report.get("reason"),
+        "memory_json": report.get("memory"),
+        "adjustments_json": report.get("adjustments"),
+        "context_json": report.get("context"),
+        "extra_json": report.get("extra"),
+    }
+
+    try:
+        response = requests.post(
+            GOOGLE_SHEETS_WEBHOOK_URL,
+            json=payload,
+            timeout=15,
+        )
+
+        if response.status_code != 200:
+            logger.error(
+                f"[GOOGLE SHEETS] Memory decision HTTP {response.status_code}: {response.text}"
+            )
+            return False
+
+        data = response.json()
+
+        if not data.get("ok"):
+            logger.error(f"[GOOGLE SHEETS] Memory decision API error: {data}")
+            return False
+
+        logger.info("[GOOGLE SHEETS] Memory decision report appended")
+        return True
+
+    except Exception as e:
+        logger.error(f"[GOOGLE SHEETS] Failed to send memory decision report: {e}")
+        return False

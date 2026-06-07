@@ -7,7 +7,7 @@ from config.settings import (
 )
 from src.account_context import get_account_file
 from src.logger import logger
-
+from src.google_sheets_logger import send_memory_decision_report_to_google_sheets
 
 def get_memory_decision_report_file():
     return get_account_file("memory_decision_reports.json")
@@ -125,6 +125,11 @@ def save_memory_decision_report(report):
     items = load_memory_decision_reports()
     items.append(report)
     save_memory_decision_reports(items)
+
+    try:
+        send_memory_decision_report_to_google_sheets(report)
+    except Exception as e:
+        logger.error(f"[MEMORY DECISION REPORT] Google Sheets sync failed: {e}")
 
     logger.info(
         f"[MEMORY DECISION REPORT] Saved | "
