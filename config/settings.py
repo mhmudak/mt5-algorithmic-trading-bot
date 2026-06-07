@@ -1381,6 +1381,17 @@ INTRABAR_PRICE_EVENT_REQUIRE_M5_CONFIRMATION = False
 INTRABAR_PRICE_EVENT_NOTIFY_TELEGRAM = True
 
 # =========================
+# Intrabar Price Event De-duplication Guard
+# =========================
+ENABLE_INTRABAR_PRICE_EVENT_DEDUP_GUARD = True
+
+INTRABAR_PRICE_EVENT_DEDUP_SECONDS = 180
+INTRABAR_PRICE_EVENT_MAX_PER_CANDLE = 2
+INTRABAR_PRICE_EVENT_MAX_PER_STRATEGY_PER_CANDLE = 1
+
+INTRABAR_PRICE_EVENT_LOG_DUPLICATE_SKIPS = False
+
+# =========================
 # Generic Tick Sniper Execution Engine
 # =========================
 ENABLE_TICK_SNIPER_EXECUTION = True

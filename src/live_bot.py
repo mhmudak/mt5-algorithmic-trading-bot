@@ -263,7 +263,18 @@ from config.settings import (
     INTRABAR_PRICE_EVENT_REQUIRE_M5_CONFIRMATION,
     INTRABAR_PRICE_EVENT_NOTIFY_TELEGRAM,
     INTRABAR_PRICE_EVENT_MAX_BREAK_DISTANCE_PRICE,
-    INTRABAR_PRICE_EVENT_EXPIRY_SECONDS
+    INTRABAR_PRICE_EVENT_EXPIRY_SECONDS,
+    ENABLE_INTRABAR_PRICE_EVENT_VWAP_FILTER,
+    ENABLE_INTRABAR_PRICE_EVENT_STRUCTURE_FILTER,
+    ENABLE_INTRABAR_PRICE_EVENT_REVERSAL_FILTER,
+    INTRABAR_PRICE_EVENT_MIN_CURRENT_BODY_ATR,
+    INTRABAR_PRICE_EVENT_MIN_STRUCTURE_BREAK_PRICE,
+    INTRABAR_PRICE_EVENT_VWAP_LOOKBACK_BARS,
+    ENABLE_INTRABAR_PRICE_EVENT_DEDUP_GUARD,
+    INTRABAR_PRICE_EVENT_DEDUP_SECONDS,
+    INTRABAR_PRICE_EVENT_MAX_PER_CANDLE,
+    INTRABAR_PRICE_EVENT_MAX_PER_STRATEGY_PER_CANDLE,
+    INTRABAR_PRICE_EVENT_LOG_DUPLICATE_SKIPS,
 )
 
 from src.candidate_rejection_recovery import (
@@ -292,6 +303,8 @@ from src.time_context import (
 )
 
 INTRABAR_DETECTION_CACHE = {}
+INTRABAR_PRICE_EVENT_DEDUP_CACHE = {}
+
 last_signal = None
 reversal_count = 0
 
@@ -2187,8 +2200,196 @@ def get_intrabar_detector_profiles():
 
     return profiles
 
+def evaluate_intrabar_price_event_trigger(
+    *,
+    trigger,
+    strategy,
+    signal_candidate,
+    bid,
+    ask,
+    current,
+    current_high,
+    current_low,
+    upper_level,
+    lower_level,
+    ema,
+    atr,
+    vwap,
+    min_break,
+    max_break,
+    reclaim_buffer,
+    require_ema_alignment,
+):
+    signal = None
+    current_price = None
+    breakout_distance = None
+    sweep_depth = None
+    entry_model = None
+    momentum = None
+    direction_context = None
 
-def build_intrabar_orb_signal_data(df, tick, session_name, market_condition, current_candle_time):
+    # =========================
+    # DIRECT BREAKOUT
+    # =========================
+    if trigger == "DIRECT_BREAKOUT":
+        buy_break_distance = ask - upper_level
+        sell_break_distance = lower_level - bid
+
+        if (
+            buy_break_distance >= min_break
+            and buy_break_distance <= max_break
+            and ema_alignment_ok("BUY", ask, ema, require_ema_alignment)
+        ):
+            signal = "BUY"
+            current_price = ask
+            breakout_distance = buy_break_distance
+            entry_model = f"INTRABAR_{strategy}_BREAKOUT"
+            momentum = "bullish_intrabar_breakout"
+            direction_context = "tick_above_upper_level"
+
+        elif (
+            sell_break_distance >= min_break
+            and sell_break_distance <= max_break
+            and ema_alignment_ok("SELL", bid, ema, require_ema_alignment)
+        ):
+            signal = "SELL"
+            current_price = bid
+            breakout_distance = sell_break_distance
+            entry_model = f"INTRABAR_{strategy}_BREAKOUT"
+            momentum = "bearish_intrabar_breakout"
+            direction_context = "tick_below_lower_level"
+
+    # =========================
+    # SWEEP / TRAP / REVERSAL RECLAIM
+    # =========================
+    elif trigger in ["SWEEP_RECLAIM", "TRAP_RECLAIM", "REVERSAL_RECLAIM"]:
+        buy_sweep_depth = lower_level - current_low
+        sell_sweep_depth = current_high - upper_level
+
+        buy_reclaimed = ask >= lower_level + reclaim_buffer
+        sell_reclaimed = bid <= upper_level - reclaim_buffer
+
+        if trigger == "TRAP_RECLAIM":
+            buy_reclaimed = buy_reclaimed and ask > float(current.get("open", ask))
+            sell_reclaimed = sell_reclaimed and bid < float(current.get("open", bid))
+
+        if trigger == "REVERSAL_RECLAIM":
+            if not current_body_atr_ok(current, atr):
+                return None
+
+        if (
+            buy_sweep_depth >= min_break
+            and buy_sweep_depth <= max_break
+            and buy_reclaimed
+            and ema_alignment_ok("BUY", ask, ema, require_ema_alignment)
+        ):
+            signal = "BUY"
+            current_price = ask
+            breakout_distance = ask - lower_level
+            sweep_depth = buy_sweep_depth
+            entry_model = f"INTRABAR_{strategy}_{trigger}"
+            momentum = f"bullish_intrabar_{trigger.lower()}"
+            direction_context = "sell_side_sweep_reclaimed"
+
+        elif (
+            sell_sweep_depth >= min_break
+            and sell_sweep_depth <= max_break
+            and sell_reclaimed
+            and ema_alignment_ok("SELL", bid, ema, require_ema_alignment)
+        ):
+            signal = "SELL"
+            current_price = bid
+            breakout_distance = upper_level - bid
+            sweep_depth = sell_sweep_depth
+            entry_model = f"INTRABAR_{strategy}_{trigger}"
+            momentum = f"bearish_intrabar_{trigger.lower()}"
+            direction_context = "buy_side_sweep_reclaimed"
+
+    # =========================
+    # STRUCTURE CONTINUATION
+    # =========================
+    elif trigger == "STRUCTURE_CONTINUATION":
+        structure_break = INTRABAR_PRICE_EVENT_MIN_STRUCTURE_BREAK_PRICE
+
+        if (
+            ask >= upper_level + structure_break
+            and ask <= upper_level + max_break
+            and ema_alignment_ok("BUY", ask, ema, require_ema_alignment)
+        ):
+            signal = "BUY"
+            current_price = ask
+            breakout_distance = ask - upper_level
+            entry_model = f"INTRABAR_{strategy}_STRUCTURE_CONTINUATION"
+            momentum = "bullish_intrabar_structure_continuation"
+            direction_context = "structure_break_continuation_buy"
+
+        elif (
+            bid <= lower_level - structure_break
+            and bid >= lower_level - max_break
+            and ema_alignment_ok("SELL", bid, ema, require_ema_alignment)
+        ):
+            signal = "SELL"
+            current_price = bid
+            breakout_distance = lower_level - bid
+            entry_model = f"INTRABAR_{strategy}_STRUCTURE_CONTINUATION"
+            momentum = "bearish_intrabar_structure_continuation"
+            direction_context = "structure_break_continuation_sell"
+
+    # =========================
+    # VWAP RECLAIM
+    # =========================
+    elif trigger == "VWAP_RECLAIM":
+        if vwap is None:
+            return None
+
+        try:
+            vwap = float(vwap)
+        except Exception:
+            return None
+
+        buy_sweep_depth = lower_level - current_low
+        sell_sweep_depth = current_high - upper_level
+
+        if (
+            buy_sweep_depth >= min_break
+            and buy_sweep_depth <= max_break
+            and ask >= vwap + reclaim_buffer
+        ):
+            signal = "BUY"
+            current_price = ask
+            breakout_distance = ask - vwap
+            sweep_depth = buy_sweep_depth
+            entry_model = f"INTRABAR_{strategy}_VWAP_RECLAIM"
+            momentum = "bullish_intrabar_vwap_reclaim"
+            direction_context = "sell_side_sweep_vwap_reclaimed"
+
+        elif (
+            sell_sweep_depth >= min_break
+            and sell_sweep_depth <= max_break
+            and bid <= vwap - reclaim_buffer
+        ):
+            signal = "SELL"
+            current_price = bid
+            breakout_distance = vwap - bid
+            sweep_depth = sell_sweep_depth
+            entry_model = f"INTRABAR_{strategy}_VWAP_RECLAIM"
+            momentum = "bearish_intrabar_vwap_reclaim"
+            direction_context = "buy_side_sweep_vwap_reclaimed"
+
+    if signal is None:
+        return None
+
+    return {
+        "signal": signal,
+        "current_price": current_price,
+        "breakout_distance": breakout_distance,
+        "sweep_depth": sweep_depth,
+        "entry_model": entry_model,
+        "momentum": momentum,
+        "direction_context": direction_context,
+    }
+
+def build_intrabar_price_event_signal_data(df, tick, session_name, market_condition, current_candle_time):
     if not ENABLE_INTRABAR_PRICE_EVENT_DETECTOR:
         return None
 
@@ -2209,6 +2410,11 @@ def build_intrabar_orb_signal_data(df, tick, session_name, market_condition, cur
 
     current_high = float(current.get("high", max(bid, ask)))
     current_low = float(current.get("low", min(bid, ask)))
+    
+    vwap = calculate_intrabar_vwap(
+        df,
+        INTRABAR_PRICE_EVENT_VWAP_LOOKBACK_BARS,
+    )
 
     for profile in get_intrabar_detector_profiles():
         strategy = profile["strategy"]
@@ -2242,76 +2448,36 @@ def build_intrabar_orb_signal_data(df, tick, session_name, market_condition, cur
         direction_context = None
         momentum = None
 
-        # =========================
-        # DIRECT ORB BREAKOUT
-        # =========================
-        if trigger == "DIRECT_BREAKOUT":
-            buy_break_distance = ask - upper_level
-            sell_break_distance = lower_level - bid
+        trigger_result = evaluate_intrabar_price_event_trigger(
+            trigger=trigger,
+            strategy=strategy,
+            signal_candidate=None,
+            bid=bid,
+            ask=ask,
+            current=current,
+            current_high=current_high,
+            current_low=current_low,
+            upper_level=upper_level,
+            lower_level=lower_level,
+            ema=ema,
+            atr=atr,
+            vwap=vwap,
+            min_break=min_break,
+            max_break=max_break,
+            reclaim_buffer=reclaim_buffer,
+            require_ema_alignment=profile.get("require_ema_alignment", True),
+        )
 
-            if (
-                buy_break_distance >= min_break
-                and buy_break_distance <= max_break
-                and ask > ema
-            ):
-                signal = "BUY"
-                current_price = ask
-                breakout_distance = buy_break_distance
-                entry_model = f"INTRABAR_{strategy}_BREAKOUT"
-                momentum = "bullish_intrabar_breakout"
-                direction_context = "tick_above_upper_level"
-
-            elif (
-                sell_break_distance >= min_break
-                and sell_break_distance <= max_break
-                and bid < ema
-            ):
-                signal = "SELL"
-                current_price = bid
-                breakout_distance = sell_break_distance
-                entry_model = f"INTRABAR_{strategy}_BREAKOUT"
-                momentum = "bearish_intrabar_breakout"
-                direction_context = "tick_below_lower_level"
-
-        # =========================
-        # LIQUIDITY SWEEP / TRAP RECLAIM
-        # BUY = sell-side sweep below lower level, then reclaim above lower level
-        # SELL = buy-side sweep above upper level, then reclaim below upper level
-        # =========================
-        elif trigger in ["SWEEP_RECLAIM", "TRAP_RECLAIM"]:
-            buy_sweep_depth = lower_level - current_low
-            sell_sweep_depth = current_high - upper_level
-
-            if (
-                buy_sweep_depth >= min_break
-                and buy_sweep_depth <= max_break
-                and ask >= lower_level + reclaim_buffer
-                and ask > ema
-            ):
-                signal = "BUY"
-                current_price = ask
-                breakout_distance = ask - lower_level
-                sweep_depth = buy_sweep_depth
-                entry_model = f"INTRABAR_{strategy}_{trigger}"
-                momentum = "bullish_intrabar_sweep_reclaim"
-                direction_context = "sell_side_sweep_reclaimed"
-
-            elif (
-                sell_sweep_depth >= min_break
-                and sell_sweep_depth <= max_break
-                and bid <= upper_level - reclaim_buffer
-                and bid < ema
-            ):
-                signal = "SELL"
-                current_price = bid
-                breakout_distance = upper_level - bid
-                sweep_depth = sell_sweep_depth
-                entry_model = f"INTRABAR_{strategy}_{trigger}"
-                momentum = "bearish_intrabar_sweep_reclaim"
-                direction_context = "buy_side_sweep_reclaimed"
-
-        if signal is None:
+        if not trigger_result:
             continue
+
+        signal = trigger_result["signal"]
+        current_price = trigger_result["current_price"]
+        breakout_distance = trigger_result["breakout_distance"]
+        sweep_depth = trigger_result["sweep_depth"]
+        entry_model = trigger_result["entry_model"]
+        momentum = trigger_result["momentum"]
+        direction_context = trigger_result["direction_context"]
 
         sl_buffer = max(float(atr) * 0.25, 2.0)
         target_distance = max(float(atr) * 1.5, range_width)
@@ -2366,8 +2532,8 @@ def build_intrabar_orb_signal_data(df, tick, session_name, market_condition, cur
 
     return None
     
-def process_intrabar_orb_detector(df, tick, account_info, session_name, market_condition, current_candle_time):
-    signal_data = build_intrabar_orb_signal_data(
+def process_intrabar_price_event_detector(df, tick, account_info, session_name, market_condition, current_candle_time):
+    signal_data = build_intrabar_price_event_signal_data(
         df=df,
         tick=tick,
         session_name=session_name,
@@ -2384,6 +2550,20 @@ def process_intrabar_orb_detector(df, tick, account_info, session_name, market_c
     
     strategy_name = signal_data.get("strategy")
     signal = signal_data.get("signal")
+    
+    duplicate, duplicate_key = is_intrabar_price_event_duplicate(
+        signal_data,
+        current_candle_time,
+    )
+
+    if duplicate:
+        if INTRABAR_PRICE_EVENT_LOG_DUPLICATE_SKIPS:
+            logger.info(
+                f"[INTRABAR PRICE EVENT] Duplicate skipped | "
+                f"setup_id={setup_id} key={duplicate_key}"
+            )
+
+        return False
 
     already_active, active_state = is_setup_id_already_active(setup_id)
 
@@ -2488,6 +2668,9 @@ def process_intrabar_orb_detector(df, tick, account_info, session_name, market_c
                 "orb_high": signal_data.get("orb_high"),
                 "orb_low": signal_data.get("orb_low"),
                 "breakout_distance": signal_data.get("breakout_distance"),
+                "trigger": signal_data.get("intrabar_trigger"),
+                "vwap": signal_data.get("vwap"),
+                "sweep_depth": signal_data.get("sweep_depth"),
             },
         )
 
@@ -2652,6 +2835,150 @@ def is_intrabar_detection_recent(setup_id, expiry_seconds):
 
     INTRABAR_DETECTION_CACHE[setup_id] = now_ts
     return False
+
+def calculate_intrabar_vwap(df, lookback_bars=20):
+    if df is None or len(df) < lookback_bars:
+        return None
+
+    recent = df.tail(lookback_bars)
+
+    try:
+        typical_price = (
+            recent["high"] + recent["low"] + recent["close"]
+        ) / 3
+
+        volume = recent["tick_volume"] if "tick_volume" in recent.columns else None
+
+        if volume is None or volume.sum() <= 0:
+            return float(typical_price.mean())
+
+        return float((typical_price * volume).sum() / volume.sum())
+
+    except Exception:
+        return None
+
+
+def current_body_atr_ok(current, atr):
+    try:
+        body = abs(float(current.get("close")) - float(current.get("open")))
+        atr = float(atr)
+    except Exception:
+        return False
+
+    if atr <= 0:
+        return False
+
+    return body >= atr * INTRABAR_PRICE_EVENT_MIN_CURRENT_BODY_ATR
+
+
+def ema_alignment_ok(signal, price, ema, require_ema_alignment):
+    if not require_ema_alignment:
+        return True
+
+    if ema is None:
+        return False
+
+    try:
+        price = float(price)
+        ema = float(ema)
+    except Exception:
+        return False
+
+    if signal == "BUY":
+        return price > ema
+
+    if signal == "SELL":
+        return price < ema
+
+    return False
+
+def build_intrabar_price_event_dedup_key(signal_data, current_candle_time):
+    strategy = str(signal_data.get("strategy", "UNKNOWN")).upper()
+    signal = str(signal_data.get("signal", "UNKNOWN")).upper()
+    trigger = str(signal_data.get("intrabar_trigger", "UNKNOWN")).upper()
+
+    upper_level = signal_data.get("intrabar_upper_level") or signal_data.get("orb_high")
+    lower_level = signal_data.get("intrabar_lower_level") or signal_data.get("orb_low")
+
+    try:
+        upper_level = round(float(upper_level), 1)
+    except Exception:
+        upper_level = "NA"
+
+    try:
+        lower_level = round(float(lower_level), 1)
+    except Exception:
+        lower_level = "NA"
+
+    return (
+        f"{current_candle_time}|"
+        f"{strategy}|"
+        f"{signal}|"
+        f"{trigger}|"
+        f"{upper_level}|"
+        f"{lower_level}"
+    )
+
+
+def cleanup_intrabar_price_event_dedup_cache():
+    now_ts = datetime.utcnow().timestamp()
+
+    expired_keys = []
+
+    for key, item in INTRABAR_PRICE_EVENT_DEDUP_CACHE.items():
+        seen_at = item.get("seen_at", 0)
+
+        if now_ts - seen_at > INTRABAR_PRICE_EVENT_DEDUP_SECONDS:
+            expired_keys.append(key)
+
+    for key in expired_keys:
+        INTRABAR_PRICE_EVENT_DEDUP_CACHE.pop(key, None)
+
+
+def is_intrabar_price_event_duplicate(signal_data, current_candle_time):
+    if not ENABLE_INTRABAR_PRICE_EVENT_DEDUP_GUARD:
+        return False, None
+
+    cleanup_intrabar_price_event_dedup_cache()
+
+    key = build_intrabar_price_event_dedup_key(
+        signal_data,
+        current_candle_time,
+    )
+
+    if key in INTRABAR_PRICE_EVENT_DEDUP_CACHE:
+        return True, key
+
+    strategy = str(signal_data.get("strategy", "UNKNOWN")).upper()
+
+    candle_count = 0
+    strategy_candle_count = 0
+
+    candle_prefix = f"{current_candle_time}|"
+    strategy_prefix = f"{current_candle_time}|{strategy}|"
+
+    for existing_key in INTRABAR_PRICE_EVENT_DEDUP_CACHE:
+        if existing_key.startswith(candle_prefix):
+            candle_count += 1
+
+        if existing_key.startswith(strategy_prefix):
+            strategy_candle_count += 1
+
+    if candle_count >= INTRABAR_PRICE_EVENT_MAX_PER_CANDLE:
+        return True, f"max_per_candle_reached:{current_candle_time}"
+
+    if strategy_candle_count >= INTRABAR_PRICE_EVENT_MAX_PER_STRATEGY_PER_CANDLE:
+        return True, f"max_per_strategy_per_candle_reached:{strategy}"
+
+    INTRABAR_PRICE_EVENT_DEDUP_CACHE[key] = {
+        "seen_at": datetime.utcnow().timestamp(),
+        "setup_id": signal_data.get("setup_id"),
+        "strategy": strategy,
+        "signal": signal_data.get("signal"),
+        "trigger": signal_data.get("intrabar_trigger"),
+    }
+
+    return False, key
 
 def get_fvg_zone(candidate):
     fvg_top = (
@@ -5962,7 +6289,7 @@ def process_cycle(last_processed_candle_time):
         intrabar_session_name = detect_session(current_candle_time)
         intrabar_market_condition = "INTRABAR_PENDING"
 
-        if process_intrabar_orb_detector(
+        if process_intrabar_price_event_detector(
             df=df,
             tick=tick,
             account_info=account_info,
