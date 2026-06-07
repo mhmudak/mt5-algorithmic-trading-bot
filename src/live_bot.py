@@ -2964,8 +2964,8 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
 
     if rr_value is None or rr_value < required_rr:
         logger.info(
-            f"[INTRABAR ORB] RR too low | "
-            f"setup_id={setup_id} rr={rr_value} required={INTRABAR_PRICE_EVENT_MIN_RR}"
+            f"[INTRABAR PRICE EVENT] RR too low | "
+            f"setup_id={setup_id} rr={rr_value} required={required_rr}"
         )
         return False
 
