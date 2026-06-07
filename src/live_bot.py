@@ -252,6 +252,7 @@ from config.settings import (
     TICK_SNIPER_EXPIRY_SECONDS,
     TICK_SNIPER_NOTIFY_TELEGRAM,
     TICK_SNIPER_REQUIRE_M5_CONFIRMATION,
+    TICK_SNIPER_STRATEGY_PROFILES,
 )
 
 from src.candidate_rejection_recovery import (
@@ -2079,10 +2080,28 @@ def should_use_tick_sniper_watcher(strategy_name, signal_data):
     except Exception:
         score = 0
 
-    if score < TICK_SNIPER_MIN_SCORE:
+    profile = get_tick_sniper_profile(strategy_key)
+
+    if score < profile["min_score"]:
         return False
 
     return True
+
+def get_tick_sniper_profile(strategy_name):
+    strategy_key = str(strategy_name or "").upper()
+
+    profile = TICK_SNIPER_STRATEGY_PROFILES.get(strategy_key, {})
+
+    return {
+        "trigger": profile.get("trigger", "DIRECTIONAL_RECLAIM"),
+        "min_move_price": profile.get("min_move_price", TICK_SNIPER_MIN_MOVE_PRICE),
+        "min_rr": profile.get("min_rr", TICK_SNIPER_MIN_RR),
+        "min_score": profile.get("min_score", TICK_SNIPER_MIN_SCORE),
+        "require_m5_confirmation": profile.get(
+            "require_m5_confirmation",
+            TICK_SNIPER_REQUIRE_M5_CONFIRMATION,
+        ),
+    }
 
 
 def tick_sniper_ready(signal, tick, setup_data, setup):
@@ -3937,7 +3956,12 @@ def process_wait_tick_sniper_setups(df, tick, account_info, market_condition, se
             )
             continue
 
-        if TICK_SNIPER_REQUIRE_M5_CONFIRMATION:
+        require_m5_confirmation = setup.get(
+            "tick_sniper_require_m5_confirmation",
+            TICK_SNIPER_REQUIRE_M5_CONFIRMATION,
+        )
+        
+        if require_m5_confirmation:
             m5_confirmed, m5_reason = extra_entry_confirmation_ok(signal)
 
             if not m5_confirmed:
@@ -3991,6 +4015,8 @@ def process_wait_tick_sniper_setups(df, tick, account_info, market_condition, se
 
         rr_value = calculate_rr_value(trade_plan)
         required_rr = setup.get("tick_sniper_min_rr", TICK_SNIPER_MIN_RR)
+        
+        trigger_type = setup.get("tick_sniper_trigger", "DIRECTIONAL_RECLAIM")
 
         if rr_value is None or rr_value < required_rr:
             logger.info(
@@ -4033,6 +4059,7 @@ def process_wait_tick_sniper_setups(df, tick, account_info, market_condition, se
                     "wait_reason": setup.get("wait_reason"),
                     "sniper_move": sniper_move,
                     "current_price": current_price,
+                    "trigger": trigger_type,
                 },
             )
 
@@ -8152,18 +8179,23 @@ def process_cycle(last_processed_candle_time):
                 
                 if not selected_signal_data.get("session"):
                     selected_signal_data["session"] = session_name
-                
+
                 if not selected_signal_data.get("market_condition"):
                     selected_signal_data["market_condition"] = market_condition
 
+                profile = get_tick_sniper_profile(strategy_name)
+                
                 execution_engine.mark_wait_tick_sniper(
                     setup=best_setup,
                     expiry_seconds=TICK_SNIPER_EXPIRY_SECONDS,
-                    min_rr=TICK_SNIPER_MIN_RR,
-                    min_score=TICK_SNIPER_MIN_SCORE,
-                    min_move_price=TICK_SNIPER_MIN_MOVE_PRICE,
+                    min_rr=profile["min_rr"],
+                    min_score=profile["min_score"],
+                    min_move_price=profile["min_move_price"],
                     reference_price=reference_price,
                 )
+                
+                best_setup["tick_sniper_trigger"] = profile["trigger"]
+                best_setup["tick_sniper_require_m5_confirmation"] = profile["require_m5_confirmation"]
 
                 log_setup_event(
                     setup_id=selected_signal_data.get("setup_id"),
@@ -8183,7 +8215,9 @@ def process_cycle(last_processed_candle_time):
                     extra={
                         "reference_price": reference_price,
                         "expiry_seconds": TICK_SNIPER_EXPIRY_SECONDS,
-                        "min_move_price": TICK_SNIPER_MIN_MOVE_PRICE,
+                        "min_move_price": profile["min_move_price"],
+                        "trigger": profile["trigger"],
+                        "require_m5_confirmation": profile["require_m5_confirmation"],
                     },
                 )
 

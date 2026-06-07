@@ -1251,6 +1251,30 @@ TICK_SNIPER_NOTIFY_TELEGRAM = True
 # Keep this false first. Later we can add M5 confirmation strategy-by-strategy.
 TICK_SNIPER_REQUIRE_M5_CONFIRMATION = False
 
+TICK_SNIPER_STRATEGY_PROFILES = {
+    "LIQUIDITY_SWEEP": {
+        "trigger": "DIRECTIONAL_RECLAIM",
+        "min_move_price": 0.30,
+        "min_rr": 1.2,
+        "min_score": 95,
+        "require_m5_confirmation": False,
+    },
+    "LIQUIDITY_TRAP": {
+        "trigger": "DIRECTIONAL_RECLAIM",
+        "min_move_price": 0.35,
+        "min_rr": 1.2,
+        "min_score": 95,
+        "require_m5_confirmation": False,
+    },
+    "STRUCTURE_LIQUIDITY": {
+        "trigger": "STRUCTURE_CONTINUATION",
+        "min_move_price": 0.40,
+        "min_rr": 1.3,
+        "min_score": 95,
+        "require_m5_confirmation": False,
+    },
+}
+
 # =========================
 # Candidate Rejection Notifications
 # =========================
