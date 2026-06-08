@@ -289,6 +289,11 @@ from config.settings import (
     GENERIC_REJECTED_CANDIDATE_RECOVERY_REASONS,
     GENERIC_REJECTED_CANDIDATE_NOTIFY_TELEGRAM,
     INTRABAR_PRICE_EVENT_EXTRA_SL_PRICE,
+    INTRABAR_PRICE_EVENT_MIN_SL_DISTANCE_PRICE,
+    INTRABAR_PRICE_EVENT_MAX_SL_DISTANCE_PRICE,
+    INTRABAR_PRICE_EVENT_MIN_TP_DISTANCE_PRICE,
+    INTRABAR_PRICE_EVENT_MAX_TP_DISTANCE_PRICE,
+    INTRABAR_PRICE_EVENT_DEFAULT_TARGET_RR,
 )
 
 from src.candidate_rejection_recovery import (
@@ -2879,19 +2884,54 @@ def build_intrabar_price_event_signal_data(df, tick, session_name, market_condit
         momentum = trigger_result["momentum"]
         direction_context = trigger_result["direction_context"]
 
+        min_sl_distance = float(
+            profile.get("min_sl_distance", INTRABAR_PRICE_EVENT_MIN_SL_DISTANCE_PRICE)
+        )
+        max_sl_distance = float(
+            profile.get("max_sl_distance", INTRABAR_PRICE_EVENT_MAX_SL_DISTANCE_PRICE)
+        )
+
+        min_tp_distance = float(
+            profile.get("min_tp_distance", INTRABAR_PRICE_EVENT_MIN_TP_DISTANCE_PRICE)
+        )
+        max_tp_distance = float(
+            profile.get("max_tp_distance", INTRABAR_PRICE_EVENT_MAX_TP_DISTANCE_PRICE)
+        )
+
+        target_rr = float(
+            profile.get("target_rr", INTRABAR_PRICE_EVENT_DEFAULT_TARGET_RR)
+        )
+
         sl_buffer = max(float(atr) * 0.25, 2.0)
-        target_distance = max(float(atr) * 1.5, range_width)
 
         if signal == "BUY":
-            sl_reference = round(lower_level - sl_buffer - INTRABAR_PRICE_EVENT_EXTRA_SL_PRICE, 2)
-            tp_reference = round(current_price + target_distance, 2)
+            raw_sl = lower_level - sl_buffer - INTRABAR_PRICE_EVENT_EXTRA_SL_PRICE
+            raw_stop_distance = current_price - raw_sl
+
+            stop_distance = min(max(raw_stop_distance, min_sl_distance), max_sl_distance)
+            sl_reference = round(current_price - stop_distance, 2)
+
+            tp_distance = min(
+                max(stop_distance * target_rr, min_tp_distance),
+                max_tp_distance,
+            )
+            tp_reference = round(current_price + tp_distance, 2)
 
             if sl_reference >= current_price or tp_reference <= current_price:
                 continue
-
+            
         else:
-            sl_reference = round(upper_level + sl_buffer + INTRABAR_PRICE_EVENT_EXTRA_SL_PRICE, 2)
-            tp_reference = round(current_price - target_distance, 2)
+            raw_sl = upper_level + sl_buffer + INTRABAR_PRICE_EVENT_EXTRA_SL_PRICE
+            raw_stop_distance = raw_sl - current_price
+
+            stop_distance = min(max(raw_stop_distance, min_sl_distance), max_sl_distance)
+            sl_reference = round(current_price + stop_distance, 2)
+
+            tp_distance = min(
+                max(stop_distance * target_rr, min_tp_distance),
+                max_tp_distance,
+            )
+            tp_reference = round(current_price - tp_distance, 2)
 
             if sl_reference <= current_price or tp_reference >= current_price:
                 continue
@@ -2922,6 +2962,11 @@ def build_intrabar_price_event_signal_data(df, tick, session_name, market_condit
             "vwap": round(vwap, 2) if vwap is not None else None,
             "intrabar_trigger": trigger,
             "intrabar_profile": profile,
+            "intrabar_stop_distance": round(stop_distance, 2),
+            "intrabar_tp_distance": round(tp_distance, 2),
+            "intrabar_target_rr": target_rr,
+            "intrabar_max_sl_distance": max_sl_distance,
+            "intrabar_max_tp_distance": max_tp_distance,
             "require_m5_confirmation": bool(
                 profile.get("require_m5_confirmation", False)
             ),
@@ -2998,15 +3043,15 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
         INTRABAR_PRICE_EVENT_REQUIRE_M5_CONFIRMATION
         or signal_data.get("require_m5_confirmation", False)
     )
-    
+
     m5_reason = "intrabar_m5_not_required"
-    
+
     if require_m5_confirmation:
         m5_confirmed, m5_reason = intrabar_m5_confirmation_ok(
             signal,
             strategy_name,
         )
-    
+
         if not m5_confirmed:
             logger.info(
                 f"[INTRABAR Price Event] M5 confirmation failed | "

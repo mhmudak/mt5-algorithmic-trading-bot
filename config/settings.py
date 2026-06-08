@@ -1412,13 +1412,25 @@ INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = {
         "lookback_bars": 20,
         "min_score": 96,
         "min_rr": 1.10,
+        "target_rr": 1.25,
         "min_break_distance": 0.20,
         "max_break_distance": 8.00,
         "reclaim_buffer": 0.25,
         "require_ema_alignment": False,
         "require_m5_confirmation": True,
+        "min_sl_distance": 4.0,
+        "max_sl_distance": 12.0,
+        "min_tp_distance": 6.0,
+        "max_tp_distance": 20.0,
     },
 }
+
+INTRABAR_PRICE_EVENT_MIN_SL_DISTANCE_PRICE = 3.0
+INTRABAR_PRICE_EVENT_MAX_SL_DISTANCE_PRICE = 14.0
+
+INTRABAR_PRICE_EVENT_MIN_TP_DISTANCE_PRICE = 5.0
+INTRABAR_PRICE_EVENT_MAX_TP_DISTANCE_PRICE = 28.0
+INTRABAR_PRICE_EVENT_DEFAULT_TARGET_RR = 1.35
 
 # Safety first: false means no M5 close confirmation required.
 INTRABAR_PRICE_EVENT_REQUIRE_M5_CONFIRMATION = True
