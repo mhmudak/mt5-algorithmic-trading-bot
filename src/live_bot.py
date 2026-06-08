@@ -1156,6 +1156,9 @@ def handle_generic_rejected_candidate_trade_plan(
 ):
     if rejection_reason == "low_rr":
         return False
+    
+    if is_mtf_conflict_rejection(rejection_reason):
+        return False
 
     if not ENABLE_GENERIC_REJECTED_CANDIDATE_TRADE_PLAN:
         return False
