@@ -151,7 +151,7 @@ NEWS_CONTEXT_AFTER_MINUTES = 180
 # Execution / Risk Settings
 # =========================
 POSITION_MODE = "fixed"   # "fixed" or "risk"
-FIXED_LOT = 0.04
+FIXED_LOT = 0.03
 RISK_PER_TRADE_PCT = 0.25
 
 # =========================
@@ -1108,8 +1108,8 @@ MTF_CONFLICT_RETRACE_FIRST_STRATEGIES = [
 MTF_CONFLICT_TRACK_ONLY_STRATEGIES = [
     "MICRO_SR_SWEEP_RECLAIM",
     "FVG_CE_MITIGATION",
-    "FVG",
     "RANGE_SWEEP_RECLAIM",
+    "FVG",
 ]
 
 MTF_CONFLICT_SOFT_EXECUTION_MIN_SCORE = 100

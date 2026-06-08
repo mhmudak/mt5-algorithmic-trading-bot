@@ -317,6 +317,7 @@ from src.time_context import (
 
 INTRABAR_DETECTION_CACHE = {}
 INTRABAR_PRICE_EVENT_DEDUP_CACHE = {}
+MTF_CONFLICT_TRACKED_CACHE = {}
 
 last_signal = None
 reversal_count = 0
@@ -1165,12 +1166,6 @@ def handle_generic_rejected_candidate_trade_plan(
         rejection_reason=rejection_reason,
     )
 
-    candidate_required_rr = get_min_rr(
-        strategy=candidate_strategy,
-        market_condition=market_condition,
-        session=session_name,
-    )
-
     if candidate_trade_plan is None:
         save_trade_plan_memory_report(
             selected_signal_data=candidate,
@@ -1186,6 +1181,12 @@ def handle_generic_rejected_candidate_trade_plan(
         )
 
         return False
+    
+    candidate_required_rr = get_min_rr(
+        candidate_strategy,
+        candidate.get("entry_model"),
+        candidate_trade_plan.get("sl_model") or candidate.get("sl_model"),
+    )
 
     save_trade_plan_memory_report(
         selected_signal_data=candidate,
@@ -3987,6 +3988,27 @@ def get_mtf_conflict_setup_id(candidate, signal, tick):
 
     return f"MTF-{strategy}-{signal}-{datetime.utcnow().timestamp()}"
 
+def is_mtf_conflict_candidate_already_tracked(setup_id, rejection_reason, execution_mode, ttl_seconds=900):
+    if not setup_id:
+        return False
+
+    now_ts = datetime.utcnow().timestamp()
+
+    expired_keys = [
+        key for key, seen_ts in MTF_CONFLICT_TRACKED_CACHE.items()
+        if now_ts - seen_ts > ttl_seconds
+    ]
+
+    for key in expired_keys:
+        MTF_CONFLICT_TRACKED_CACHE.pop(key, None)
+
+    key = f"{setup_id}|{rejection_reason}|{execution_mode}"
+
+    if key in MTF_CONFLICT_TRACKED_CACHE:
+        return True
+
+    MTF_CONFLICT_TRACKED_CACHE[key] = now_ts
+    return False
 
 def process_mtf_conflict_candidate(
     *,
@@ -4092,77 +4114,94 @@ def process_mtf_conflict_candidate(
         execution_reason=execution_reason,
     )
 
-    log_setup_event(
-        setup_id=setup_id,
-        event="MTF_CONFLICT_CANDIDATE_TRACKED",
-        strategy=strategy,
-        signal=signal,
-        entry_model=entry_model,
-        score=candidate.get("score"),
-        session=session_name,
-        market_condition=market_condition,
-        entry=shadow_trade_plan.get("entry_price") if shadow_trade_plan else None,
-        sl=shadow_trade_plan.get("stop_loss") if shadow_trade_plan else None,
-        tp=shadow_trade_plan.get("take_profit") if shadow_trade_plan else None,
-        rr=shadow_rr,
-        required_rr=required_rr,
-        reason=rejection_reason,
-        extra={
-            "mtf_bias": mtf_bias,
-            "strategy_mode": strategy_mode,
-            "recovery_registered": recovery_registered,
-            "mtf_conflict_mode": execution_mode,
-            "price_at_rejection": price_at_rejection,
-            "shadow_entry": shadow_trade_plan.get("entry_price") if shadow_trade_plan else None,
-            "shadow_sl": shadow_trade_plan.get("stop_loss") if shadow_trade_plan else None,
-            "shadow_tp": shadow_trade_plan.get("take_profit") if shadow_trade_plan else None,
-            "shadow_rr": shadow_rr,
-            "shadow_required_rr": required_rr,
-            "execution_allowed": execution_allowed,
-            "execution_reason": execution_reason,
-        },
+    already_tracked = is_mtf_conflict_candidate_already_tracked(
+        setup_id,
+        rejection_reason,
+        execution_mode,
     )
 
-    news_context = attach_news_context_to_signal_data(candidate)
-
-    tracked = register_setup_outcome(
-        symbol=SYMBOL,
-        setup_id=setup_id,
-        event="MTF_CONFLICT_CANDIDATE_TRACKED",
-        strategy=strategy,
-        signal=signal,
-        entry_model=entry_model,
-        score=candidate.get("score"),
-        session=session_name,
-        market_condition=market_condition,
-        entry=shadow_trade_plan.get("entry_price") if shadow_trade_plan else None,
-        sl=shadow_trade_plan.get("stop_loss") if shadow_trade_plan else None,
-        tp=shadow_trade_plan.get("take_profit") if shadow_trade_plan else None,
-        reason=rejection_reason,
-        extra={
-            "mtf_bias": mtf_bias,
-            "strategy_mode": strategy_mode,
-            "shadow_rr": shadow_rr,
-            "required_rr": required_rr,
-            "execution_allowed": execution_allowed,
-            "execution_reason": execution_reason,
-            "source": "mtf_conflict_candidate_tracked",
-            "news_context": news_context,
-            "news_tag": news_context.get("news_tag") if news_context else None,
-        },
-    )
-    
-    if tracked:
-        notify_setup_similarity_if_relevant(setup_id)
-        notify_scenario_cluster_if_relevant(setup_id)
-
-    if not execution_allowed:
+    if already_tracked:
         logger.info(
-            f"[MTF CONFLICT] Tracked only | "
+            f"[MTF CONFLICT] Duplicate tracked candidate skipped | "
             f"setup_id={setup_id} strategy={strategy} signal={signal} "
             f"mode={execution_mode} reason={execution_reason}"
         )
-        return False
+
+        if not execution_allowed:
+            return False
+
+    else:
+        log_setup_event(
+            setup_id=setup_id,
+            event="MTF_CONFLICT_CANDIDATE_TRACKED",
+            strategy=strategy,
+            signal=signal,
+            entry_model=entry_model,
+            score=candidate.get("score"),
+            session=session_name,
+            market_condition=market_condition,
+            entry=shadow_trade_plan.get("entry_price") if shadow_trade_plan else None,
+            sl=shadow_trade_plan.get("stop_loss") if shadow_trade_plan else None,
+            tp=shadow_trade_plan.get("take_profit") if shadow_trade_plan else None,
+            rr=shadow_rr,
+            required_rr=required_rr,
+            reason=rejection_reason,
+            extra={
+                "mtf_bias": mtf_bias,
+                "strategy_mode": strategy_mode,
+                "recovery_registered": recovery_registered,
+                "mtf_conflict_mode": execution_mode,
+                "price_at_rejection": price_at_rejection,
+                "shadow_entry": shadow_trade_plan.get("entry_price") if shadow_trade_plan else None,
+                "shadow_sl": shadow_trade_plan.get("stop_loss") if shadow_trade_plan else None,
+                "shadow_tp": shadow_trade_plan.get("take_profit") if shadow_trade_plan else None,
+                "shadow_rr": shadow_rr,
+                "shadow_required_rr": required_rr,
+                "execution_allowed": execution_allowed,
+                "execution_reason": execution_reason,
+            },
+        )
+
+        news_context = attach_news_context_to_signal_data(candidate)
+
+        tracked = register_setup_outcome(
+            symbol=SYMBOL,
+            setup_id=setup_id,
+            event="MTF_CONFLICT_CANDIDATE_TRACKED",
+            strategy=strategy,
+            signal=signal,
+            entry_model=entry_model,
+            score=candidate.get("score"),
+            session=session_name,
+            market_condition=market_condition,
+            entry=shadow_trade_plan.get("entry_price") if shadow_trade_plan else None,
+            sl=shadow_trade_plan.get("stop_loss") if shadow_trade_plan else None,
+            tp=shadow_trade_plan.get("take_profit") if shadow_trade_plan else None,
+            reason=rejection_reason,
+            extra={
+                "mtf_bias": mtf_bias,
+                "strategy_mode": strategy_mode,
+                "shadow_rr": shadow_rr,
+                "required_rr": required_rr,
+                "execution_allowed": execution_allowed,
+                "execution_reason": execution_reason,
+                "source": "mtf_conflict_candidate_tracked",
+                "news_context": news_context,
+                "news_tag": news_context.get("news_tag") if news_context else None,
+            },
+        )
+
+        if tracked:
+            notify_setup_similarity_if_relevant(setup_id)
+            notify_scenario_cluster_if_relevant(setup_id)
+
+        if not execution_allowed:
+            logger.info(
+                f"[MTF CONFLICT] Tracked only | "
+                f"setup_id={setup_id} strategy={strategy} signal={signal} "
+                f"mode={execution_mode} reason={execution_reason}"
+            )
+            return False
 
     if execution_mode == "COUNTER_MTF_SCALP":
         mtf_trade_plan, plan_reason = build_mtf_conflict_scalp_trade_plan(
@@ -7527,6 +7566,8 @@ def process_cycle(last_processed_candle_time):
                     }
                 )
                 
+                candidate_news_context = attach_news_context_to_signal_data(candidate)
+
                 handle_generic_rejected_candidate_trade_plan(
                     df=df,
                     tick=tick,
@@ -7537,7 +7578,7 @@ def process_cycle(last_processed_candle_time):
                     session_name=session_name,
                     market_condition=market_condition,
                     rejection_reason=rejection_reason,
-                    news_context=news_context,
+                    news_context=candidate_news_context,
                 )
 
                 logger.info(
@@ -7616,6 +7657,8 @@ def process_cycle(last_processed_candle_time):
                     }
                 )
                 
+                candidate_news_context = attach_news_context_to_signal_data(validated_candidate)
+
                 handle_generic_rejected_candidate_trade_plan(
                     df=df,
                     tick=tick,
@@ -7626,7 +7669,7 @@ def process_cycle(last_processed_candle_time):
                     session_name=session_name,
                     market_condition=market_condition,
                     rejection_reason=rejection_reason,
-                    news_context=news_context,
+                    news_context=candidate_news_context,
                 )
 
                 logger.info(
@@ -7679,6 +7722,8 @@ def process_cycle(last_processed_candle_time):
                     }
                 )
                 
+                candidate_news_context = attach_news_context_to_signal_data(validated_candidate)
+
                 handle_generic_rejected_candidate_trade_plan(
                     df=df,
                     tick=tick,
@@ -7689,7 +7734,7 @@ def process_cycle(last_processed_candle_time):
                     session_name=session_name,
                     market_condition=market_condition,
                     rejection_reason=rejection_reason,
-                    news_context=news_context,
+                    news_context=candidate_news_context,
                 )
 
                 logger.info(
