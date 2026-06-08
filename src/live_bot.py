@@ -3111,10 +3111,125 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
     required_rr = signal_data.get("required_rr", INTRABAR_PRICE_EVENT_MIN_RR)
 
     if rr_value is None or rr_value < required_rr:
+        rejection_reason = f"low_rr {rr_value}/{required_rr}"
+    
         logger.info(
             f"[INTRABAR PRICE EVENT] RR too low | "
             f"setup_id={setup_id} rr={rr_value} required={required_rr}"
         )
+    
+        log_setup_event(
+            setup_id=setup_id,
+            event="INTRABAR_PRICE_EVENT_REJECTED_LOW_RR",
+            strategy=strategy_name,
+            signal=signal,
+            entry_model=signal_data.get("entry_model"),
+            score=signal_data.get("score"),
+            session=session_name,
+            market_condition=market_condition,
+            entry=trade_plan.get("entry_price"),
+            sl=trade_plan.get("stop_loss"),
+            tp=trade_plan.get("take_profit"),
+            rr=rr_value,
+            required_rr=required_rr,
+            reason=rejection_reason,
+            extra={
+                "source": "intrabar_price_event_low_rr",
+                "orb_high": signal_data.get("orb_high"),
+                "orb_low": signal_data.get("orb_low"),
+                "breakout_distance": signal_data.get("breakout_distance"),
+                "trigger": signal_data.get("intrabar_trigger"),
+                "vwap": signal_data.get("vwap"),
+                "sweep_depth": signal_data.get("sweep_depth"),
+                "intrabar_extra_sl_price": signal_data.get("intrabar_extra_sl_price"),
+                "skip_slippage_guard": trade_plan.get("skip_slippage_guard"),
+                "execution_speed_mode": trade_plan.get("execution_speed_mode"),
+            },
+        )
+    
+        save_execution_memory_report(
+            selected_signal_data=signal_data,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=signal_data.get("score"),
+            session_name=session_name,
+            market_condition=market_condition,
+            reason=rejection_reason,
+            trade_plan=trade_plan,
+            decision="INTRABAR_PRICE_EVENT_REJECTED_LOW_RR",
+            decision_reason="intrabar price event rejected before execution because RR is below required threshold",
+            rr_value=rr_value,
+            required_rr=required_rr,
+            extra={
+                "source": "intrabar_price_event_low_rr",
+                "orb_high": signal_data.get("orb_high"),
+                "orb_low": signal_data.get("orb_low"),
+                "breakout_distance": signal_data.get("breakout_distance"),
+                "trigger": signal_data.get("intrabar_trigger"),
+                "vwap": signal_data.get("vwap"),
+                "sweep_depth": signal_data.get("sweep_depth"),
+                "intrabar_extra_sl_price": signal_data.get("intrabar_extra_sl_price"),
+                "skip_slippage_guard": trade_plan.get("skip_slippage_guard"),
+                "execution_speed_mode": trade_plan.get("execution_speed_mode"),
+            },
+        )
+    
+        recovery_id = None
+    
+        if rr_value is not None and ENABLE_CANDIDATE_REJECTION_RECOVERY:
+            rejected_signal_data = signal_data.copy()
+    
+            rejected_signal_data["strategy"] = strategy_name
+            rejected_signal_data["signal"] = signal
+            rejected_signal_data["session"] = session_name
+            rejected_signal_data["market_condition"] = market_condition
+            rejected_signal_data["setup_id"] = setup_id
+            rejected_signal_data["recovery_source"] = "intrabar_price_event_low_rr"
+            rejected_signal_data["recovery_reason_type"] = "LOW_RR"
+            rejected_signal_data["rejected_trade_plan"] = {
+                "entry_price": trade_plan.get("entry_price"),
+                "stop_loss": trade_plan.get("stop_loss"),
+                "take_profit": trade_plan.get("take_profit"),
+                "lot": trade_plan.get("lot"),
+                "rr": rr_value,
+                "required_rr": required_rr,
+                "reason": trade_plan.get("reason"),
+            }
+    
+            recovery_id = register_rejected_candidate_for_recovery(
+                symbol=SYMBOL,
+                signal=signal,
+                strategy=strategy_name,
+                score=signal_data.get("score", 0),
+                reason_type="LOW_RR",
+                rejection_reason=rejection_reason,
+                signal_data=rejected_signal_data,
+                required_rr=required_rr,
+                current_rr=rr_value,
+            )
+    
+        if (
+            ENABLE_CANDIDATE_REJECTION_TELEGRAM_ALERTS
+            and TELEGRAM_NOTIFY_CANDIDATE_REJECTED_LOW_RR
+        ):
+            send_telegram_message(
+                f"⚠️ Intrabar Candidate Rejected — Low RR\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Strategy: {strategy_name}\n"
+                f"Signal: {signal}\n"
+                f"Setup ID: {setup_id}\n"
+                f"Entry Model: {signal_data.get('entry_model')}\n"
+                f"Trigger: {signal_data.get('intrabar_trigger')}\n"
+                f"Reason: {rejection_reason}\n"
+                f"Candidate Reason: {signal_data.get('reason', 'N/A')}\n\n"
+                f"Entry: {trade_plan.get('entry_price')}\n"
+                f"SL: {trade_plan.get('stop_loss')}\n"
+                f"TP: {trade_plan.get('take_profit')}\n"
+                f"RR: {rr_value} / Required: {required_rr}\n\n"
+                f"Recovery ID: {recovery_id or 'not_registered'}\n"
+                f"Action: moved to intrabar candidate recovery if eligible."
+            )
+    
         return False
 
     trade_allowed, guard_reason = check_trade_guard(signal, tick)
