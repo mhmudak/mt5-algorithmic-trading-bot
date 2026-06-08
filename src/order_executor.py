@@ -478,8 +478,14 @@ def execute_trade(signal, trade_plan, symbol):
             return False
 
     pre_execution_slippage = abs(request_price - expected_price)
+    
+    skip_slippage_guard = bool(trade_plan.get("skip_slippage_guard"))
 
-    if ENABLE_HIGH_SLIPPAGE_RETRACEMENT and pre_execution_slippage > MAX_SLIPPAGE:
+    if (
+        not skip_slippage_guard
+        and ENABLE_HIGH_SLIPPAGE_RETRACEMENT
+        and pre_execution_slippage > MAX_SLIPPAGE
+    ):
         adjusted_trade_plan = wait_for_high_slippage_retracement(
             signal=signal,
             trade_plan=trade_plan,
@@ -562,7 +568,7 @@ def execute_trade(signal, trade_plan, symbol):
         
         pre_send_slippage = abs(current_execution_price - expected_price)
         
-        if pre_send_slippage > MAX_SLIPPAGE:
+        if not skip_slippage_guard and pre_send_slippage > MAX_SLIPPAGE:
             remember_blocked_setup(
                 setup_id=trade_plan.get("setup_id"),
                 symbol=symbol,
@@ -597,6 +603,15 @@ def execute_trade(signal, trade_plan, symbol):
             )
         
             return False
+        
+        if skip_slippage_guard and pre_send_slippage > MAX_SLIPPAGE:
+            logger.info(
+                f"[EXECUTION] High slippage guard bypassed | "
+                f"strategy={trade_plan.get('strategy', 'UNKNOWN')} "
+                f"signal={signal} expected={expected_price} "
+                f"current={current_execution_price} "
+                f"slippage={round(pre_send_slippage, 2)} max={MAX_SLIPPAGE}"
+            )
         
         request["price"] = current_execution_price
 

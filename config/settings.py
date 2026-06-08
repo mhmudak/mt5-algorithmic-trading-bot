@@ -1262,6 +1262,7 @@ INTRABAR_PRICE_EVENT_ALLOWED_STRATEGIES = [
     "RANGE_SWEEP_RECLAIM",
     "VWAP_RECLAIM",
     "INTRABAR_VWAP_LIQUIDITY_RECLAIM",
+    "FAILED_FVG_REVERSAL",
 ]
 
 INTRABAR_PRICE_EVENT_MIN_SCORE = 95
@@ -1270,6 +1271,7 @@ INTRABAR_PRICE_EVENT_BREAK_DISTANCE_PRICE = 0.30
 INTRABAR_PRICE_EVENT_MAX_BREAK_DISTANCE_PRICE = 4.00
 INTRABAR_PRICE_EVENT_RECLAIM_BUFFER_PRICE = 0.20
 INTRABAR_PRICE_EVENT_EXPIRY_SECONDS = 180
+INTRABAR_PRICE_EVENT_EXTRA_SL_PRICE = 2.0
 
 INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = {
     "ORB_V00": {
@@ -1403,10 +1405,23 @@ INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = {
         "reclaim_buffer": 0.25,
         "require_ema_alignment": False,
     },
+    
+    "FAILED_FVG_REVERSAL": {
+        "trigger": "FAILED_FVG_REVERSAL_RECLAIM",
+        "level_source": "RECENT_RANGE",
+        "lookback_bars": 20,
+        "min_score": 96,
+        "min_rr": 1.10,
+        "min_break_distance": 0.20,
+        "max_break_distance": 8.00,
+        "reclaim_buffer": 0.25,
+        "require_ema_alignment": False,
+        "require_m5_confirmation": True,
+    },
 }
 
 # Safety first: false means no M5 close confirmation required.
-INTRABAR_PRICE_EVENT_REQUIRE_M5_CONFIRMATION = False
+INTRABAR_PRICE_EVENT_REQUIRE_M5_CONFIRMATION = True
 
 INTRABAR_PRICE_EVENT_NOTIFY_TELEGRAM = True
 
@@ -1430,6 +1445,7 @@ INTRABAR_M5_CONFIRMATION_TIMEFRAME = mt5.TIMEFRAME_M5
 INTRABAR_M5_CONFIRMATION_BARS = 80
 
 INTRABAR_M5_CONFIRMATION_STRATEGIES = [
+    "FAILED_FVG_REVERSAL",
     "RELIEF_RALLY",
     "STRUCTURE_LIQUIDITY",
     "VWAP_RECLAIM",

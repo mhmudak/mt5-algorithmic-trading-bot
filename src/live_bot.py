@@ -288,6 +288,7 @@ from config.settings import (
     GENERIC_REJECTED_CANDIDATE_MIN_RR_TO_TRACK,
     GENERIC_REJECTED_CANDIDATE_RECOVERY_REASONS,
     GENERIC_REJECTED_CANDIDATE_NOTIFY_TELEGRAM,
+    INTRABAR_PRICE_EVENT_EXTRA_SL_PRICE,
 )
 
 from src.candidate_rejection_recovery import (
@@ -2474,6 +2475,7 @@ def evaluate_intrabar_price_event_trigger(
     max_break,
     reclaim_buffer,
     require_ema_alignment,
+    failed_fvg_context=None,
 ):
     signal = None
     current_price = None
@@ -2695,6 +2697,76 @@ def evaluate_intrabar_price_event_trigger(
             momentum = "bearish_intrabar_vwap_liquidity_reclaim"
             direction_context = "buy_side_sweep_level_and_vwap_reclaimed"
 
+    # =========================
+    # FAILED FVG REVERSAL RECLAIM
+    # =========================
+    elif trigger == "FAILED_FVG_REVERSAL_RECLAIM":
+        failed_fvg_context = failed_fvg_context or {}
+
+        bullish_fvg = failed_fvg_context.get("bullish_fvg")
+        bearish_fvg = failed_fvg_context.get("bearish_fvg")
+
+        try:
+            current_open = float(current.get("open", ask))
+        except Exception:
+            return None
+
+        # SELL: bullish FVG support failed
+        if bullish_fvg:
+            fvg_bottom = float(bullish_fvg["bottom"])
+            fvg_top = float(bullish_fvg["top"])
+            fvg_mid = float(bullish_fvg["mid"])
+
+            sell_break_distance = fvg_bottom - bid
+            touched_bullish_fvg = current_high >= fvg_bottom
+            failed_below_fvg = bid <= fvg_bottom - reclaim_buffer
+
+            if (
+                touched_bullish_fvg
+                and failed_below_fvg
+                and sell_break_distance >= min_break
+                and sell_break_distance <= max_break
+                and bid < current_open
+            ):
+                signal = "SELL"
+                current_price = bid
+                breakout_distance = sell_break_distance
+                sweep_depth = current_high - fvg_bottom
+                entry_model = f"INTRABAR_{strategy}_FAILED_BULLISH_FVG_REVERSAL"
+                momentum = "bearish_intrabar_failed_bullish_fvg"
+                direction_context = (
+                    f"bullish_fvg_failed bottom={round(fvg_bottom, 2)} "
+                    f"top={round(fvg_top, 2)} mid={round(fvg_mid, 2)}"
+                )
+
+        # BUY: bearish FVG resistance failed
+        if bearish_fvg and signal is None:
+            fvg_bottom = float(bearish_fvg["bottom"])
+            fvg_top = float(bearish_fvg["top"])
+            fvg_mid = float(bearish_fvg["mid"])
+
+            buy_break_distance = ask - fvg_top
+            touched_bearish_fvg = current_low <= fvg_top
+            reclaimed_above_fvg = ask >= fvg_top + reclaim_buffer
+
+            if (
+                touched_bearish_fvg
+                and reclaimed_above_fvg
+                and buy_break_distance >= min_break
+                and buy_break_distance <= max_break
+                and ask > current_open
+            ):
+                signal = "BUY"
+                current_price = ask
+                breakout_distance = buy_break_distance
+                sweep_depth = fvg_top - current_low
+                entry_model = f"INTRABAR_{strategy}_FAILED_BEARISH_FVG_REVERSAL"
+                momentum = "bullish_intrabar_failed_bearish_fvg"
+                direction_context = (
+                    f"bearish_fvg_failed bottom={round(fvg_bottom, 2)} "
+                    f"top={round(fvg_top, 2)} mid={round(fvg_mid, 2)}"
+                )
+
     if signal is None:
         return None
 
@@ -2767,6 +2839,14 @@ def build_intrabar_price_event_signal_data(df, tick, session_name, market_condit
         direction_context = None
         momentum = None
 
+        failed_fvg_context = None
+
+        if trigger == "FAILED_FVG_REVERSAL_RECLAIM":
+            failed_fvg_context = find_recent_intrabar_fvg_zones(
+                df,
+                profile.get("lookback_bars", 20),
+            )
+
         trigger_result = evaluate_intrabar_price_event_trigger(
             trigger=trigger,
             strategy=strategy,
@@ -2785,6 +2865,7 @@ def build_intrabar_price_event_signal_data(df, tick, session_name, market_condit
             max_break=max_break,
             reclaim_buffer=reclaim_buffer,
             require_ema_alignment=profile.get("require_ema_alignment", True),
+            failed_fvg_context=failed_fvg_context,
         )
 
         if not trigger_result:
@@ -2802,14 +2883,14 @@ def build_intrabar_price_event_signal_data(df, tick, session_name, market_condit
         target_distance = max(float(atr) * 1.5, range_width)
 
         if signal == "BUY":
-            sl_reference = round(lower_level - sl_buffer, 2)
+            sl_reference = round(lower_level - sl_buffer - INTRABAR_PRICE_EVENT_EXTRA_SL_PRICE, 2)
             tp_reference = round(current_price + target_distance, 2)
 
             if sl_reference >= current_price or tp_reference <= current_price:
                 continue
 
         else:
-            sl_reference = round(upper_level + sl_buffer, 2)
+            sl_reference = round(upper_level + sl_buffer + INTRABAR_PRICE_EVENT_EXTRA_SL_PRICE, 2)
             tp_reference = round(current_price - target_distance, 2)
 
             if sl_reference <= current_price or tp_reference >= current_price:
@@ -2830,6 +2911,7 @@ def build_intrabar_price_event_signal_data(df, tick, session_name, market_condit
             "breakout_distance": round(breakout_distance, 2),
             "sweep_depth": round(sweep_depth, 2) if sweep_depth is not None else None,
             "sl_reference": sl_reference,
+            "intrabar_extra_sl_price": INTRABAR_PRICE_EVENT_EXTRA_SL_PRICE,
             "tp_reference": tp_reference,
             "target_model": "INTRABAR_RANGE_EXTENSION",
             "momentum": momentum,
@@ -2840,6 +2922,9 @@ def build_intrabar_price_event_signal_data(df, tick, session_name, market_condit
             "vwap": round(vwap, 2) if vwap is not None else None,
             "intrabar_trigger": trigger,
             "intrabar_profile": profile,
+            "require_m5_confirmation": bool(
+                profile.get("require_m5_confirmation", False)
+            ),
             "required_rr": profile["min_rr"],
             "reason": (
                 f"VWAP {round(vwap, 2) if vwap is not None else 'N/A'} -> "
@@ -2904,18 +2989,29 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
 
     if already_active:
         logger.info(
-            f"[INTRABAR ORB] Setup already active | "
+            f"[INTRABAR Price Event] Setup already active | "
             f"setup_id={setup_id} state={active_state}"
         )
         return False
 
-    if INTRABAR_PRICE_EVENT_REQUIRE_M5_CONFIRMATION:
-        m5_confirmed, m5_reason = extra_entry_confirmation_ok(signal)
-
+    require_m5_confirmation = bool(
+        INTRABAR_PRICE_EVENT_REQUIRE_M5_CONFIRMATION
+        or signal_data.get("require_m5_confirmation", False)
+    )
+    
+    m5_reason = "intrabar_m5_not_required"
+    
+    if require_m5_confirmation:
+        m5_confirmed, m5_reason = intrabar_m5_confirmation_ok(
+            signal,
+            strategy_name,
+        )
+    
         if not m5_confirmed:
             logger.info(
-                f"[INTRABAR ORB] M5 confirmation failed | "
-                f"setup_id={setup_id} reason={m5_reason}"
+                f"[INTRABAR Price Event] M5 confirmation failed | "
+                f"setup_id={setup_id} strategy={strategy_name} "
+                f"reason={m5_reason}"
             )
             return False
 
@@ -2923,7 +3019,7 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
 
     if news_blocked:
         logger.info(
-            f"[INTRABAR ORB] News blocked | "
+            f"[INTRABAR Price Event] News blocked | "
             f"setup_id={setup_id} reason={news_reason}"
         )
         return False
@@ -2932,7 +3028,7 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
 
     if time_blocked:
         logger.info(
-            f"[INTRABAR ORB] Time blocked | "
+            f"[INTRABAR Price Event] Time blocked | "
             f"setup_id={setup_id} reason={time_reason}"
         )
         return False
@@ -2947,9 +3043,12 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
 
     if trade_plan is None:
         logger.info(
-            f"[INTRABAR ORB] Trade plan failed | setup_id={setup_id}"
+            f"[INTRABAR Price Event] Trade plan failed | setup_id={setup_id}"
         )
         return False
+
+    trade_plan["skip_slippage_guard"] = True
+    trade_plan["execution_speed_mode"] = "INTRABAR"
 
     trade_plan["strategy"] = strategy_name
     trade_plan["signal"] = signal
@@ -3007,6 +3106,9 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
                 "vwap": signal_data.get("vwap"),
                 "sweep_depth": signal_data.get("sweep_depth"),
                 "m5_confirmation_reason": m5_reason,
+                "intrabar_extra_sl_price": signal_data.get("intrabar_extra_sl_price"),
+                "skip_slippage_guard": trade_plan.get("skip_slippage_guard"),
+                "execution_speed_mode": trade_plan.get("execution_speed_mode"),
             },
         )
 
@@ -3052,6 +3154,9 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
             "orb_low": signal_data.get("orb_low"),
             "breakout_distance": signal_data.get("breakout_distance"),
             "m5_confirmation_reason": m5_reason,
+            "intrabar_extra_sl_price": signal_data.get("intrabar_extra_sl_price"),
+            "skip_slippage_guard": trade_plan.get("skip_slippage_guard"),
+            "execution_speed_mode": trade_plan.get("execution_speed_mode"),
         },
     )
 
@@ -3095,6 +3200,9 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
                 "orb_low": signal_data.get("orb_low"),
                 "breakout_distance": signal_data.get("breakout_distance"),
                 "m5_confirmation_reason": m5_reason,
+                "intrabar_extra_sl_price": signal_data.get("intrabar_extra_sl_price"),
+                "skip_slippage_guard": trade_plan.get("skip_slippage_guard"),
+                "execution_speed_mode": trade_plan.get("execution_speed_mode"),
             },
         )
 
@@ -3136,6 +3244,9 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
             "orb_low": signal_data.get("orb_low"),
             "breakout_distance": signal_data.get("breakout_distance"),
             "m5_confirmation_reason": m5_reason,
+            "intrabar_extra_sl_price": signal_data.get("intrabar_extra_sl_price"),
+            "skip_slippage_guard": trade_plan.get("skip_slippage_guard"),
+            "execution_speed_mode": trade_plan.get("execution_speed_mode"),
         },
     )
 
@@ -3448,7 +3559,13 @@ def intrabar_m5_confirmation_ok(signal, strategy_name):
     if not confirmations:
         return True, "no_intrabar_m5_filters_enabled"
 
-    if INTRABAR_M5_REQUIRE_ALL_FILTERS:
+    strict_m5_strategy = strategy_key in [
+        "FAILED_FVG_REVERSAL",
+    ]
+
+    if strict_m5_strategy:
+        passed = all(confirmations)
+    elif INTRABAR_M5_REQUIRE_ALL_FILTERS:
         passed = all(confirmations)
     else:
         passed = any(confirmations)
@@ -3457,6 +3574,39 @@ def intrabar_m5_confirmation_ok(signal, strategy_name):
         return True, "intrabar_m5_filters_confirmed"
 
     return False, "intrabar_m5_filters_rejected"
+
+def find_recent_intrabar_fvg_zones(df, lookback_bars=20):
+    if df is None or len(df) < 5:
+        return {}
+
+    start_index = max(2, len(df) - lookback_bars)
+    bullish_fvg = None
+    bearish_fvg = None
+
+    for i in range(start_index, len(df)):
+        c0 = df.iloc[i - 2]
+        c2 = df.iloc[i]
+
+        # Bullish FVG: gap between old high and newer low
+        if float(c2["low"]) > float(c0["high"]):
+            bullish_fvg = {
+                "bottom": float(c0["high"]),
+                "top": float(c2["low"]),
+                "mid": round((float(c0["high"]) + float(c2["low"])) / 2, 2),
+            }
+
+        # Bearish FVG: gap between newer high and old low
+        if float(c2["high"]) < float(c0["low"]):
+            bearish_fvg = {
+                "bottom": float(c2["high"]),
+                "top": float(c0["low"]),
+                "mid": round((float(c2["high"]) + float(c0["low"])) / 2, 2),
+            }
+
+    return {
+        "bullish_fvg": bullish_fvg,
+        "bearish_fvg": bearish_fvg,
+    }
 
 def get_fvg_zone(candidate):
     fvg_top = (
