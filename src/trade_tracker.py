@@ -9,6 +9,7 @@ from src.setup_audit import log_setup_event
 from config.settings import (
     ENABLE_COOLDOWN_AFTER_SL,
     COOLDOWN_AFTER_SL_MINUTES,
+    TELEGRAM_NOTIFY_TRADE_TRACKER_OPENED,
 )
 
 from src.account_context import get_account_file
@@ -188,24 +189,25 @@ def register_executed_trade(symbol, signal, trade_plan, result):
 
     logger.info(f"[TRACKER] Registered trade {position_id} as {trade_role}")
 
-    send_telegram_message(
-        f"Trade Opened\n"
-        f"Position: {position_id}\n"
-        f"Setup ID: {trade_plan.get('setup_id', 'N/A')}\n"
-        f"Role: {trade_role}\n"
-        f"Main Position: {main_position_id}\n"
-        f"Symbol: {symbol}\n"
-        f"Side: {signal}\n"
-        f"Strategy: {trade_plan.get('strategy', 'UNKNOWN')}\n"
-        f"Market: {trade_plan.get('market_condition', 'UNKNOWN')}\n"
-        f"Reason: {trade_plan.get('reason', 'N/A')}\n"
-        f"Volume: {trade_plan['lot']}\n"
-        f"Entry: {trade_plan['entry_price']}\n"
-        f"SL: {trade_plan['stop_loss']}\n"
-        f"TP: {trade_plan['take_profit']}\n"
-        f"TP Buffer: {trade_plan.get('tp_buffer', 0.0)}\n"
-        f"Setup Score: {trade_plan.get('score', 0)}"
-    )
+    if TELEGRAM_NOTIFY_TRADE_TRACKER_OPENED:
+        send_telegram_message(
+            f"Trade Opened\n"
+            f"Position: {position_id}\n"
+            f"Setup ID: {trade_plan.get('setup_id', 'N/A')}\n"
+            f"Role: {trade_role}\n"
+            f"Main Position: {main_position_id}\n"
+            f"Symbol: {symbol}\n"
+            f"Side: {signal}\n"
+            f"Strategy: {trade_plan.get('strategy', 'UNKNOWN')}\n"
+            f"Market: {trade_plan.get('market_condition', 'UNKNOWN')}\n"
+            f"Reason: {trade_plan.get('reason', 'N/A')}\n"
+            f"Volume: {trade_plan['lot']}\n"
+            f"Entry: {trade_plan['entry_price']}\n"
+            f"SL: {trade_plan['stop_loss']}\n"
+            f"TP: {trade_plan['take_profit']}\n"
+            f"TP Buffer: {trade_plan.get('tp_buffer', 0.0)}\n"
+            f"Setup Score: {trade_plan.get('score', 0)}"
+        )
 
 
 def update_trade_statistics(position, trade, tick):

@@ -20,11 +20,13 @@ ENABLE_STRATEGY_REJECTION_DEBUG = True
 # Telegram Signal Messages
 # =========================
 TELEGRAM_VERBOSE_SIGNALS = False
+TELEGRAM_NOTIFY_TRADE_TRACKER_OPENED = False
+
 
 # =========================
 # Market / Data Settings
 # =========================
-SYMBOL = "XAUUSD.m"
+SYMBOL = "XAUUSD"
 TIMEFRAME = mt5.TIMEFRAME_M15
 BARS_TO_FETCH = 100
 
@@ -447,7 +449,7 @@ MARKET_THRESHOLD_MODIFIERS = {
 # External SMT Confirmation
 # =========================
 ENABLE_EXTERNAL_SMT = True
-SMT_CONFIRMATION_SYMBOL = "XAGUSD.m"
+SMT_CONFIRMATION_SYMBOL = "XAGUSD"
 SMT_LOOKBACK_BARS = 20
 
 # =========================
@@ -458,13 +460,13 @@ ENABLE_EXTERNAL_MACRO_CONFIRMATION = True
 # Use your broker's exact symbols.
 # If a symbol does not exist on your broker, the engine will skip it safely.
 EXTERNAL_MACRO_CONFIRMATIONS = [
-    # {
-    #     "symbol": "DXY",
-    #     "mode": "INVERSE",
-    #     "weight": 2,
-    # },
     {
-        "symbol": "USDJPY.m",
+        "symbol": "DXY",
+        "mode": "INVERSE",
+        "weight": 2,
+    },
+    {
+        "symbol": "USDJPY",
         "mode": "INVERSE",
         "weight": 1,
     },
@@ -649,7 +651,7 @@ TELEGRAM_SIGNAL_MODE = "AUTO_EXECUTE"
 # CONFIRMATION
 # AUTO_EXECUTE
 
-TELEGRAM_SIGNAL_SYMBOL = "XAUUSD.m"
+TELEGRAM_SIGNAL_SYMBOL = "XAUUSD"
 
 ALLOW_TELEGRAM_PRE_SIGNAL_ENTRY = False
 TELEGRAM_PRE_SIGNAL_EMERGENCY_SL_PRICE = 12.0
@@ -674,7 +676,7 @@ TELEGRAM_USER_SESSION = "telegram_signal_session"
 TELEGRAM_SIGNAL_MODE = "AUTO_EXECUTE"
 # ALERT_ONLY / CONFIRMATION / AUTO_EXECUTE
 
-TELEGRAM_SIGNAL_SYMBOL = "XAUUSD.m"
+TELEGRAM_SIGNAL_SYMBOL = "XAUUSD"
 
 ALLOW_TELEGRAM_SIGNAL_WITHOUT_TP = True
 TELEGRAM_NO_TP_LOT = 0.05
@@ -1284,6 +1286,7 @@ INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = {
         "max_break_distance": 3.50,
         "reclaim_buffer": 0.20,
         "require_ema_alignment": True,
+        "require_m5_confirmation": False,
     },
 
     "ORB": {
@@ -1296,6 +1299,7 @@ INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = {
         "max_break_distance": 4.00,
         "reclaim_buffer": 0.20,
         "require_ema_alignment": True,
+        "require_m5_confirmation": False,
     },
 
     "LIQUIDITY_SWEEP": {
@@ -1308,6 +1312,7 @@ INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = {
         "max_break_distance": 3.50,
         "reclaim_buffer": 0.20,
         "require_ema_alignment": True,
+        "require_m5_confirmation": False,
     },
 
     "LIQUIDITY_TRAP": {
@@ -1320,6 +1325,7 @@ INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = {
         "max_break_distance": 3.50,
         "reclaim_buffer": 0.25,
         "require_ema_alignment": True,
+        "require_m5_confirmation": False,
     },
 
     "RELIEF_RALLY": {
@@ -1332,6 +1338,7 @@ INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = {
         "max_break_distance": 4.50,
         "reclaim_buffer": 0.30,
         "require_ema_alignment": False,
+        "require_m5_confirmation": True,
     },
 
     "STRUCTURE_LIQUIDITY": {
@@ -1344,6 +1351,7 @@ INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = {
         "max_break_distance": 4.00,
         "reclaim_buffer": 0.25,
         "require_ema_alignment": True,
+        "require_m5_confirmation": True,
     },
 
     "MICRO_SR_SWEEP_RECLAIM": {
@@ -1356,6 +1364,7 @@ INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = {
         "max_break_distance": 2.50,
         "reclaim_buffer": 0.15,
         "require_ema_alignment": False,
+        "require_m5_confirmation": False,
     },
 
     "EXTREME_SWEEP_RECLAIM": {
@@ -1368,6 +1377,7 @@ INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = {
         "max_break_distance": 5.00,
         "reclaim_buffer": 0.30,
         "require_ema_alignment": True,
+        "require_m5_confirmation": True,
     },
 
     "RANGE_SWEEP_RECLAIM": {
@@ -1380,6 +1390,7 @@ INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = {
         "max_break_distance": 3.50,
         "reclaim_buffer": 0.20,
         "require_ema_alignment": False,
+        "require_m5_confirmation": False,
     },
 
     "VWAP_RECLAIM": {
@@ -1392,6 +1403,7 @@ INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = {
         "max_break_distance": 3.00,
         "reclaim_buffer": 0.20,
         "require_ema_alignment": False,
+        "require_m5_confirmation": True,
     },
     
     "INTRABAR_VWAP_LIQUIDITY_RECLAIM": {
@@ -1404,6 +1416,7 @@ INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = {
         "max_break_distance": 4.00,
         "reclaim_buffer": 0.25,
         "require_ema_alignment": False,
+        "require_m5_confirmation": True,
     },
     
     "FAILED_FVG_REVERSAL": {
@@ -1700,3 +1713,4 @@ AI_SHADOW_ADVISOR_EXECUTION_CONTROL_MODE = "SHADOW_ONLY"
 AI_SHADOW_ADVISOR_BLOCK_RECOMMENDATIONS = ["BLOCK"]
 AI_SHADOW_ADVISOR_ALLOW_RECOMMENDATIONS = ["ALLOW"]
 AI_SHADOW_ADVISOR_MIN_SAMPLES_FOR_CONTROL = 20
+

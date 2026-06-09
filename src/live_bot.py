@@ -5,6 +5,7 @@ from datetime import datetime
 import MetaTrader5 as mt5
 import pandas as pd
 import hashlib
+import threading
 
 from src.execution import check_trade_guard
 from src.indicators import calculate_ema, calculate_atr
@@ -374,6 +375,15 @@ STRATEGY_SPECIFIC_CONFIRMED = {
     "WAVETREND_MOMENTUM",
     "MICRO_SR_SWEEP_RECLAIM",
 }
+
+def send_telegram_message_async(message):
+    def _worker():
+        try:
+            send_telegram_message(message)
+        except Exception as e:
+            logger.error(f"[TELEGRAM ASYNC] Failed: {e}")
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 def fetch_market_data():
     rates = mt5.copy_rates_from_pos(SYMBOL, TIMEFRAME, 0, BARS_TO_FETCH)
@@ -3112,12 +3122,12 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
 
     if rr_value is None or rr_value < required_rr:
         rejection_reason = f"low_rr {rr_value}/{required_rr}"
-    
+
         logger.info(
             f"[INTRABAR PRICE EVENT] RR too low | "
             f"setup_id={setup_id} rr={rr_value} required={required_rr}"
         )
-    
+
         log_setup_event(
             setup_id=setup_id,
             event="INTRABAR_PRICE_EVENT_REJECTED_LOW_RR",
@@ -3146,7 +3156,7 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
                 "execution_speed_mode": trade_plan.get("execution_speed_mode"),
             },
         )
-    
+
         save_execution_memory_report(
             selected_signal_data=signal_data,
             strategy_name=strategy_name,
@@ -3173,12 +3183,12 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
                 "execution_speed_mode": trade_plan.get("execution_speed_mode"),
             },
         )
-    
+
         recovery_id = None
-    
+
         if rr_value is not None and ENABLE_CANDIDATE_REJECTION_RECOVERY:
             rejected_signal_data = signal_data.copy()
-    
+
             rejected_signal_data["strategy"] = strategy_name
             rejected_signal_data["signal"] = signal
             rejected_signal_data["session"] = session_name
@@ -3195,7 +3205,7 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
                 "required_rr": required_rr,
                 "reason": trade_plan.get("reason"),
             }
-    
+
             recovery_id = register_rejected_candidate_for_recovery(
                 symbol=SYMBOL,
                 signal=signal,
@@ -3207,7 +3217,7 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
                 required_rr=required_rr,
                 current_rr=rr_value,
             )
-    
+
         if (
             ENABLE_CANDIDATE_REJECTION_TELEGRAM_ALERTS
             and TELEGRAM_NOTIFY_CANDIDATE_REJECTED_LOW_RR
@@ -3229,7 +3239,7 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
                 f"Recovery ID: {recovery_id or 'not_registered'}\n"
                 f"Action: moved to intrabar candidate recovery if eligible."
             )
-    
+
         return False
 
     trade_allowed, guard_reason = check_trade_guard(signal, tick)
@@ -8335,7 +8345,7 @@ def process_cycle(last_processed_candle_time):
                     "reason": reason,
                 }
 
-                send_telegram_message(build_trade_message(detected_data))
+                send_telegram_message_async(build_trade_message(detected_data))
 
                 log_setup_event(
                     setup_id=selected_signal_data.get("setup_id"),
@@ -10373,17 +10383,6 @@ def process_cycle(last_processed_candle_time):
             return current_candle_time
 
         logger.info("🔥 Executing trade...")
-
-        send_telegram_message(
-            f"🔥 Executing Trade\n"
-            f"Symbol: {SYMBOL}\n"
-            f"Signal: {signal}\n"
-            f"Strategy: {strategy_name}\n\n"
-            f"Entry: {trade_plan['entry_price']}\n"
-            f"SL: {trade_plan['stop_loss']}\n"
-            f"TP: {trade_plan['take_profit']}\n"
-            f"Lot: {trade_plan['lot']}"
-        )
 
         log_setup_event(
             setup_id=selected_signal_data.get("setup_id"),
