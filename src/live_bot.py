@@ -3169,6 +3169,44 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
                 "execution_speed_mode": trade_plan.get("execution_speed_mode"),
             },
         )
+        
+        news_context = attach_news_context_to_signal_data(signal_data)
+
+        tracked = register_setup_outcome(
+            symbol=SYMBOL,
+            setup_id=setup_id,
+            event="INTRABAR_PRICE_EVENT_REJECTED_LOW_RR",
+            strategy=strategy_name,
+            signal=signal,
+            entry_model=signal_data.get("entry_model"),
+            score=signal_data.get("score"),
+            session=session_name,
+            market_condition="INTRABAR_PENDING",
+            entry=trade_plan.get("entry_price"),
+            sl=trade_plan.get("stop_loss"),
+            tp=trade_plan.get("take_profit"),
+            reason=rejection_reason,
+            extra={
+                "source": "intrabar_price_event_low_rr",
+                "rr": rr_value,
+                "required_rr": required_rr,
+                "orb_high": signal_data.get("orb_high"),
+                "orb_low": signal_data.get("orb_low"),
+                "breakout_distance": signal_data.get("breakout_distance"),
+                "trigger": signal_data.get("intrabar_trigger"),
+                "vwap": signal_data.get("vwap"),
+                "sweep_depth": signal_data.get("sweep_depth"),
+                "intrabar_extra_sl_price": signal_data.get("intrabar_extra_sl_price"),
+                "skip_slippage_guard": trade_plan.get("skip_slippage_guard"),
+                "execution_speed_mode": trade_plan.get("execution_speed_mode"),
+                "news_context": news_context,
+                "news_tag": news_context.get("news_tag") if news_context else None,
+            },
+        )
+
+        if tracked:
+            notify_setup_similarity_if_relevant(setup_id)
+            notify_scenario_cluster_if_relevant(setup_id)
 
         save_execution_memory_report(
             selected_signal_data=signal_data,
@@ -3302,7 +3340,7 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
 
     log_setup_event(
         setup_id=setup_id,
-        event="INTRABAR_ORB_EXECUTION_ATTEMPT",
+        event="INTRABAR_PRICE_EVENT_EXECUTION_ATTEMPT",
         strategy=strategy_name,
         signal=signal,
         entry_model=signal_data.get("entry_model"),
@@ -3367,6 +3405,45 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
     execution_result = execute_trade(signal, trade_plan, SYMBOL)
 
     if execution_result:
+        news_context = attach_news_context_to_signal_data(signal_data)
+
+        tracked = register_setup_outcome(
+            symbol=SYMBOL,
+            setup_id=setup_id,
+            event="INTRABAR_PRICE_EVENT_EXECUTED",
+            strategy=strategy_name,
+            signal=signal,
+            entry_model=signal_data.get("entry_model"),
+            score=signal_data.get("score"),
+            session=session_name,
+            market_condition="INTRABAR_PENDING",
+            entry=trade_plan.get("entry_price"),
+            sl=trade_plan.get("stop_loss"),
+            tp=trade_plan.get("take_profit"),
+            reason="intrabar Price Event executed before M15 close",
+            extra={
+                "source": "intrabar_price_event_executed",
+                "rr": rr_value,
+                "required_rr": required_rr,
+                "orb_high": signal_data.get("orb_high"),
+                "orb_low": signal_data.get("orb_low"),
+                "breakout_distance": signal_data.get("breakout_distance"),
+                "trigger": signal_data.get("intrabar_trigger"),
+                "vwap": signal_data.get("vwap"),
+                "sweep_depth": signal_data.get("sweep_depth"),
+                "m5_confirmation_reason": m5_reason,
+                "intrabar_extra_sl_price": signal_data.get("intrabar_extra_sl_price"),
+                "skip_slippage_guard": trade_plan.get("skip_slippage_guard"),
+                "execution_speed_mode": trade_plan.get("execution_speed_mode"),
+                "news_context": news_context,
+                "news_tag": news_context.get("news_tag") if news_context else None,
+            },
+        )
+
+        if tracked:
+            notify_setup_similarity_if_relevant(setup_id)
+            notify_scenario_cluster_if_relevant(setup_id)
+        
         save_execution_memory_report(
             selected_signal_data=signal_data,
             strategy_name=strategy_name,
@@ -3394,7 +3471,7 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
 
         log_setup_event(
             setup_id=setup_id,
-            event="INTRABAR_ORB_EXECUTED",
+            event="INTRABAR_PRICE_EVENT_EXECUTED",
             strategy=strategy_name,
             signal=signal,
             entry_model=signal_data.get("entry_model"),
@@ -3438,7 +3515,7 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
 
     log_setup_event(
         setup_id=setup_id,
-        event="INTRABAR_ORB_EXECUTION_FAILED",
+        event="INTRABAR_PRICE_EVENT_EXECUTION_FAILED",
         strategy=strategy_name,
         signal=signal,
         entry_model=signal_data.get("entry_model"),
