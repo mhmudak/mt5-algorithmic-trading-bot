@@ -24,7 +24,7 @@ TELEGRAM_VERBOSE_SIGNALS = False
 # =========================
 # Market / Data Settings
 # =========================
-SYMBOL = "XAUUSD.m"
+SYMBOL = "XAUUSD"
 TIMEFRAME = mt5.TIMEFRAME_M15
 BARS_TO_FETCH = 100
 
@@ -447,7 +447,7 @@ MARKET_THRESHOLD_MODIFIERS = {
 # External SMT Confirmation
 # =========================
 ENABLE_EXTERNAL_SMT = True
-SMT_CONFIRMATION_SYMBOL = "XAGUSD.m"
+SMT_CONFIRMATION_SYMBOL = "XAGUSD"
 SMT_LOOKBACK_BARS = 20
 
 # =========================
@@ -458,13 +458,13 @@ ENABLE_EXTERNAL_MACRO_CONFIRMATION = True
 # Use your broker's exact symbols.
 # If a symbol does not exist on your broker, the engine will skip it safely.
 EXTERNAL_MACRO_CONFIRMATIONS = [
-    # {
-    #     "symbol": "DXY",
-    #     "mode": "INVERSE",
-    #     "weight": 2,
-    # },
     {
-        "symbol": "USDJPY.m",
+        "symbol": "DXY",
+        "mode": "INVERSE",
+        "weight": 2,
+    },
+    {
+        "symbol": "USDJPY",
         "mode": "INVERSE",
         "weight": 1,
     },
@@ -649,7 +649,7 @@ TELEGRAM_SIGNAL_MODE = "AUTO_EXECUTE"
 # CONFIRMATION
 # AUTO_EXECUTE
 
-TELEGRAM_SIGNAL_SYMBOL = "XAUUSD.m"
+TELEGRAM_SIGNAL_SYMBOL = "XAUUSD"
 
 ALLOW_TELEGRAM_PRE_SIGNAL_ENTRY = False
 TELEGRAM_PRE_SIGNAL_EMERGENCY_SL_PRICE = 12.0
@@ -674,7 +674,7 @@ TELEGRAM_USER_SESSION = "telegram_signal_session"
 TELEGRAM_SIGNAL_MODE = "AUTO_EXECUTE"
 # ALERT_ONLY / CONFIRMATION / AUTO_EXECUTE
 
-TELEGRAM_SIGNAL_SYMBOL = "XAUUSD.m"
+TELEGRAM_SIGNAL_SYMBOL = "XAUUSD"
 
 ALLOW_TELEGRAM_SIGNAL_WITHOUT_TP = True
 TELEGRAM_NO_TP_LOT = 0.05
