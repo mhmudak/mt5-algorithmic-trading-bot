@@ -30,6 +30,39 @@ SYMBOL = "XAUUSD"
 TIMEFRAME = mt5.TIMEFRAME_M15
 BARS_TO_FETCH = 100
 
+
+# =========================
+# Broker / Session Timing
+# =========================
+# MT5 chart/server time is treated as Beirut local broker time.
+SESSION_BASIS = "BROKER_LOCAL_TIME"
+SESSION_BROKER_TIMEZONE = "Asia/Beirut"
+
+# Times below are broker/chart time, same as Beirut local time.
+SESSION_WINDOWS_BROKER_TIME = {
+    "OFF_HOURS": {"start": "00:00", "end": "03:00"},
+    "ASIA": {"start": "03:00", "end": "10:00"},
+    "LONDON_OPEN": {"start": "10:00", "end": "12:00"},
+    "LONDON": {"start": "12:00", "end": "15:00"},
+    "NEWYORK_OPEN": {"start": "15:00", "end": "17:00"},
+    "LONDON_NY_OVERLAP": {"start": "17:00", "end": "19:00"},
+    "NEWYORK": {"start": "19:00", "end": "23:00"},
+    "NEWYORK_LATE": {"start": "23:00", "end": "00:00"},
+}
+
+# Used so existing strategy boosts/blocks for LONDON and NEWYORK still work.
+SESSION_FAMILY_MAP = {
+    "ASIA": "ASIA",
+    "LONDON_OPEN": "LONDON",
+    "LONDON": "LONDON",
+    "NEWYORK_OPEN": "NEWYORK",
+    "LONDON_NY_OVERLAP": "NEWYORK",
+    "NEWYORK": "NEWYORK",
+    "NEWYORK_LATE": "NEWYORK",
+    "OFF_HOURS": "OFF_HOURS",
+}
+
+
 # =========================
 # Strategy Settings
 # =========================

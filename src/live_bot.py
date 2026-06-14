@@ -985,11 +985,24 @@ def get_session_selection_adjustment(session_name):
     if session_name == "OFF_HOURS":
         return -6
 
-    if session_name in ["NEWYORK", "LONDON", "LONDON_NEWYORK", "NY_OVERLAP"]:
-        return 3
-
     if session_name == "ASIA":
         return -2
+
+    if session_name in ["LONDON_OPEN", "LONDON"]:
+        return 3
+
+    if session_name in ["NEWYORK_OPEN", "LONDON_NY_OVERLAP"]:
+        return 4
+
+    if session_name == "NEWYORK":
+        return 3
+
+    if session_name == "NEWYORK_LATE":
+        return 1
+
+    # Backward compatibility with old labels
+    if session_name in ["LONDON_NEWYORK", "NY_OVERLAP"]:
+        return 4
 
     return 0
 
