@@ -634,7 +634,7 @@ def main():
     
     setup_intrabar_count = int((df["setup_source_bucket"] == "INTRABAR").sum())
     trade_intrabar_count = int((trade_df["execution_bucket"] == "INTRABAR").sum())
-    
+
     if trade_intrabar_count > 0 and setup_intrabar_count == 0:
         print(
             "[WARN] Intrabar trades exist in trades.json, "
@@ -760,7 +760,7 @@ def main():
     summary_csv = output_dir / "strategy_performance_summary.csv"
     detail_csv = output_dir / "strategy_performance_detail.csv"
     report_json = output_dir / "strategy_performance_report.json"
-    policy_json = output_dir / "strategy_execution_policy.json"
+    policy_json = output_dir / "strategy_advisory_policy.json"
 
     df.to_csv(normalized_csv, index=False)
     trade_df.to_csv(normalized_trades_csv, index=False)
@@ -799,7 +799,8 @@ def main():
     with open(report_json, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, ensure_ascii=False)
 
-    policy = build_execution_policy(detail)
+    policy_source = grouped_reports.get("strategy_source_bucket", detail)
+    policy = build_execution_policy(policy_source)
 
     with open(policy_json, "w", encoding="utf-8") as f:
         json.dump(policy, f, indent=2, ensure_ascii=False)
