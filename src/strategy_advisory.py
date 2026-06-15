@@ -2,6 +2,7 @@ import json
 import logging
 from pathlib import Path
 
+from src.account_context import get_account_file
 
 logger = logging.getLogger(__name__)
 
@@ -28,20 +29,33 @@ def safe_upper(value, default="UNKNOWN"):
     return value.upper()
 
 
+def get_current_account_name(default=None):
+    try:
+        account_dir = get_account_file("trades.json").parent
+        account_name = account_dir.name
+
+        if account_name and account_name != "NEW_ACCOUNT_FOLDER":
+            return account_name
+    except Exception as exc:
+        logger.warning(f"[STRATEGY ADVISORY] Could not detect current account: {exc}")
+
+    return default
+
+
 def find_latest_policy_file(account_name=None):
-    if account_name:
-        path = INTELLIGENCE_ROOT / account_name / POLICY_FILENAME
-        if path.exists():
-            return path
+    account_name = account_name or get_current_account_name()
 
+    if not account_name:
+        logger.warning("[STRATEGY ADVISORY] No account name detected; policy load skipped.")
         return None
 
-    candidates = list(INTELLIGENCE_ROOT.glob(f"*/{POLICY_FILENAME}"))
+    path = INTELLIGENCE_ROOT / account_name / POLICY_FILENAME
 
-    if not candidates:
-        return None
+    if path.exists():
+        return path
 
-    return max(candidates, key=lambda path: path.stat().st_mtime)
+    logger.warning(f"[STRATEGY ADVISORY] No policy found for account={account_name} path={path}")
+    return None
 
 
 def load_strategy_advisory_policy(account_name=None):
