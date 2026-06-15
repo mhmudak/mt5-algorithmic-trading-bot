@@ -305,6 +305,11 @@ from config.settings import (
     TELEGRAM_NOTIFY_STRATEGY_ADVISORY_CRITICAL,
     STRATEGY_ADVISORY_TELEGRAM_DECISIONS,
     STRATEGY_ADVISORY_TELEGRAM_COOLDOWN_MINUTES,
+    TELEGRAM_NOTIFY_MTF_CONFLICT_CANDIDATE_TRACKED,
+    MTF_CONFLICT_CANDIDATE_TELEGRAM_MIN_SCORE,
+    MTF_CONFLICT_CANDIDATE_TELEGRAM_MIN_RR,
+    STRATEGY_ADVISORY_TELEGRAM_MIN_SAMPLES,
+    STRATEGY_ADVISORY_SKIP_TRACK_ONLY_LOW_SAMPLE_ALERTS,
 )
 
 from src.candidate_rejection_recovery import (
@@ -696,21 +701,37 @@ def apply_strategy_advisory_note(signal_data, strategy_name=None, setup_source_b
         last_sent_ts = _STRATEGY_ADVISORY_TELEGRAM_CACHE.get(alert_key, 0)
 
         if now_ts - last_sent_ts >= cooldown_seconds:
-            _STRATEGY_ADVISORY_TELEGRAM_CACHE[alert_key] = now_ts
-
-            send_telegram_message_async(
-                "⚠️ STRATEGY ADVISORY — CRITICAL\n"
-                f"Strategy: {advisory.get('strategy')}\n"
-                f"Bucket: {advisory.get('setup_source_bucket')}\n"
-                f"Decision: {decision}\n"
-                f"Samples: {advisory.get('sample_count')}\n"
-                f"W10: {advisory.get('w10_rate')}\n"
-                f"TP: {advisory.get('tp_rate')}\n"
-                f"SL: {advisory.get('sl_rate')}\n"
-                f"Expectancy: {advisory.get('synthetic_expectancy')}\n"
-                f"Reason: {advisory.get('decision_reason')}\n"
-                "Action: advisory only — trade is NOT blocked automatically."
-            )
+            sample_count = int(advisory.get("sample_count") or 0)
+            decision_reason = str(advisory.get("decision_reason") or "")
+        
+            if (
+                STRATEGY_ADVISORY_SKIP_TRACK_ONLY_LOW_SAMPLE_ALERTS
+                and decision == "TRACK_ONLY"
+                and sample_count < STRATEGY_ADVISORY_TELEGRAM_MIN_SAMPLES
+            ):
+                logger.info(
+                    f"[STRATEGY ADVISORY] Telegram skipped for low-sample TRACK_ONLY | "
+                    f"strategy={advisory.get('strategy')} "
+                    f"bucket={advisory.get('setup_source_bucket')} "
+                    f"samples={sample_count}/{STRATEGY_ADVISORY_TELEGRAM_MIN_SAMPLES} "
+                    f"reason={decision_reason}"
+                )
+            else:
+                _STRATEGY_ADVISORY_TELEGRAM_CACHE[alert_key] = now_ts
+        
+                send_telegram_message_async(
+                    "⚠️ STRATEGY ADVISORY — CRITICAL\n"
+                    f"Strategy: {advisory.get('strategy')}\n"
+                    f"Bucket: {advisory.get('setup_source_bucket')}\n"
+                    f"Decision: {decision}\n"
+                    f"Samples: {advisory.get('sample_count')}\n"
+                    f"W10: {advisory.get('w10_rate')}\n"
+                    f"TP: {advisory.get('tp_rate')}\n"
+                    f"SL: {advisory.get('sl_rate')}\n"
+                    f"Expectancy: {advisory.get('synthetic_expectancy')}\n"
+                    f"Reason: {advisory.get('decision_reason')}\n"
+                    "Action: advisory only — trade is NOT blocked automatically."
+                )
         else:
             logger.info(
                 f"[STRATEGY ADVISORY] Telegram skipped by cooldown | "
@@ -4739,6 +4760,46 @@ def process_mtf_conflict_candidate(
         if tracked:
             notify_setup_similarity_if_relevant(setup_id)
             notify_scenario_cluster_if_relevant(setup_id)
+
+            try:
+                candidate_score = float(candidate.get("score", 0) or 0)
+            except Exception:
+                candidate_score = 0.0
+
+            try:
+                shadow_rr_value = float(shadow_rr or 0)
+            except Exception:
+                shadow_rr_value = 0.0
+
+            strong_mtf_candidate = (
+                TELEGRAM_NOTIFY_MTF_CONFLICT_CANDIDATE_TRACKED
+                and candidate_score >= MTF_CONFLICT_CANDIDATE_TELEGRAM_MIN_SCORE
+                and shadow_rr_value >= MTF_CONFLICT_CANDIDATE_TELEGRAM_MIN_RR
+            )
+
+            if strong_mtf_candidate:
+                send_telegram_message_async(
+                    "📌 STRONG MTF CONFLICT TRACKED\n"
+                    f"Symbol: {SYMBOL}\n"
+                    f"Setup ID: {setup_id}\n"
+                    f"Strategy: {strategy}\n"
+                    f"Signal: {signal}\n"
+                    f"Entry Model: {entry_model}\n"
+                    f"Session: {session_name}\n"
+                    f"Market: {market_condition}\n"
+                    f"Score: {candidate_score}\n"
+                    f"MTF Bias: {mtf_bias}\n"
+                    f"Strategy Mode: {strategy_mode}\n"
+                    f"Execution Mode: {execution_mode}\n"
+                    f"Execution Allowed: {execution_allowed}\n"
+                    f"Execution Reason: {execution_reason}\n\n"
+                    f"Entry: {shadow_trade_plan.get('entry_price') if shadow_trade_plan else None}\n"
+                    f"SL: {shadow_trade_plan.get('stop_loss') if shadow_trade_plan else None}\n"
+                    f"TP: {shadow_trade_plan.get('take_profit') if shadow_trade_plan else None}\n"
+                    f"RR: {shadow_rr}\n"
+                    f"Required RR: {required_rr}\n\n"
+                    "Action: tracked due to MTF conflict — not automatically weak."
+                )
 
         if not execution_allowed:
             logger.info(
