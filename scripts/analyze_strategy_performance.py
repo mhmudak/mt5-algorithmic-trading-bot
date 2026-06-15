@@ -716,6 +716,159 @@ def build_legacy_intrabar_shadow_report(trade_df):
         ascending=[False, False],
     )
 
+def build_trade_tracker_health_report(trade_df):
+    if trade_df is None or trade_df.empty:
+        return {
+            "trade_rows": 0,
+            "status": "NO_TRADE_DATA",
+            "warnings": ["No trades available for tracker health report."],
+        }, pd.DataFrame()
+
+    def text_col(name, default=""):
+        if name in trade_df.columns:
+            return trade_df[name].fillna(default).astype(str)
+        return pd.Series([default] * len(trade_df), index=trade_df.index)
+
+    def numeric_col(name, default=0.0):
+        if name in trade_df.columns:
+            return pd.to_numeric(trade_df[name], errors="coerce").fillna(default)
+        return pd.Series([default] * len(trade_df), index=trade_df.index)
+
+    status = text_col("status").str.upper()
+    final_result = text_col("final_result").str.upper()
+    realized_profit = numeric_col("realized_profit")
+    missing_position_checks = numeric_col("missing_position_checks")
+
+    position_id = text_col("position_id")
+    raw_order_id = text_col("raw_order_id")
+    raw_deal_id = text_col("raw_deal_id")
+
+    closed_mask = status == "CLOSED"
+    open_mask = status == "OPEN"
+    breakeven_mask = closed_mask & (final_result == "BREAKEVEN")
+    zero_realized_closed_mask = closed_mask & (realized_profit == 0)
+    missing_position_mask = missing_position_checks > 0
+
+    has_raw_id_mask = (raw_order_id != "") | (raw_deal_id != "")
+    legacy_without_raw_ids_mask = ~has_raw_id_mask
+
+    possible_raw_id_position_mask = (
+        (position_id == raw_order_id)
+        | (position_id == raw_deal_id)
+    ) & has_raw_id_mask
+
+    trade_rows = len(trade_df)
+    closed_count = int(closed_mask.sum())
+    open_count = int(open_mask.sum())
+    breakeven_count = int(breakeven_mask.sum())
+    zero_realized_closed_count = int(zero_realized_closed_mask.sum())
+    missing_position_rows = int(missing_position_mask.sum())
+    legacy_without_raw_ids = int(legacy_without_raw_ids_mask.sum())
+    possible_raw_id_position_rows = int(possible_raw_id_position_mask.sum())
+
+    warnings = []
+
+    breakeven_rate = round(breakeven_count / closed_count, 4) if closed_count else 0.0
+    zero_realized_closed_rate = round(zero_realized_closed_count / closed_count, 4) if closed_count else 0.0
+
+    if breakeven_rate >= 0.70:
+        warnings.append(
+            "High BREAKEVEN rate detected. Old trade tracker history is still unreliable."
+        )
+
+    if zero_realized_closed_rate >= 0.70:
+        warnings.append(
+            "Most closed trades have zero realized profit. Use trade stats as diagnostic only."
+        )
+
+    if missing_position_rows > 0:
+        warnings.append(
+            "Some trades had missing position checks. Watch if they later resolve with real close deals."
+        )
+
+    if legacy_without_raw_ids > 0:
+        warnings.append(
+            "Legacy trades without raw_order_id/raw_deal_id exist. These were created before tracker fix."
+        )
+
+    if possible_raw_id_position_rows > 0:
+        warnings.append(
+            "Some rows still have position_id equal to raw order/deal id. Future rows should reduce this."
+        )
+
+    summary = {
+        "trade_rows": trade_rows,
+        "open_count": open_count,
+        "closed_count": closed_count,
+        "breakeven_count": breakeven_count,
+        "breakeven_rate": breakeven_rate,
+        "zero_realized_closed_count": zero_realized_closed_count,
+        "zero_realized_closed_rate": zero_realized_closed_rate,
+        "missing_position_rows": missing_position_rows,
+        "legacy_without_raw_ids": legacy_without_raw_ids,
+        "possible_raw_id_position_rows": possible_raw_id_position_rows,
+        "status": "WATCH_NEW_TRADES" if warnings else "HEALTHY",
+        "warnings": warnings,
+    }
+
+    detail_df = trade_df.copy()
+    detail_df["_is_closed"] = closed_mask
+    detail_df["_is_open"] = open_mask
+    detail_df["_is_breakeven"] = breakeven_mask
+    detail_df["_is_zero_realized_closed"] = zero_realized_closed_mask
+    detail_df["_has_missing_position_checks"] = missing_position_mask
+    detail_df["_is_legacy_without_raw_ids"] = legacy_without_raw_ids_mask
+    detail_df["_possible_raw_id_position"] = possible_raw_id_position_mask
+
+    group_cols = [
+        col for col in [
+            "strategy",
+            "execution_bucket",
+            "session",
+            "market_condition",
+        ]
+        if col in detail_df.columns
+    ]
+
+    if not group_cols:
+        return summary, pd.DataFrame()
+
+    rows = []
+
+    for keys, group in detail_df.groupby(group_cols, dropna=False):
+        if not isinstance(keys, tuple):
+            keys = (keys,)
+
+        row = {
+            "policy_key": "|".join(str(x) for x in keys),
+            "sample_count": len(group),
+            "open_count": int(group["_is_open"].sum()),
+            "closed_count": int(group["_is_closed"].sum()),
+            "breakeven_count": int(group["_is_breakeven"].sum()),
+            "zero_realized_closed_count": int(group["_is_zero_realized_closed"].sum()),
+            "missing_position_rows": int(group["_has_missing_position_checks"].sum()),
+            "legacy_without_raw_ids": int(group["_is_legacy_without_raw_ids"].sum()),
+            "possible_raw_id_position_rows": int(group["_possible_raw_id_position"].sum()),
+        }
+
+        for idx, col in enumerate(group_cols):
+            row[col] = keys[idx]
+
+        row["breakeven_rate"] = (
+            round(row["breakeven_count"] / row["closed_count"], 4)
+            if row["closed_count"]
+            else 0.0
+        )
+
+        rows.append(row)
+
+    detail_report = pd.DataFrame(rows).sort_values(
+        ["sample_count", "breakeven_rate"],
+        ascending=[False, False],
+    )
+
+    return summary, detail_report
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--min-samples", type=int, default=10)
@@ -755,6 +908,21 @@ def main():
 
     with open(quality_json, "w", encoding="utf-8") as f:
         json.dump(quality_report, f, indent=2, ensure_ascii=False)
+    
+    
+    legacy_intrabar_shadow = build_legacy_intrabar_shadow_report(trade_df)
+    legacy_intrabar_shadow_csv = output_dir / "legacy_intrabar_shadow_report.csv"
+    legacy_intrabar_shadow.to_csv(legacy_intrabar_shadow_csv, index=False)
+    
+    tracker_health_summary, tracker_health_detail = build_trade_tracker_health_report(trade_df)
+
+    tracker_health_json = output_dir / "trade_tracker_health_report.json"
+    tracker_health_csv = output_dir / "trade_tracker_health_by_bucket.csv"
+
+    with open(tracker_health_json, "w", encoding="utf-8") as f:
+        json.dump(tracker_health_summary, f, indent=2, ensure_ascii=False)
+
+    tracker_health_detail.to_csv(tracker_health_csv, index=False)
     
     setup_intrabar_count = int((df["setup_source_bucket"] == "INTRABAR").sum())
     trade_intrabar_count = int((trade_df["execution_bucket"] == "INTRABAR").sum())
@@ -937,10 +1105,18 @@ def main():
     print(f" - {report_json}")
     print(f" - {policy_json}")
     print(f" - {quality_json}")
+    print(f" - {legacy_intrabar_shadow_csv}")
+    print(f" - {tracker_health_json}")
+    print(f" - {tracker_health_csv}")
     
     if quality_report.get("warnings"):
         print("\n[DATA QUALITY WARNINGS]")
         for warning in quality_report["warnings"]:
+            print(f" - {warning}")
+
+    if tracker_health_summary.get("warnings"):
+        print("\n[TRADE TRACKER HEALTH WARNINGS]")
+        for warning in tracker_health_summary["warnings"]:
             print(f" - {warning}")
 
     cols = [
@@ -1043,12 +1219,6 @@ def main():
         print("[WARN] No intrabar trades found in trades.json.")
     else:
         print(intrabar_trade_report[trade_cols].head(30).to_string(index=False))
-        
-    legacy_intrabar_shadow = build_legacy_intrabar_shadow_report(trade_df)
-    legacy_intrabar_shadow_csv = output_dir / "legacy_intrabar_shadow_report.csv"
-    legacy_intrabar_shadow.to_csv(legacy_intrabar_shadow_csv, index=False)
-    
-    print(f" - {legacy_intrabar_shadow_csv}")
 
 if __name__ == "__main__":
     main()
