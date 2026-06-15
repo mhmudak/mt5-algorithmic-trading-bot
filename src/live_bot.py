@@ -304,6 +304,7 @@ from config.settings import (
     ENABLE_STRATEGY_ADVISORY,
     TELEGRAM_NOTIFY_STRATEGY_ADVISORY_CRITICAL,
     STRATEGY_ADVISORY_TELEGRAM_DECISIONS,
+    STRATEGY_ADVISORY_TELEGRAM_COOLDOWN_MINUTES,
 )
 
 from src.candidate_rejection_recovery import (
@@ -649,6 +650,7 @@ def detect_setup_source_bucket_for_advisory(signal_data, default="NORMAL_OR_TRAC
 
     return default
 
+_STRATEGY_ADVISORY_TELEGRAM_CACHE = {}
 
 def apply_strategy_advisory_note(signal_data, strategy_name=None, setup_source_bucket=None):
     if not ENABLE_STRATEGY_ADVISORY:
@@ -683,19 +685,37 @@ def apply_strategy_advisory_note(signal_data, strategy_name=None, setup_source_b
         and decision in STRATEGY_ADVISORY_TELEGRAM_DECISIONS
         and is_advisory_risky(advisory)
     ):
-        send_telegram_message_async(
-            "⚠️ STRATEGY ADVISORY — CRITICAL\n"
-            f"Strategy: {advisory.get('strategy')}\n"
-            f"Bucket: {advisory.get('setup_source_bucket')}\n"
-            f"Decision: {decision}\n"
-            f"Samples: {advisory.get('sample_count')}\n"
-            f"W10: {advisory.get('w10_rate')}\n"
-            f"TP: {advisory.get('tp_rate')}\n"
-            f"SL: {advisory.get('sl_rate')}\n"
-            f"Expectancy: {advisory.get('synthetic_expectancy')}\n"
-            f"Reason: {advisory.get('decision_reason')}\n"
-            "Action: advisory only — trade is NOT blocked automatically."
+        now_ts = time.time()
+        cooldown_seconds = STRATEGY_ADVISORY_TELEGRAM_COOLDOWN_MINUTES * 60
+
+        alert_key = (
+            advisory.get("policy_key"),
+            advisory.get("decision"),
         )
+
+        last_sent_ts = _STRATEGY_ADVISORY_TELEGRAM_CACHE.get(alert_key, 0)
+
+        if now_ts - last_sent_ts >= cooldown_seconds:
+            _STRATEGY_ADVISORY_TELEGRAM_CACHE[alert_key] = now_ts
+
+            send_telegram_message_async(
+                "⚠️ STRATEGY ADVISORY — CRITICAL\n"
+                f"Strategy: {advisory.get('strategy')}\n"
+                f"Bucket: {advisory.get('setup_source_bucket')}\n"
+                f"Decision: {decision}\n"
+                f"Samples: {advisory.get('sample_count')}\n"
+                f"W10: {advisory.get('w10_rate')}\n"
+                f"TP: {advisory.get('tp_rate')}\n"
+                f"SL: {advisory.get('sl_rate')}\n"
+                f"Expectancy: {advisory.get('synthetic_expectancy')}\n"
+                f"Reason: {advisory.get('decision_reason')}\n"
+                "Action: advisory only — trade is NOT blocked automatically."
+            )
+        else:
+            logger.info(
+                f"[STRATEGY ADVISORY] Telegram skipped by cooldown | "
+                f"key={alert_key} cooldown_min={STRATEGY_ADVISORY_TELEGRAM_COOLDOWN_MINUTES}"
+            )
 
     return advisory
 
@@ -4972,6 +4992,41 @@ def process_mtf_conflict_candidate(
     )
 
     if execution_result:
+        news_context = attach_news_context_to_signal_data(candidate)
+
+        tracked = register_setup_outcome(
+            symbol=SYMBOL,
+            setup_id=setup_id,
+            event="MTF_CONFLICT_EXECUTION_SUCCESS",
+            strategy=mtf_trade_plan.get("strategy") or strategy,
+            signal=signal,
+            entry_model=candidate.get("entry_model"),
+            score=candidate.get("score"),
+            session=session_name,
+            market_condition="MTF_CONFLICT_EXECUTED",
+            entry=mtf_trade_plan.get("entry_price"),
+            sl=mtf_trade_plan.get("stop_loss"),
+            tp=mtf_trade_plan.get("take_profit"),
+            reason="mtf_conflict_execution_success",
+            extra={
+                "source": "mtf_conflict_execution_success",
+                "source_setup_id": setup_id,
+                "executed_setup_id": mtf_trade_plan.get("setup_id"),
+                "source_strategy": strategy,
+                "execution_strategy": mtf_trade_plan.get("strategy"),
+                "mtf_bias": mtf_bias,
+                "mtf_conflict_mode": execution_mode,
+                "mtf_rr": mtf_rr,
+                "required_rr": required_rr,
+                "news_context": news_context,
+                "news_tag": news_context.get("news_tag") if news_context else None,
+            },
+        )
+
+        if tracked:
+            notify_setup_similarity_if_relevant(setup_id)
+            notify_scenario_cluster_if_relevant(setup_id)
+        
         save_execution_memory_report(
             selected_signal_data=candidate,
             strategy_name=mtf_trade_plan.get("strategy"),
@@ -5024,6 +5079,41 @@ def process_mtf_conflict_candidate(
         )
 
         return True
+    
+    news_context = attach_news_context_to_signal_data(candidate)
+
+    tracked = register_setup_outcome(
+        symbol=SYMBOL,
+        setup_id=setup_id,
+        event="MTF_CONFLICT_EXECUTION_FAILED",
+        strategy=mtf_trade_plan.get("strategy") or strategy,
+        signal=signal,
+        entry_model=candidate.get("entry_model"),
+        score=candidate.get("score"),
+        session=session_name,
+        market_condition="MTF_CONFLICT_EXECUTION_FAILED",
+        entry=mtf_trade_plan.get("entry_price"),
+        sl=mtf_trade_plan.get("stop_loss"),
+        tp=mtf_trade_plan.get("take_profit"),
+        reason="mtf_conflict_execute_trade_returned_false",
+        extra={
+            "source": "mtf_conflict_execution_failed",
+            "source_setup_id": setup_id,
+            "executed_setup_id": mtf_trade_plan.get("setup_id"),
+            "source_strategy": strategy,
+            "execution_strategy": mtf_trade_plan.get("strategy"),
+            "mtf_bias": mtf_bias,
+            "mtf_conflict_mode": execution_mode,
+            "mtf_rr": mtf_rr,
+            "required_rr": required_rr,
+            "news_context": news_context,
+            "news_tag": news_context.get("news_tag") if news_context else None,
+        },
+    )
+
+    if tracked:
+        notify_setup_similarity_if_relevant(setup_id)
+        notify_scenario_cluster_if_relevant(setup_id)
     
     save_execution_memory_report(
         selected_signal_data=candidate,
