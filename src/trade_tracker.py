@@ -45,6 +45,81 @@ def save_trades(trades):
     except Exception as e:
         logger.error(f"[TRACKER] Failed to save trades: {e}")
 
+def resolve_position_id_after_execution(symbol, signal, trade_plan, result):
+    """
+    Resolve real MT5 position ticket after order_send.
+
+    result.order / result.deal is not always the open position ticket.
+    The tracker must track the real position.ticket.
+    """
+    order_id = getattr(result, "order", None)
+    deal_id = getattr(result, "deal", None)
+
+    # 1) Try direct position by order id
+    if order_id:
+        try:
+            positions = mt5.positions_get(ticket=order_id)
+            if positions:
+                return str(positions[0].ticket)
+        except Exception as exc:
+            logger.warning(f"[TRACKER] position lookup by order failed: {exc}")
+
+    # 2) Try position_id from the execution deal
+    now = datetime.now()
+    start = now - timedelta(days=1)
+
+    try:
+        deals = mt5.history_deals_get(start, now)
+    except Exception as exc:
+        logger.warning(f"[TRACKER] history_deals_get failed during position resolve: {exc}")
+        deals = None
+
+    if deals:
+        for deal in deals:
+            if str(getattr(deal, "ticket", "")) == str(deal_id):
+                position_id = getattr(deal, "position_id", None)
+                if position_id:
+                    return str(position_id)
+
+    # 3) Fallback: newest open position with same symbol / side / volume
+    try:
+        positions = mt5.positions_get(symbol=symbol)
+    except Exception as exc:
+        logger.warning(f"[TRACKER] positions_get failed during fallback resolve: {exc}")
+        positions = None
+
+    if positions:
+        signal = str(signal or "").upper()
+        expected_type = mt5.POSITION_TYPE_BUY if signal == "BUY" else mt5.POSITION_TYPE_SELL
+        expected_volume = round(float(trade_plan.get("lot", 0.0)), 2)
+
+        candidates = []
+
+        for position in positions:
+            if getattr(position, "type", None) != expected_type:
+                continue
+
+            position_volume = round(float(getattr(position, "volume", 0.0)), 2)
+
+            if expected_volume and position_volume != expected_volume:
+                continue
+
+            candidates.append(position)
+
+        if candidates:
+            newest = max(
+                candidates,
+                key=lambda p: getattr(p, "time_msc", getattr(p, "time", 0)),
+            )
+            return str(newest.ticket)
+
+    # Final fallback: old behavior, but log it
+    fallback_id = order_id if order_id else deal_id
+    logger.warning(
+        f"[TRACKER] Could not resolve real MT5 position id. "
+        f"Using fallback={fallback_id} order={order_id} deal={deal_id}"
+    )
+    return str(fallback_id)
 
 def activate_cooldown():
     global cooldown_until
@@ -114,6 +189,8 @@ def _build_trade_record(
         "open_time": datetime.now().isoformat(),
         "deal_id": deal_id,
         "order_id": order_id,
+        "raw_deal_id": deal_id,
+        "raw_order_id": order_id,
         "partial_closes": [],
         "stage_1_done": False,
         "stage_2_done": False,
@@ -150,7 +227,12 @@ def _find_open_main_trade_id(trades, symbol, signal):
 def register_executed_trade(symbol, signal, trade_plan, result):
     trades = load_trades()
 
-    position_id = str(result.order if result.order else result.deal)
+    position_id = resolve_position_id_after_execution(
+        symbol=symbol,
+        signal=signal,
+        trade_plan=trade_plan,
+        result=result,
+    )
 
     existing_main_id = _find_open_main_trade_id(trades, symbol, signal)
 
@@ -336,11 +418,15 @@ def update_trade_lifecycle(symbol: str):
         return
 
     open_positions = mt5.positions_get(symbol=symbol)
-    open_positions_map = {}
 
-    if open_positions is not None:
-        for pos in open_positions:
-            open_positions_map[str(pos.ticket)] = pos
+    if open_positions is None:
+        logger.warning(f"[TRACKER] positions_get returned None for {symbol}; lifecycle update skipped")
+        return
+    
+    open_positions_map = {}
+    
+    for pos in open_positions:
+        open_positions_map[str(pos.ticket)] = pos
 
     changed = False
 
