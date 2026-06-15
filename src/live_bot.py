@@ -308,6 +308,7 @@ from config.settings import (
     TELEGRAM_NOTIFY_MTF_CONFLICT_CANDIDATE_TRACKED,
     MTF_CONFLICT_CANDIDATE_TELEGRAM_MIN_SCORE,
     MTF_CONFLICT_CANDIDATE_TELEGRAM_MIN_RR,
+    MTF_CONFLICT_CANDIDATE_TELEGRAM_HIGH_SCORE,
     STRATEGY_ADVISORY_TELEGRAM_MIN_SAMPLES,
     STRATEGY_ADVISORY_SKIP_TRACK_ONLY_LOW_SAMPLE_ALERTS,
 )
@@ -703,7 +704,7 @@ def apply_strategy_advisory_note(signal_data, strategy_name=None, setup_source_b
         if now_ts - last_sent_ts >= cooldown_seconds:
             sample_count = int(advisory.get("sample_count") or 0)
             decision_reason = str(advisory.get("decision_reason") or "")
-        
+
             if (
                 STRATEGY_ADVISORY_SKIP_TRACK_ONLY_LOW_SAMPLE_ALERTS
                 and decision == "TRACK_ONLY"
@@ -718,7 +719,7 @@ def apply_strategy_advisory_note(signal_data, strategy_name=None, setup_source_b
                 )
             else:
                 _STRATEGY_ADVISORY_TELEGRAM_CACHE[alert_key] = now_ts
-        
+
                 send_telegram_message_async(
                     "⚠️ STRATEGY ADVISORY — CRITICAL\n"
                     f"Strategy: {advisory.get('strategy')}\n"
@@ -4771,10 +4772,21 @@ def process_mtf_conflict_candidate(
             except Exception:
                 shadow_rr_value = 0.0
 
+            good_rr_mtf_candidate = (
+                candidate_score >= MTF_CONFLICT_CANDIDATE_TELEGRAM_MIN_SCORE
+                and shadow_rr_value >= MTF_CONFLICT_CANDIDATE_TELEGRAM_MIN_RR
+            )
+
+            high_score_mtf_candidate = (
+                candidate_score >= MTF_CONFLICT_CANDIDATE_TELEGRAM_HIGH_SCORE
+            )
+
             strong_mtf_candidate = (
                 TELEGRAM_NOTIFY_MTF_CONFLICT_CANDIDATE_TRACKED
-                and candidate_score >= MTF_CONFLICT_CANDIDATE_TELEGRAM_MIN_SCORE
-                and shadow_rr_value >= MTF_CONFLICT_CANDIDATE_TELEGRAM_MIN_RR
+                and (
+                    good_rr_mtf_candidate
+                    or high_score_mtf_candidate
+                )
             )
 
             if strong_mtf_candidate:
@@ -4793,6 +4805,7 @@ def process_mtf_conflict_candidate(
                     f"Execution Mode: {execution_mode}\n"
                     f"Execution Allowed: {execution_allowed}\n"
                     f"Execution Reason: {execution_reason}\n\n"
+                    f"Telegram Trigger: {'GOOD_RR' if good_rr_mtf_candidate else 'HIGH_SCORE'}\n"
                     f"Entry: {shadow_trade_plan.get('entry_price') if shadow_trade_plan else None}\n"
                     f"SL: {shadow_trade_plan.get('stop_loss') if shadow_trade_plan else None}\n"
                     f"TP: {shadow_trade_plan.get('take_profit') if shadow_trade_plan else None}\n"
