@@ -121,6 +121,61 @@ def resolve_position_id_after_execution(symbol, signal, trade_plan, result):
     )
     return str(fallback_id)
 
+def relink_trade_position_if_needed(position_id, trade, open_positions_map):
+    """
+    Fix old trades saved with result.order/result.deal instead of real MT5 position ticket.
+    If we can find the real open position, return the new real position_id.
+    """
+    if position_id in open_positions_map:
+        return position_id
+
+    symbol = trade.get("symbol")
+    signal = str(trade.get("signal") or "").upper()
+    expected_volume = round(float(trade.get("remaining_volume", trade.get("initial_volume", 0.0)) or 0.0), 2)
+
+    if not symbol or signal not in ["BUY", "SELL"]:
+        return position_id
+
+    expected_type = mt5.POSITION_TYPE_BUY if signal == "BUY" else mt5.POSITION_TYPE_SELL
+
+    candidates = []
+
+    for real_position_id, position in open_positions_map.items():
+        if getattr(position, "symbol", None) != symbol:
+            continue
+
+        if getattr(position, "type", None) != expected_type:
+            continue
+
+        position_volume = round(float(getattr(position, "volume", 0.0)), 2)
+
+        if expected_volume and position_volume != expected_volume:
+            continue
+
+        trade_entry = round(float(trade.get("entry_price", 0.0) or 0.0), 2)
+        position_entry = round(float(getattr(position, "price_open", 0.0) or 0.0), 2)
+
+        if trade_entry and abs(trade_entry - position_entry) > 1.0:
+            continue
+
+        candidates.append((real_position_id, position))
+
+    if not candidates:
+        return position_id
+
+    real_position_id, position = max(
+        candidates,
+        key=lambda item: getattr(item[1], "time_msc", getattr(item[1], "time", 0)),
+    )
+
+    logger.warning(
+        f"[TRACKER] Relinked legacy trade position id | "
+        f"old={position_id} new={real_position_id} "
+        f"symbol={symbol} signal={signal}"
+    )
+
+    return real_position_id
+
 def activate_cooldown():
     global cooldown_until
 
@@ -422,9 +477,9 @@ def update_trade_lifecycle(symbol: str):
     if open_positions is None:
         logger.warning(f"[TRACKER] positions_get returned None for {symbol}; lifecycle update skipped")
         return
-    
+
     open_positions_map = {}
-    
+
     for pos in open_positions:
         open_positions_map[str(pos.ticket)] = pos
 
@@ -439,6 +494,26 @@ def update_trade_lifecycle(symbol: str):
 
         tracked_remaining = float(trade.get("remaining_volume", 0.0))
         current_position = open_positions_map.get(position_id)
+
+        if current_position is None:
+            relinked_position_id = relink_trade_position_if_needed(
+                position_id=position_id,
+                trade=trade,
+                open_positions_map=open_positions_map,
+            )
+
+            if relinked_position_id != position_id:
+                trades[relinked_position_id] = trade
+                trades[relinked_position_id]["position_id"] = relinked_position_id
+
+                if trades[relinked_position_id].get("main_position_id") == position_id:
+                    trades[relinked_position_id]["main_position_id"] = relinked_position_id
+
+                del trades[position_id]
+
+                position_id = relinked_position_id
+                current_position = open_positions_map.get(position_id)
+                changed = True
 
         # Fully closed
         if current_position is None:
