@@ -598,6 +598,70 @@ def build_execution_policy(detail_df):
 
     return policy
 
+def build_data_quality_report(setup_df, trade_df):
+    warnings = []
+
+    setup_count = int(len(setup_df)) if setup_df is not None else 0
+    trade_count = int(len(trade_df)) if trade_df is not None else 0
+
+    report = {
+        "setup_outcomes_rows": setup_count,
+        "trade_rows": trade_count,
+        "trade_tracker_status": "UNKNOWN",
+        "trade_realized_nonzero_count": 0,
+        "trade_realized_nonzero_rate": 0.0,
+        "trade_breakeven_count": 0,
+        "trade_breakeven_rate": 0.0,
+        "setup_intrabar_count": 0,
+        "trade_intrabar_count": 0,
+        "warnings": warnings,
+    }
+
+    if setup_df is not None and not setup_df.empty and "setup_source_bucket" in setup_df.columns:
+        report["setup_intrabar_count"] = int((setup_df["setup_source_bucket"] == "INTRABAR").sum())
+
+    if trade_df is not None and not trade_df.empty:
+        realized_profit = trade_df.get("realized_profit")
+
+        if realized_profit is not None:
+            realized_nonzero_count = int((realized_profit.fillna(0).astype(float) != 0).sum())
+        else:
+            realized_nonzero_count = 0
+
+        final_result = trade_df.get("final_result")
+
+        if final_result is not None:
+            breakeven_count = int((final_result.fillna("").astype(str).str.upper() == "BREAKEVEN").sum())
+        else:
+            breakeven_count = 0
+
+        report["trade_realized_nonzero_count"] = realized_nonzero_count
+        report["trade_realized_nonzero_rate"] = round(realized_nonzero_count / trade_count, 4) if trade_count else 0.0
+        report["trade_breakeven_count"] = breakeven_count
+        report["trade_breakeven_rate"] = round(breakeven_count / trade_count, 4) if trade_count else 0.0
+
+        if "execution_bucket" in trade_df.columns:
+            report["trade_intrabar_count"] = int((trade_df["execution_bucket"] == "INTRABAR").sum())
+
+        if report["trade_realized_nonzero_rate"] < 0.20 and report["trade_breakeven_rate"] >= 0.70:
+            report["trade_tracker_status"] = "UNRELIABLE_HISTORY_DIAGNOSTIC_ONLY"
+            warnings.append(
+                "Most trade rows are breakeven/zero realized profit. Old trades.json should be diagnostic only."
+            )
+        else:
+            report["trade_tracker_status"] = "USABLE_WITH_CAUTION"
+
+    if report["trade_intrabar_count"] > 0 and report["setup_intrabar_count"] == 0:
+        warnings.append(
+            "Intrabar trades exist in trades.json, but no intrabar setup outcomes exist yet. Future data should improve after live_bot intrabar tracking fix."
+        )
+
+    if setup_count > 0 and trade_count > 0 and report["trade_tracker_status"] == "UNRELIABLE_HISTORY_DIAGNOSTIC_ONLY":
+        warnings.append(
+            "Use setup_outcomes.json for strategy decisions. Do not block strategies from old trades.json results."
+        )
+
+    return report
 
 def main():
     parser = argparse.ArgumentParser()
@@ -631,6 +695,13 @@ def main():
 
     df = normalize_setup_outcomes(setup_outcomes, trades)
     trade_df = normalize_trades(trades)
+    
+    quality_report = build_data_quality_report(df, trade_df)
+
+    quality_json = output_dir / "data_quality_report.json"
+
+    with open(quality_json, "w", encoding="utf-8") as f:
+        json.dump(quality_report, f, indent=2, ensure_ascii=False)
     
     setup_intrabar_count = int((df["setup_source_bucket"] == "INTRABAR").sum())
     trade_intrabar_count = int((trade_df["execution_bucket"] == "INTRABAR").sum())
@@ -812,6 +883,12 @@ def main():
     print(f" - {detail_csv}")
     print(f" - {report_json}")
     print(f" - {policy_json}")
+    print(f" - {quality_json}")
+    
+    if quality_report.get("warnings"):
+        print("\n[DATA QUALITY WARNINGS]")
+        for warning in quality_report["warnings"]:
+            print(f" - {warning}")
 
     cols = [
         "policy_key",
