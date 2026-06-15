@@ -663,6 +663,59 @@ def build_data_quality_report(setup_df, trade_df):
 
     return report
 
+def build_legacy_intrabar_shadow_report(trade_df):
+    if trade_df is None or trade_df.empty:
+        return pd.DataFrame()
+
+    if "execution_bucket" not in trade_df.columns:
+        return pd.DataFrame()
+
+    intrabar_df = trade_df[trade_df["execution_bucket"] == "INTRABAR"].copy()
+
+    if intrabar_df.empty:
+        return pd.DataFrame()
+
+    group_cols = [
+        "strategy",
+        "signal",
+        "session",
+        "market_condition",
+        "execution_bucket",
+    ]
+
+    rows = []
+
+    for keys, group in intrabar_df.groupby(group_cols, dropna=False):
+        realized_profit = group["realized_profit"].fillna(0).astype(float)
+        final_result = group["final_result"].fillna("").astype(str).str.upper()
+
+        sample_count = len(group)
+        realized_count = int((realized_profit != 0).sum())
+        breakeven_count = int((final_result == "BREAKEVEN").sum())
+
+        rows.append({
+            "policy_key": "|".join(str(x) for x in keys),
+            "strategy": keys[0],
+            "signal": keys[1],
+            "session": keys[2],
+            "market_condition": keys[3],
+            "execution_bucket": keys[4],
+            "sample_count": sample_count,
+            "realized_count": realized_count,
+            "breakeven_count": breakeven_count,
+            "breakeven_rate": round(breakeven_count / sample_count, 4) if sample_count else 0.0,
+            "total_profit": round(realized_profit.sum(), 2),
+            "actual_expectancy": round(realized_profit.mean(), 2) if sample_count else 0.0,
+            "data_quality": "LEGACY_TRADE_TRACKER_DIAGNOSTIC_ONLY",
+            "decision": "DIAGNOSTIC_ONLY",
+            "decision_reason": "legacy intrabar trades come from trades.json only; not reliable enough for setup policy",
+        })
+
+    return pd.DataFrame(rows).sort_values(
+        ["sample_count", "actual_expectancy"],
+        ascending=[False, False],
+    )
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--min-samples", type=int, default=10)
@@ -990,6 +1043,12 @@ def main():
         print("[WARN] No intrabar trades found in trades.json.")
     else:
         print(intrabar_trade_report[trade_cols].head(30).to_string(index=False))
+        
+    legacy_intrabar_shadow = build_legacy_intrabar_shadow_report(trade_df)
+    legacy_intrabar_shadow_csv = output_dir / "legacy_intrabar_shadow_report.csv"
+    legacy_intrabar_shadow.to_csv(legacy_intrabar_shadow_csv, index=False)
+    
+    print(f" - {legacy_intrabar_shadow_csv}")
 
 if __name__ == "__main__":
     main()
