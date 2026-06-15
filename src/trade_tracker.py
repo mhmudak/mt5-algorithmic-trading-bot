@@ -403,6 +403,7 @@ def detect_close_details(position_id: str, trade=None):
     deals = mt5.history_deals_get(start, now)
     if deals is None:
         return {
+            "found_close_deal": False,
             "close_reason": None,
             "realized_profit": 0.0,
             "close_price": 0.0,
@@ -412,6 +413,7 @@ def detect_close_details(position_id: str, trade=None):
         position_id_int = int(position_id)
     except ValueError:
         return {
+            "found_close_deal": False,
             "close_reason": None,
             "realized_profit": 0.0,
             "close_price": 0.0,
@@ -424,6 +426,7 @@ def detect_close_details(position_id: str, trade=None):
 
     if not matching_deals:
         return {
+            "found_close_deal": False,
             "close_reason": None,
             "realized_profit": 0.0,
             "close_price": 0.0,
@@ -460,6 +463,7 @@ def detect_close_details(position_id: str, trade=None):
         )
 
     return {
+        "found_close_deal": True,
         "close_reason": close_reason,
         "realized_profit": round(realized_profit, 2),
         "close_price": round(close_price, 2),
@@ -525,6 +529,20 @@ def update_trade_lifecycle(symbol: str):
                 trade["close_time"] = datetime.now().isoformat()
 
                 close_details = detect_close_details(position_id, trade=trade)
+
+                if not close_details.get("found_close_deal"):
+                    trade["missing_position_checks"] = int(trade.get("missing_position_checks", 0)) + 1
+                    trade["last_missing_position_check"] = datetime.now().isoformat()
+                    changed = True
+                
+                    logger.warning(
+                        f"[TRACKER] Position missing but no close deal found yet | "
+                        f"position={position_id} checks={trade['missing_position_checks']} "
+                        f"status remains OPEN"
+                    )
+                
+                    continue
+                
                 close_reason = close_details["close_reason"]
                 realized_profit = close_details["realized_profit"]
                 close_price = close_details["close_price"]
