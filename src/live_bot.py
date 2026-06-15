@@ -41,6 +41,12 @@ from src.execution_block_memory import is_setup_execution_blocked
 from src.execution_engine import ExecutionEngine
 execution_engine = ExecutionEngine()
 
+from src.strategy_advisory import (
+    get_strategy_advisory,
+    format_strategy_advisory,
+    is_advisory_risky,
+)
+
 from src.protected_reentry import (
     get_protected_reentry_context,
     apply_protected_reentry_confirmation,
@@ -295,6 +301,9 @@ from config.settings import (
     INTRABAR_PRICE_EVENT_MIN_TP_DISTANCE_PRICE,
     INTRABAR_PRICE_EVENT_MAX_TP_DISTANCE_PRICE,
     INTRABAR_PRICE_EVENT_DEFAULT_TARGET_RR,
+    ENABLE_STRATEGY_ADVISORY,
+    TELEGRAM_NOTIFY_STRATEGY_ADVISORY_CRITICAL,
+    STRATEGY_ADVISORY_TELEGRAM_DECISIONS,
 )
 
 from src.candidate_rejection_recovery import (
@@ -598,6 +607,97 @@ def get_trade_setup_id(trade_plan=None, signal_data=None, setup=None):
             return setup_id
 
     return None
+
+def detect_setup_source_bucket_for_advisory(signal_data, default="NORMAL_OR_TRACKED"):
+    if not signal_data:
+        return default
+
+    setup_id = str(signal_data.get("setup_id") or "").upper()
+    entry_model = str(signal_data.get("entry_model") or "").upper()
+    market_condition = str(signal_data.get("market_condition") or "").upper()
+    strategy = str(signal_data.get("strategy") or "").upper()
+
+    source_events = signal_data.get("source_events", "")
+
+    if isinstance(source_events, list):
+        source_events_text = "|".join(str(x).upper() for x in source_events)
+    else:
+        source_events_text = str(source_events or "").upper()
+
+    combined = "|".join([
+        setup_id,
+        entry_model,
+        market_condition,
+        strategy,
+        source_events_text,
+    ])
+
+    if "INTRABAR" in combined:
+        return "INTRABAR"
+
+    if "TICK_SNIPER" in combined:
+        return "TICK_SNIPER"
+
+    if "ORB_TICK" in combined:
+        return "ORB_TICK_WATCHER"
+
+    if "MTF_CONFLICT" in combined:
+        return "MTF_CONFLICT_TRACKED"
+
+    if "CANDIDATE_REJECTED" in combined or "LOW_RR" in combined:
+        return "REJECTED_CANDIDATE_TRACKED"
+
+    return default
+
+
+def apply_strategy_advisory_note(signal_data, strategy_name=None, setup_source_bucket=None):
+    if not ENABLE_STRATEGY_ADVISORY:
+        return None
+
+    strategy = strategy_name or (signal_data or {}).get("strategy")
+
+    if not strategy:
+        return None
+
+    setup_source_bucket = setup_source_bucket or detect_setup_source_bucket_for_advisory(signal_data)
+
+    advisory = get_strategy_advisory(
+        strategy=strategy,
+        setup_source_bucket=setup_source_bucket,
+    )
+
+    if not advisory:
+        logger.info(
+            f"[STRATEGY ADVISORY] No advisory found | "
+            f"strategy={strategy} source_bucket={setup_source_bucket}"
+        )
+        return None
+
+    message = format_strategy_advisory(advisory)
+    logger.warning(message)
+
+    decision = advisory.get("decision")
+
+    if (
+        TELEGRAM_NOTIFY_STRATEGY_ADVISORY_CRITICAL
+        and decision in STRATEGY_ADVISORY_TELEGRAM_DECISIONS
+        and is_advisory_risky(advisory)
+    ):
+        send_telegram_message_async(
+            "⚠️ STRATEGY ADVISORY — CRITICAL\n"
+            f"Strategy: {advisory.get('strategy')}\n"
+            f"Bucket: {advisory.get('setup_source_bucket')}\n"
+            f"Decision: {decision}\n"
+            f"Samples: {advisory.get('sample_count')}\n"
+            f"W10: {advisory.get('w10_rate')}\n"
+            f"TP: {advisory.get('tp_rate')}\n"
+            f"SL: {advisory.get('sl_rate')}\n"
+            f"Expectancy: {advisory.get('synthetic_expectancy')}\n"
+            f"Reason: {advisory.get('decision_reason')}\n"
+            "Action: advisory only — trade is NOT blocked automatically."
+        )
+
+    return advisory
 
 def check_setup_outcome_memory_guard(signal_data, setup_id, strategy_name, signal, trade_plan=None):
     if not ENABLE_SETUP_OUTCOME_MEMORY_GUARD:
@@ -3401,6 +3501,12 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
             f"RR: {rr_value} / Required: {required_rr}\n"
             f"Mode: before M15 candle close"
         )
+        
+    apply_strategy_advisory_note(
+        signal_data=signal_data,
+        strategy_name=strategy_name,
+        setup_source_bucket="INTRABAR",
+    )
 
     execution_result = execute_trade(signal, trade_plan, SYMBOL)
 
@@ -4039,6 +4145,12 @@ def process_wait_fvg_staged_entry_setups(df, tick, account_info, market_conditio
                     "stage": stage,
                     "stage_name": stage.get("stage_name"),
                 },
+            )
+            
+            apply_strategy_advisory_note(
+                signal_data=setup_data,
+                strategy_name=strategy_name,
+                setup_source_bucket="FVG_STAGED",
             )
 
             execution_result = execute_trade(signal, trade_plan, SYMBOL)
@@ -4843,6 +4955,12 @@ def process_mtf_conflict_candidate(
             "mtf_conflict_mode": execution_mode,
         },
     )
+    
+    apply_strategy_advisory_note(
+        signal_data=candidate,
+        strategy_name=mtf_trade_plan.get("strategy") or strategy,
+        setup_source_bucket="MTF_CONFLICT_TRACKED",
+    )
 
     execution_result = execute_trade(signal, mtf_trade_plan, SYMBOL)
     
@@ -5334,6 +5452,12 @@ def process_wait_better_entry_setups(df, tick, account_info, market_condition, s
                 "wait_reason": setup.get("wait_reason"),
             },
         )
+        
+        apply_strategy_advisory_note(
+            signal_data=setup_data,
+            strategy_name=strategy_name,
+            setup_source_bucket="BETTER_ENTRY",
+        )
 
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
 
@@ -5598,6 +5722,12 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
                 "setup_state": setup.get("state"),
                 "wait_reason": setup.get("wait_reason"),
             },
+        )
+        
+        apply_strategy_advisory_note(
+            signal_data=setup_data,
+            strategy_name=strategy_name,
+            setup_source_bucket="ORB_TICK_WATCHER",
         )
 
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
@@ -5893,6 +6023,12 @@ def process_wait_tick_sniper_setups(df, tick, account_info, market_condition, se
                 "sniper_move": sniper_move,
                 "current_price": current_price,
             },
+        )
+        
+        apply_strategy_advisory_note(
+            signal_data=setup_data,
+            strategy_name=strategy_name,
+            setup_source_bucket="TICK_SNIPER",
         )
 
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
@@ -6257,6 +6393,12 @@ def process_wait_delayed_entry_setups(df, tick, account_info, market_condition, 
                 "wait_reason": setup.get("wait_reason"),
                 "delayed_target": setup.get("delayed_entry_target"),
             },
+        )
+        
+        apply_strategy_advisory_note(
+            signal_data=setup_data,
+            strategy_name=strategy_name,
+            setup_source_bucket="SPLIT_DELAYED",
         )
 
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
@@ -6897,6 +7039,12 @@ def process_candidate_rejection_recovery_setups(
                 "source_setup_id": setup_id,
                 "reason_type": reason_type,
             },
+        )
+        
+        apply_strategy_advisory_note(
+            signal_data=signal_data,
+            strategy_name=strategy_name,
+            setup_source_bucket="REJECTED_CANDIDATE_TRACKED",
         )
         
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
@@ -9507,6 +9655,12 @@ def process_cycle(last_processed_candle_time):
                             "scalp_target_distance": scalp_trade_plan.get("scalp_target_distance"),
                         },
                     )
+                    
+                    apply_strategy_advisory_note(
+                        signal_data=selected_signal_data,
+                        strategy_name=strategy_name,
+                        setup_source_bucket="SCALP_FALLBACK",
+                    )
 
                     execution_result = execute_trade(
                         signal,
@@ -9753,6 +9907,12 @@ def process_cycle(last_processed_candle_time):
                                         "reversal_signal": reversal_signal,
                                         "reversal_reason": reversal_data.get("reason"),
                                     },
+                                )
+                                
+                                apply_strategy_advisory_note(
+                                    signal_data=selected_signal_data,
+                                    strategy_name=reversal_trade_plan.get("strategy") or strategy_name,
+                                    setup_source_bucket="REVERSAL",
                                 )
 
                                 execution_result = execute_trade(
@@ -10340,6 +10500,12 @@ def process_cycle(last_processed_candle_time):
                         "delayed_target": delayed_target,
                     },
                 )
+                
+                apply_strategy_advisory_note(
+                    signal_data=selected_signal_data,
+                    strategy_name=strategy_name,
+                    setup_source_bucket="SPLIT_IMMEDIATE",
+                )
 
                 execution_result = execute_trade(signal, immediate_trade_plan, SYMBOL)
 
@@ -10532,6 +10698,12 @@ def process_cycle(last_processed_candle_time):
             decision_reason="sending normal order to MT5",
             rr_value=rr_value,
             required_rr=min_rr_required,
+        )
+        
+        apply_strategy_advisory_note(
+            signal_data=selected_signal_data,
+            strategy_name=strategy_name,
+            setup_source_bucket="NORMAL_OR_TRACKED",
         )
 
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
