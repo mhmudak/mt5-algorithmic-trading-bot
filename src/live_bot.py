@@ -311,6 +311,10 @@ from config.settings import (
     MTF_CONFLICT_CANDIDATE_TELEGRAM_HIGH_SCORE,
     STRATEGY_ADVISORY_TELEGRAM_MIN_SAMPLES,
     STRATEGY_ADVISORY_SKIP_TRACK_ONLY_LOW_SAMPLE_ALERTS,
+    TELEGRAM_NOTIFY_REJECTED_CANDIDATE_TRACKED,
+    REJECTED_CANDIDATE_TELEGRAM_MIN_SCORE,
+    REJECTED_CANDIDATE_TELEGRAM_MIN_RR,
+    REJECTED_CANDIDATE_TELEGRAM_COOLDOWN_MINUTES,
 )
 
 from src.candidate_rejection_recovery import (
@@ -341,6 +345,7 @@ from src.time_context import (
 INTRABAR_DETECTION_CACHE = {}
 INTRABAR_PRICE_EVENT_DEDUP_CACHE = {}
 MTF_CONFLICT_TRACKED_CACHE = {}
+_REJECTED_CANDIDATE_TELEGRAM_CACHE = {}
 
 last_signal = None
 reversal_count = 0
@@ -1157,6 +1162,7 @@ def register_rejected_candidate_setup_outcome(
     account_info,
     market_condition,
     session_name,
+    setup_id=None,
 ):
     signal = candidate.get("signal")
     strategy_name = candidate.get("strategy")
@@ -1192,14 +1198,17 @@ def register_rejected_candidate_setup_outcome(
         candidate.get("sl_model"),
     )
 
-    setup_id = candidate.get("setup_id") or build_stable_candidate_setup_id(
+    setup_id = setup_id or candidate.get("setup_id") or build_stable_candidate_setup_id(
         candidate=candidate,
         strategy_name=strategy_name,
         signal=signal,
         tick_time=tick.time,
     )
-
+    
     candidate["setup_id"] = setup_id
+    candidate["rejected_trade_plan"] = trade_plan
+    candidate["rejected_rr_value"] = rr_value
+    candidate["rejected_required_rr"] = required_rr
 
     return register_setup_outcome(
         symbol=SYMBOL,
@@ -1220,6 +1229,82 @@ def register_rejected_candidate_setup_outcome(
             "required_rr": required_rr,
             "source": "candidate_rejected_with_calculated_trade_plan",
         },
+    )
+
+def notify_rejected_candidate_if_relevant(
+    *,
+    setup_id,
+    strategy,
+    signal,
+    entry_model,
+    session_name,
+    market_condition,
+    score,
+    rr,
+    entry,
+    sl,
+    tp,
+    reason,
+):
+    if not TELEGRAM_NOTIFY_REJECTED_CANDIDATE_TRACKED:
+        return
+
+    try:
+        score_value = float(score or 0)
+    except Exception:
+        score_value = 0.0
+
+    try:
+        rr_value = float(rr or 0)
+    except Exception:
+        rr_value = 0.0
+
+    strong_rejected_candidate = (
+        score_value >= REJECTED_CANDIDATE_TELEGRAM_MIN_SCORE
+        or rr_value >= REJECTED_CANDIDATE_TELEGRAM_MIN_RR
+    )
+
+    if not strong_rejected_candidate:
+        return
+
+    now_ts = time.time()
+    cooldown_seconds = REJECTED_CANDIDATE_TELEGRAM_COOLDOWN_MINUTES * 60
+
+    alert_key = (
+        strategy,
+        signal,
+        entry_model,
+        session_name,
+        market_condition,
+        reason,
+    )
+
+    last_sent_ts = _REJECTED_CANDIDATE_TELEGRAM_CACHE.get(alert_key, 0)
+
+    if now_ts - last_sent_ts < cooldown_seconds:
+        logger.info(
+            f"[REJECTED CANDIDATE] Telegram skipped by cooldown | "
+            f"key={alert_key}"
+        )
+        return
+
+    _REJECTED_CANDIDATE_TELEGRAM_CACHE[alert_key] = now_ts
+
+    send_telegram_message_async(
+        "📌 STRONG REJECTED CANDIDATE TRACKED\n"
+        f"Setup ID: {setup_id}\n"
+        f"Strategy: {strategy}\n"
+        f"Signal: {signal}\n"
+        f"Entry Model: {entry_model}\n"
+        f"Session: {session_name}\n"
+        f"Market: {market_condition}\n"
+        f"Score: {score_value}\n"
+        f"RR: {rr_value}\n\n"
+        f"Entry: {entry}\n"
+        f"SL: {sl}\n"
+        f"TP: {tp}\n\n"
+        f"Reason: {reason}\n"
+        "Action: tracked only — use statistics before changing execution rules."
     )
 
 def calculate_candidate_selection_rank(
@@ -3330,6 +3415,8 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
             reason=rejection_reason,
             extra={
                 "source": "intrabar_price_event_low_rr",
+                "source_events": ["INTRABAR_PRICE_EVENT_REJECTED_LOW_RR"],
+                "execution_bucket": "INTRABAR",
                 "rr": rr_value,
                 "required_rr": required_rr,
                 "orb_high": signal_data.get("orb_high"),
@@ -3338,9 +3425,6 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
                 "trigger": signal_data.get("intrabar_trigger"),
                 "vwap": signal_data.get("vwap"),
                 "sweep_depth": signal_data.get("sweep_depth"),
-                "intrabar_extra_sl_price": signal_data.get("intrabar_extra_sl_price"),
-                "skip_slippage_guard": trade_plan.get("skip_slippage_guard"),
-                "execution_speed_mode": trade_plan.get("execution_speed_mode"),
                 "news_context": news_context,
                 "news_tag": news_context.get("news_tag") if news_context else None,
             },
@@ -3633,6 +3717,43 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
             required_rr=required_rr,
             reason="intrabar ORB executed before M15 close",
         )
+        
+        news_context = attach_news_context_to_signal_data(signal_data)
+
+        tracked = register_setup_outcome(
+            symbol=SYMBOL,
+            setup_id=setup_id,
+            event="INTRABAR_PRICE_EVENT_EXECUTED",
+            strategy=strategy_name,
+            signal=signal,
+            entry_model=signal_data.get("entry_model"),
+            score=signal_data.get("score"),
+            session=session_name,
+            market_condition="INTRABAR_PENDING",
+            entry=trade_plan.get("entry_price"),
+            sl=trade_plan.get("stop_loss"),
+            tp=trade_plan.get("take_profit"),
+            reason="intrabar Price Event executed before M15 close",
+            extra={
+                "source": "intrabar_price_event_executed",
+                "source_events": ["INTRABAR_PRICE_EVENT_EXECUTED"],
+                "execution_bucket": "INTRABAR",
+                "rr": rr_value,
+                "required_rr": required_rr,
+                "orb_high": signal_data.get("orb_high"),
+                "orb_low": signal_data.get("orb_low"),
+                "breakout_distance": signal_data.get("breakout_distance"),
+                "trigger": signal_data.get("intrabar_trigger"),
+                "vwap": signal_data.get("vwap"),
+                "sweep_depth": signal_data.get("sweep_depth"),
+                "news_context": news_context,
+                "news_tag": news_context.get("news_tag") if news_context else None,
+            },
+        )
+
+        if tracked:
+            notify_setup_similarity_if_relevant(setup_id)
+            notify_scenario_cluster_if_relevant(setup_id)
 
         return True
 
@@ -3675,8 +3796,45 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
         tp=trade_plan.get("take_profit"),
         rr=rr_value,
         required_rr=required_rr,
-        reason="intrabar ORB execute_trade returned False",
+        reason="intrabar execute_trade returned False",
     )
+
+    news_context = attach_news_context_to_signal_data(signal_data)
+
+    tracked = register_setup_outcome(
+        symbol=SYMBOL,
+        setup_id=setup_id,
+        event="INTRABAR_PRICE_EVENT_EXECUTION_FAILED",
+        strategy=strategy_name,
+        signal=signal,
+        entry_model=signal_data.get("entry_model"),
+        score=signal_data.get("score"),
+        session=session_name,
+        market_condition="INTRABAR_PENDING",
+        entry=trade_plan.get("entry_price"),
+        sl=trade_plan.get("stop_loss"),
+        tp=trade_plan.get("take_profit"),
+        reason="intrabar Price Event execute_trade returned False",
+        extra={
+            "source": "intrabar_price_event_execution_failed",
+            "source_events": ["INTRABAR_PRICE_EVENT_EXECUTION_FAILED"],
+            "execution_bucket": "INTRABAR",
+            "rr": rr_value,
+            "required_rr": required_rr,
+            "orb_high": signal_data.get("orb_high"),
+            "orb_low": signal_data.get("orb_low"),
+            "breakout_distance": signal_data.get("breakout_distance"),
+            "trigger": signal_data.get("intrabar_trigger"),
+            "vwap": signal_data.get("vwap"),
+            "sweep_depth": signal_data.get("sweep_depth"),
+            "news_context": news_context,
+            "news_tag": news_context.get("news_tag") if news_context else None,
+        },
+    )
+    
+    if tracked:
+        notify_setup_similarity_if_relevant(setup_id)
+        notify_scenario_cluster_if_relevant(setup_id)
 
     return True
 
@@ -8313,13 +8471,18 @@ def process_cycle(last_processed_candle_time):
                     f"score={candidate.get('score')} "
                     f"reason={rejection_reason}"
                 )
+                
+                candidate_setup_id = candidate.get("setup_id") or build_stable_candidate_setup_id(
+                    candidate=candidate,
+                    strategy_name=candidate.get("strategy"),
+                    signal=candidate.get("signal"),
+                    tick_time=tick.time,
+                )
+
+                candidate["setup_id"] = candidate_setup_id
 
                 log_setup_event(
-                    setup_id=build_setup_id(
-                        candidate.get("strategy"),
-                        candidate.get("signal"),
-                        tick.time,
-                    ),
+                    setup_id=candidate_setup_id,
                     event="CANDIDATE_REJECTED",
                     strategy=candidate.get("strategy"),
                     signal=candidate.get("signal"),
@@ -8338,11 +8501,29 @@ def process_cycle(last_processed_candle_time):
                     account_info=account_info,
                     market_condition=market_condition,
                     session_name=session_name,
+                    setup_id=candidate_setup_id,
                 )
                 
                 if tracked:
-                    notify_setup_similarity_if_relevant(candidate.get("setup_id"))
-                    notify_scenario_cluster_if_relevant(candidate.get("setup_id"))
+                    notify_setup_similarity_if_relevant(candidate_setup_id)
+                    notify_scenario_cluster_if_relevant(candidate_setup_id)
+                
+                    rejected_trade_plan = candidate.get("rejected_trade_plan") or {}
+                
+                    notify_rejected_candidate_if_relevant(
+                        setup_id=candidate_setup_id,
+                        strategy=candidate.get("strategy"),
+                        signal=candidate.get("signal"),
+                        entry_model=candidate.get("entry_model"),
+                        session_name=session_name,
+                        market_condition=market_condition,
+                        score=candidate.get("score"),
+                        rr=candidate.get("rejected_rr_value") or 0,
+                        entry=rejected_trade_plan.get("entry_price"),
+                        sl=rejected_trade_plan.get("stop_loss"),
+                        tp=rejected_trade_plan.get("take_profit"),
+                        reason=rejection_reason,
+                    )
                 
                 if (
                     ENABLE_CANDIDATE_REJECTION_TELEGRAM_ALERTS
@@ -8356,7 +8537,7 @@ def process_cycle(last_processed_candle_time):
                         f"Score: {candidate.get('score')}\n\n"
                         f"Reason: {rejection_reason}"
                     )
-
+                
                 continue
 
             candidate_signal = validated_candidate.get("signal")
