@@ -869,6 +869,141 @@ def build_trade_tracker_health_report(trade_df):
 
     return summary, detail_report
 
+def build_missed_profitable_rejected_candidates_report(df, min_samples):
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    def text_series(name, default=""):
+        if name in df.columns:
+            return df[name].fillna(default).astype(str)
+        return pd.Series([default] * len(df), index=df.index)
+
+    def bool_series(frame, name):
+        if name not in frame.columns:
+            return pd.Series([False] * len(frame), index=frame.index)
+
+        return (
+            frame[name]
+            .fillna(False)
+            .astype(str)
+            .str.upper()
+            .isin(["TRUE", "1", "YES", "Y"])
+        )
+
+    source_events = text_series("source_events").str.upper()
+    event = text_series("event").str.upper()
+    setup_source_bucket = text_series("setup_source_bucket").str.upper()
+
+    rejected_mask = (
+        source_events.str.contains("CANDIDATE_REJECTED", na=False)
+        | event.str.contains("CANDIDATE_REJECTED", na=False)
+        | (setup_source_bucket == "REJECTED_CANDIDATE_TRACKED")
+    )
+
+    rejected_df = df[rejected_mask].copy()
+
+    if rejected_df.empty:
+        return pd.DataFrame()
+
+    rejected_events = (
+        rejected_df.get("source_events", "")
+        .fillna("")
+        .astype(str)
+        .str.upper()
+    )
+
+    rejected_df["rejection_type"] = rejected_events.apply(
+        lambda value: "LOW_RR" if "LOW_RR" in value else "STANDARD_REJECTION"
+    )
+
+    group_cols = [
+        "strategy",
+        "signal",
+        "entry_model",
+        "session",
+        "market_condition",
+        "rejection_type",
+    ]
+
+    for col in group_cols:
+        if col not in rejected_df.columns:
+            rejected_df[col] = "UNKNOWN"
+
+    rows = []
+
+    for keys, group in rejected_df.groupby(group_cols, dropna=False):
+        if not isinstance(keys, tuple):
+            keys = (keys,)
+
+        sample_count = len(group)
+
+        hit_w10 = bool_series(group, "hit_plus_10")
+        hit_tp = bool_series(group, "hit_tp")
+        hit_sl = bool_series(group, "hit_sl")
+
+        w10_count = int(hit_w10.sum())
+        tp_count = int(hit_tp.sum())
+        sl_count = int(hit_sl.sum())
+
+        w10_rate = round(w10_count / sample_count, 4) if sample_count else 0.0
+        tp_rate = round(tp_count / sample_count, 4) if sample_count else 0.0
+        sl_rate = round(sl_count / sample_count, 4) if sample_count else 0.0
+
+        missed_profit_score = round(
+            (w10_rate * 40)
+            + (tp_rate * 55)
+            - (sl_rate * 45),
+            2,
+        )
+
+        if sample_count < min_samples:
+            recommendation = "TRACK_MORE"
+            reason = f"not enough rejected samples: {sample_count}/{min_samples}"
+        elif tp_rate >= 0.45 and sl_rate <= 0.35:
+            recommendation = "ALLOW_RECOVERY"
+            reason = "rejected candidates often reach TP with controlled SL"
+        elif w10_rate >= 0.60 and sl_rate <= 0.45:
+            recommendation = "ALLOW_BETTER_ENTRY_OR_SMALL_TP"
+            reason = "rejected candidates often move +10 but need better TP/entry"
+        elif sl_rate >= 0.50:
+            recommendation = "KEEP_REJECTED"
+            reason = "rejected candidates still hit SL too often"
+        else:
+            recommendation = "TRACK_MORE"
+            reason = "mixed rejected-candidate behavior"
+
+        row = {
+            "policy_key": "|".join(str(x) for x in keys),
+            "strategy": keys[0],
+            "signal": keys[1],
+            "entry_model": keys[2],
+            "session": keys[3],
+            "market_condition": keys[4],
+            "rejection_type": keys[5],
+            "sample_count": sample_count,
+            "w10_count": w10_count,
+            "tp_count": tp_count,
+            "sl_count": sl_count,
+            "w10_rate": w10_rate,
+            "tp_rate": tp_rate,
+            "sl_rate": sl_rate,
+            "missed_profit_score": missed_profit_score,
+            "recommendation": recommendation,
+            "reason": reason,
+        }
+
+        rows.append(row)
+
+    report = pd.DataFrame(rows)
+
+    if report.empty:
+        return report
+
+    return report.sort_values(
+        ["missed_profit_score", "sample_count"],
+        ascending=[False, False],
+    )
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--min-samples", type=int, default=10)
@@ -923,6 +1058,14 @@ def main():
         json.dump(tracker_health_summary, f, indent=2, ensure_ascii=False)
 
     tracker_health_detail.to_csv(tracker_health_csv, index=False)
+    
+    missed_rejected_report = build_missed_profitable_rejected_candidates_report(
+        df,
+        args.min_samples,
+    )
+
+    missed_rejected_csv = output_dir / "missed_profitable_rejected_candidates.csv"
+    missed_rejected_report.to_csv(missed_rejected_csv, index=False)
     
     setup_intrabar_count = int((df["setup_source_bucket"] == "INTRABAR").sum())
     trade_intrabar_count = int((trade_df["execution_bucket"] == "INTRABAR").sum())
@@ -1108,6 +1251,7 @@ def main():
     print(f" - {legacy_intrabar_shadow_csv}")
     print(f" - {tracker_health_json}")
     print(f" - {tracker_health_csv}")
+    print(f" - {missed_rejected_csv}")
     
     if quality_report.get("warnings"):
         print("\n[DATA QUALITY WARNINGS]")
@@ -1167,6 +1311,22 @@ def main():
         print("[WARN] No rejected candidate report generated.")
     else:
         print(rejected_only_report[cols].head(30).to_string(index=False))
+
+    print("\n[TOP MISSED PROFITABLE REJECTED CANDIDATES]")
+    if missed_rejected_report.empty:
+        print("[WARN] No missed profitable rejected candidate report generated.")
+    else:
+        missed_cols = [
+            "policy_key",
+            "sample_count",
+            "w10_rate",
+            "tp_rate",
+            "sl_rate",
+            "missed_profit_score",
+            "recommendation",
+            "reason",
+        ]
+        print(missed_rejected_report[missed_cols].head(30).to_string(index=False))
 
     print("\n[TOP MTF CONFLICT DECISIONS]")
     if mtf_only_report.empty:
