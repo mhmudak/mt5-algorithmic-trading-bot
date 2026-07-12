@@ -53,6 +53,7 @@ from src.confirmation_engine import (
 )
 
 from src.confirmation_observation_logger import log_confirmation_observation
+from src.confirmation_risk_notifier import maybe_notify_confirmation_risk
 
 from src.protected_reentry import (
     get_protected_reentry_context,
@@ -831,17 +832,26 @@ def observe_universal_confirmation_for_setup(
         selected_signal_data["confirmation_engine_score_delta"] = report.get("score_delta")
         selected_signal_data["confirmation_engine_mode"] = report.get("mode")
 
+        setup_source_bucket_for_confirmation = (
+            selected_signal_data.get("setup_source_bucket")
+            or selected_signal_data.get("execution_bucket")
+            or trade_plan.get("setup_source_bucket")
+            or trade_plan.get("execution_bucket")
+        )
+
         log_confirmation_observation(
             report=report,
             signal_data=selected_signal_data,
             trade_plan=trade_plan,
-            setup_source_bucket=(
-                selected_signal_data.get("setup_source_bucket")
-                or selected_signal_data.get("execution_bucket")
-                or trade_plan.get("setup_source_bucket")
-                or trade_plan.get("execution_bucket")
-            ),
+            setup_source_bucket=setup_source_bucket_for_confirmation,
             notes="Phase 1F structured confirmation observation",
+        )
+
+        maybe_notify_confirmation_risk(
+            report=report,
+            signal_data=selected_signal_data,
+            trade_plan=trade_plan,
+            setup_source_bucket=setup_source_bucket_for_confirmation,
         )
 
         logger.info(format_confirmation_report(report))
