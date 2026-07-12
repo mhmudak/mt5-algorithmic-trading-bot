@@ -886,6 +886,151 @@ def observe_universal_confirmation_for_setup(
         return None
 
 
+
+
+def _confirmation_scope_get_first(scope, names):
+    for name in names:
+        if name in scope and scope.get(name) is not None:
+            return scope.get(name)
+
+    return None
+
+
+def observe_universal_confirmation_from_scope(
+    scope,
+    *,
+    setup_source_bucket_override=None,
+):
+    """
+    Phase 1N helper.
+
+    Generic observe-only bridge for execution paths where local variable names
+    differ across intrabar/FVG/MTF/split/scalp/reversal/recovery flows.
+
+    Must not block, alter trade_plan, alter execution, or change strategy behavior.
+    """
+
+    try:
+        scope = scope or {}
+
+        selected_signal_data = _confirmation_scope_get_first(
+            scope,
+            [
+                "selected_signal_data",
+                "setup_data",
+                "signal_data",
+                "candidate",
+                "recovery_setup",
+                "scalp_signal_data",
+                "reversal_signal_data",
+                "split_signal_data",
+                "event_signal_data",
+                "intrabar_signal_data",
+            ],
+        )
+
+        if not isinstance(selected_signal_data, dict):
+            selected_signal_data = {}
+
+        trade_plan = _confirmation_scope_get_first(
+            scope,
+            [
+                "trade_plan",
+                "mtf_trade_plan",
+                "scalp_trade_plan",
+                "reversal_trade_plan",
+                "split_trade_plan",
+                "fvg_trade_plan",
+                "candidate_trade_plan",
+                "event_trade_plan",
+                "intrabar_trade_plan",
+            ],
+        )
+
+        if not isinstance(trade_plan, dict):
+            trade_plan = {}
+
+        strategy_name = _confirmation_scope_get_first(
+            scope,
+            ["strategy_name", "strategy", "candidate_strategy", "selected_strategy"],
+        )
+
+        signal = _confirmation_scope_get_first(
+            scope,
+            ["signal", "candidate_signal", "selected_signal"],
+        )
+
+        setup_id = _confirmation_scope_get_first(
+            scope,
+            ["setup_id", "candidate_setup_id", "source_setup_id", "executed_setup_id"],
+        )
+
+        if strategy_name and not selected_signal_data.get("strategy"):
+            selected_signal_data["strategy"] = strategy_name
+
+        if signal and not selected_signal_data.get("signal"):
+            selected_signal_data["signal"] = signal
+
+        if setup_id and not selected_signal_data.get("setup_id"):
+            selected_signal_data["setup_id"] = setup_id
+
+        if setup_source_bucket_override:
+            selected_signal_data.setdefault("setup_source_bucket", setup_source_bucket_override)
+            selected_signal_data.setdefault("execution_bucket", setup_source_bucket_override)
+            trade_plan.setdefault("setup_source_bucket", setup_source_bucket_override)
+            trade_plan.setdefault("execution_bucket", setup_source_bucket_override)
+
+        df = _confirmation_scope_get_first(
+            scope,
+            ["df", "df_m15", "m15_df", "df_signal", "latest_df"],
+        )
+
+        tick = _confirmation_scope_get_first(
+            scope,
+            ["tick", "current_tick", "symbol_tick"],
+        )
+
+        session_name = (
+            _confirmation_scope_get_first(
+                scope,
+                ["session_name", "active_session", "session"],
+            )
+            or selected_signal_data.get("session")
+            or trade_plan.get("session")
+        )
+
+        market_condition = (
+            _confirmation_scope_get_first(
+                scope,
+                ["market_condition", "active_market_condition"],
+            )
+            or selected_signal_data.get("market_condition")
+            or trade_plan.get("market_condition")
+        )
+
+        min_rr_required = _confirmation_scope_get_first(
+            scope,
+            ["min_rr_required", "required_rr", "candidate_required_rr"],
+        )
+
+        observe_universal_confirmation_for_setup(
+            selected_signal_data=selected_signal_data,
+            trade_plan=trade_plan,
+            df=df,
+            tick=tick,
+            session_name=session_name,
+            market_condition=market_condition,
+            min_rr_required=min_rr_required,
+            max_spread=MAX_SPREAD,
+        )
+
+    except Exception as exc:
+        logger.error(
+            f"[CONFIRMATION ENGINE] Scope-based observe failed safely | "
+            f"bucket={setup_source_bucket_override} | error={exc}"
+        )
+
+
 def check_setup_outcome_memory_guard(signal_data, setup_id, strategy_name, signal, trade_plan=None):
     if not ENABLE_SETUP_OUTCOME_MEMORY_GUARD:
         return False, None
@@ -3774,6 +3919,11 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
         setup_source_bucket="INTRABAR",
     )
 
+    observe_universal_confirmation_from_scope(
+        locals(),
+        setup_source_bucket_override="INTRABAR",
+    )
+
     execution_result = execute_trade(signal, trade_plan, SYMBOL)
 
     if execution_result:
@@ -4491,6 +4641,11 @@ def process_wait_fvg_staged_entry_setups(df, tick, account_info, market_conditio
                 signal_data=setup_data,
                 strategy_name=strategy_name,
                 setup_source_bucket="FVG_STAGED",
+            )
+
+            observe_universal_confirmation_from_scope(
+                locals(),
+                setup_source_bucket_override="FVG_STAGED",
             )
 
             execution_result = execute_trade(signal, trade_plan, SYMBOL)
@@ -5352,6 +5507,11 @@ def process_mtf_conflict_candidate(
         signal_data=candidate,
         strategy_name=mtf_trade_plan.get("strategy") or strategy,
         setup_source_bucket="MTF_CONFLICT_TRACKED",
+    )
+
+    observe_universal_confirmation_from_scope(
+        locals(),
+        setup_source_bucket_override="MTF_CONFLICT_TRACKED",
     )
 
     execution_result = execute_trade(signal, mtf_trade_plan, SYMBOL)
@@ -6896,6 +7056,11 @@ def process_wait_delayed_entry_setups(df, tick, account_info, market_condition, 
             setup_source_bucket="SPLIT_DELAYED",
         )
 
+        observe_universal_confirmation_from_scope(
+            locals(),
+            setup_source_bucket_override="SPLIT_DELAYED",
+        )
+
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
 
         if execution_result:
@@ -7542,6 +7707,11 @@ def process_candidate_rejection_recovery_setups(
             setup_source_bucket="REJECTED_CANDIDATE_TRACKED",
         )
         
+        observe_universal_confirmation_from_scope(
+            locals(),
+            setup_source_bucket_override="REJECTED_CANDIDATE_TRACKED",
+        )
+
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
 
         if execution_result:
@@ -10180,6 +10350,11 @@ def process_cycle(last_processed_candle_time):
                         setup_source_bucket="SCALP_FALLBACK",
                     )
 
+                    observe_universal_confirmation_from_scope(
+                        locals(),
+                        setup_source_bucket_override="SCALP_FALLBACK",
+                    )
+
                     execution_result = execute_trade(
                         signal,
                         scalp_trade_plan,
@@ -10431,6 +10606,11 @@ def process_cycle(last_processed_candle_time):
                                     signal_data=selected_signal_data,
                                     strategy_name=reversal_trade_plan.get("strategy") or strategy_name,
                                     setup_source_bucket="REVERSAL",
+                                )
+
+                                observe_universal_confirmation_from_scope(
+                                    locals(),
+                                    setup_source_bucket_override="REVERSAL",
                                 )
 
                                 execution_result = execute_trade(
@@ -11023,6 +11203,11 @@ def process_cycle(last_processed_candle_time):
                     signal_data=selected_signal_data,
                     strategy_name=strategy_name,
                     setup_source_bucket="SPLIT_IMMEDIATE",
+                )
+
+                observe_universal_confirmation_from_scope(
+                    locals(),
+                    setup_source_bucket_override="SPLIT_IMMEDIATE",
                 )
 
                 execution_result = execute_trade(signal, immediate_trade_plan, SYMBOL)

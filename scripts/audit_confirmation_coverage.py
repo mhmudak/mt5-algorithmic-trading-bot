@@ -210,7 +210,7 @@ def audit_live_bot(path, observe_window_lines=90):
     ParentLinker().visit(tree)
 
     execute_calls = find_calls(tree, {"execute_trade"})
-    observe_calls = find_calls(tree, {"observe_universal_confirmation_for_setup"})
+    observe_calls = find_calls(tree, {"observe_universal_confirmation_for_setup", "observe_universal_confirmation_from_scope"})
 
     observe_lines = [
         item["line"]
@@ -285,7 +285,7 @@ def audit_live_bot(path, observe_window_lines=90):
         "missing_paths": missing,
         "notes": [
             "Static audit only. Manual review required for complex branching.",
-            "A path is considered covered if observe_universal_confirmation_for_setup appears before execute_trade within the configured line window.",
+            "A path is considered covered if observe_universal_confirmation_for_setup or observe_universal_confirmation_from_scope appears before execute_trade within the configured line window.",
             "This does not change live trading behavior.",
         ],
     }
