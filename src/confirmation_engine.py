@@ -719,6 +719,605 @@ def confirm_mt5_volume_proxy(
         )
 
 
+
+
+def confirm_session_context(
+    *,
+    signal_data=None,
+    session=None,
+    required=False,
+):
+    """
+    MT5-native session context.
+
+    This does not fetch data. It classifies whether the strategy type
+    is being observed in a generally suitable trading session.
+    """
+
+    signal_data = signal_data or {}
+
+    strategy = _safe_upper(signal_data.get("strategy"))
+    session = _safe_upper(session or signal_data.get("session"), "UNKNOWN")
+
+    momentum_strategies = {
+        "ORB",
+        "ORB_V00",
+        "SESSION_ORB_RETEST",
+        "FCR_M1_FVG",
+        "TRIANGLE_PENNANT",
+        "FLAG",
+        "FLAG_REFINED",
+        "SNIPER_V2",
+        "STRICT",
+        "FAST",
+        "WAVETREND_MOMENTUM",
+    }
+
+    reversal_strategies = {
+        "LIQUIDITY_SWEEP",
+        "LIQUIDITY_TRAP",
+        "CRT_TBS",
+        "FRACTAL_SWEEP",
+        "SMT",
+        "SMT_PRO",
+        "LIQUIDITY_CANDLE",
+        "VWAP_RECLAIM",
+        "STRUCTURE_LIQUIDITY",
+        "AMD_FVG",
+        "LIQUIDITY_POOL_OB",
+        "FAILED_BREAKOUT_REVERSAL",
+        "FAILED_FVG_REVERSAL",
+        "EXTREME_SWEEP_RECLAIM",
+        "IFVG_RETEST_CONFLUENCE",
+        "RANGE_SWEEP_RECLAIM",
+        "VWAP_RANGE_MEAN_REVERSION",
+    }
+
+    structural_strategies = {
+        "FVG",
+        "ORDER_BLOCK",
+        "OB_FVG_COMBO",
+        "BREAKER_BLOCK",
+        "RELIEF_RALLY",
+        "HTF_TREND_PULLBACK",
+        "MTF_OB_ENTRY",
+        "HEAD_SHOULDERS",
+        "LVN_FVG_RECLAIM",
+        "FVG_CE_MITIGATION",
+        "HTF_FIB_CONFLUENCE",
+        "SUPPLY_DEMAND_RETEST",
+        "MTF_SR_FVG_RECLAIM",
+    }
+
+    london_ny_sessions = {
+        "LONDON_OPEN",
+        "LONDON",
+        "NEWYORK_OPEN",
+        "LONDON_NY_OVERLAP",
+        "NEWYORK",
+    }
+
+    weak_sessions = {
+        "OFF_HOURS",
+        "ASIA",
+        "NEWYORK_LATE",
+    }
+
+    evidence = {
+        "strategy": strategy,
+        "session": session,
+        "strategy_family": "UNKNOWN",
+    }
+
+    if strategy in momentum_strategies:
+        evidence["strategy_family"] = "MOMENTUM_BREAKOUT"
+
+        if session in london_ny_sessions:
+            return module_pass(
+                "SESSION_CONTEXT",
+                required=required,
+                confidence=70,
+                score_delta=1,
+                source_type=SOURCE_MT5_NATIVE,
+                reason="Momentum/breakout strategy observed during active London/New York session.",
+                evidence=evidence,
+            )
+
+        if session in weak_sessions:
+            return module_neutral(
+                "SESSION_CONTEXT",
+                required=required,
+                confidence=60,
+                score_delta=-1,
+                source_type=SOURCE_MT5_NATIVE,
+                reason="Momentum/breakout strategy observed during weaker activity session.",
+                evidence=evidence,
+            )
+
+    if strategy in reversal_strategies:
+        evidence["strategy_family"] = "REVERSAL_LIQUIDITY"
+
+        if session in london_ny_sessions:
+            return module_pass(
+                "SESSION_CONTEXT",
+                required=required,
+                confidence=68,
+                score_delta=1,
+                source_type=SOURCE_MT5_NATIVE,
+                reason="Liquidity/reversal strategy observed during active session.",
+                evidence=evidence,
+            )
+
+        if session in weak_sessions:
+            return module_neutral(
+                "SESSION_CONTEXT",
+                required=required,
+                confidence=58,
+                score_delta=-1,
+                source_type=SOURCE_MT5_NATIVE,
+                reason="Liquidity/reversal strategy observed during weaker activity session.",
+                evidence=evidence,
+            )
+
+    if strategy in structural_strategies:
+        evidence["strategy_family"] = "STRUCTURAL_SMC"
+
+        if session in london_ny_sessions:
+            return module_pass(
+                "SESSION_CONTEXT",
+                required=required,
+                confidence=62,
+                score_delta=1,
+                source_type=SOURCE_MT5_NATIVE,
+                reason="Structural strategy observed during active session.",
+                evidence=evidence,
+            )
+
+        if session == "OFF_HOURS":
+            return module_neutral(
+                "SESSION_CONTEXT",
+                required=required,
+                confidence=55,
+                score_delta=-1,
+                source_type=SOURCE_MT5_NATIVE,
+                reason="Structural strategy observed during off-hours.",
+                evidence=evidence,
+            )
+
+    return module_neutral(
+        "SESSION_CONTEXT",
+        required=required,
+        confidence=50,
+        score_delta=0,
+        source_type=SOURCE_MT5_NATIVE,
+        reason="Session context is neutral or strategy family is unknown.",
+        evidence=evidence,
+    )
+
+
+def confirm_price_action_structure(
+    *,
+    signal_data=None,
+    df=None,
+    required=False,
+):
+    """
+    MT5-native candle/structure confirmation.
+
+    Detects:
+    - displacement
+    - close beyond previous candle
+    - recent liquidity sweep and reclaim
+
+    This is not true order flow.
+    """
+
+    signal_data = signal_data or {}
+    signal = _safe_upper(signal_data.get("signal"), "")
+
+    if df is None:
+        return module_disabled(
+            "PRICE_ACTION_STRUCTURE",
+            required=required,
+            source_type=SOURCE_MT5_NATIVE,
+            reason="No dataframe supplied.",
+        )
+
+    try:
+        if len(df) < 15:
+            return module_neutral(
+                "PRICE_ACTION_STRUCTURE",
+                required=required,
+                confidence=45,
+                source_type=SOURCE_MT5_NATIVE,
+                reason="Not enough candles for price-action structure check.",
+                evidence={"candles": len(df)},
+            )
+
+        last = df.iloc[-2]
+        prev = df.iloc[-3]
+        recent = df.iloc[-12:-2]
+
+        close = _safe_float(last["close"])
+        open_price = _safe_float(last["open"])
+        high = _safe_float(last["high"])
+        low = _safe_float(last["low"])
+        atr = _safe_float(last.get("atr_14"), 0.0)
+
+        body = abs(close - open_price)
+        candle_range = high - low
+
+        recent_high = _safe_float(recent["high"].max())
+        recent_low = _safe_float(recent["low"].min())
+
+        displacement = atr > 0 and body >= atr * 0.25
+
+        bullish_bos = signal == "BUY" and close > _safe_float(prev["high"])
+        bearish_bos = signal == "SELL" and close < _safe_float(prev["low"])
+
+        swept_lows = low < recent_low and close > recent_low
+        swept_highs = high > recent_high and close < recent_high
+
+        sweep_confirms = (
+            (signal == "BUY" and swept_lows)
+            or (signal == "SELL" and swept_highs)
+        )
+
+        evidence = {
+            "signal": signal,
+            "close": close,
+            "open": open_price,
+            "high": high,
+            "low": low,
+            "atr": atr,
+            "body": round(body, 3),
+            "candle_range": round(candle_range, 3),
+            "recent_high": recent_high,
+            "recent_low": recent_low,
+            "displacement": displacement,
+            "bullish_bos": bullish_bos,
+            "bearish_bos": bearish_bos,
+            "swept_lows": swept_lows,
+            "swept_highs": swept_highs,
+            "sweep_confirms_signal": sweep_confirms,
+        }
+
+        score_delta = 0
+        reasons = []
+
+        if displacement:
+            score_delta += 1
+            reasons.append("displacement")
+
+        if bullish_bos or bearish_bos:
+            score_delta += 1
+            reasons.append("bos_in_signal_direction")
+
+        if sweep_confirms:
+            score_delta += 2
+            reasons.append("liquidity_sweep_reclaim_confirms_signal")
+
+        if score_delta >= 2:
+            return module_pass(
+                "PRICE_ACTION_STRUCTURE",
+                required=required,
+                confidence=72,
+                score_delta=score_delta,
+                source_type=SOURCE_MT5_NATIVE,
+                reason="Price-action structure supports the setup: " + ",".join(reasons),
+                evidence=evidence,
+            )
+
+        if signal == "BUY" and swept_highs:
+            return module_neutral(
+                "PRICE_ACTION_STRUCTURE",
+                required=required,
+                confidence=58,
+                score_delta=-1,
+                source_type=SOURCE_MT5_NATIVE,
+                reason="Opposing buy-side sweep detected against BUY continuation.",
+                evidence=evidence,
+            )
+
+        if signal == "SELL" and swept_lows:
+            return module_neutral(
+                "PRICE_ACTION_STRUCTURE",
+                required=required,
+                confidence=58,
+                score_delta=-1,
+                source_type=SOURCE_MT5_NATIVE,
+                reason="Opposing sell-side sweep detected against SELL continuation.",
+                evidence=evidence,
+            )
+
+        return module_neutral(
+            "PRICE_ACTION_STRUCTURE",
+            required=required,
+            confidence=55,
+            score_delta=score_delta,
+            source_type=SOURCE_MT5_NATIVE,
+            reason="Price-action structure is not decisive.",
+            evidence=evidence,
+        )
+
+    except Exception as exc:
+        return module_error(
+            "PRICE_ACTION_STRUCTURE",
+            required=required,
+            source_type=SOURCE_MT5_NATIVE,
+            reason=f"Price-action structure error: {exc}",
+        )
+
+
+def confirm_consolidation_location(
+    *,
+    signal_data=None,
+    df=None,
+    market_condition=None,
+    required=False,
+):
+    """
+    MT5-native consolidation quality check.
+
+    Purpose:
+    reduce fake setups in range/consolidation by identifying whether
+    the setup is near a range edge or stuck in the middle.
+
+    Observe-only for now.
+    """
+
+    signal_data = signal_data or {}
+    signal = _safe_upper(signal_data.get("signal"), "")
+    strategy = _safe_upper(signal_data.get("strategy"))
+    market_condition = _safe_upper(
+        market_condition or signal_data.get("market_condition"),
+        "UNKNOWN",
+    )
+
+    consolidation_regimes = {
+        "RANGING",
+        "RANGE",
+        "SIDEWAYS",
+        "CONSOLIDATION",
+        "LOW_VOLATILITY",
+        "COMPRESSION",
+    }
+
+    if market_condition not in consolidation_regimes:
+        return module_disabled(
+            "CONSOLIDATION_LOCATION",
+            required=required,
+            source_type=SOURCE_MT5_NATIVE,
+            reason="Market condition is not classified as consolidation/range.",
+            evidence={
+                "market_condition": market_condition,
+            },
+        )
+
+    if df is None:
+        return module_neutral(
+            "CONSOLIDATION_LOCATION",
+            required=required,
+            confidence=45,
+            source_type=SOURCE_MT5_NATIVE,
+            reason="No dataframe supplied for consolidation location check.",
+            evidence={
+                "market_condition": market_condition,
+            },
+        )
+
+    try:
+        if len(df) < 35:
+            return module_neutral(
+                "CONSOLIDATION_LOCATION",
+                required=required,
+                confidence=45,
+                source_type=SOURCE_MT5_NATIVE,
+                reason="Not enough candles for consolidation range location check.",
+                evidence={
+                    "candles": len(df),
+                    "market_condition": market_condition,
+                },
+            )
+
+        closed = df.iloc[:-1]
+        window = closed.iloc[-30:]
+
+        range_high = _safe_float(window["high"].max())
+        range_low = _safe_float(window["low"].min())
+        last = closed.iloc[-1]
+        close = _safe_float(last["close"])
+
+        range_size = range_high - range_low
+
+        if range_size <= 0:
+            return module_neutral(
+                "CONSOLIDATION_LOCATION",
+                required=required,
+                confidence=40,
+                source_type=SOURCE_MT5_NATIVE,
+                reason="Invalid consolidation range size.",
+                evidence={
+                    "range_high": range_high,
+                    "range_low": range_low,
+                    "market_condition": market_condition,
+                },
+            )
+
+        position_ratio = (close - range_low) / range_size
+
+        near_low = position_ratio <= 0.25
+        near_high = position_ratio >= 0.75
+        mid_range = 0.35 <= position_ratio <= 0.65
+
+        buy_good_location = signal == "BUY" and near_low
+        sell_good_location = signal == "SELL" and near_high
+
+        evidence = {
+            "strategy": strategy,
+            "signal": signal,
+            "market_condition": market_condition,
+            "range_high": round(range_high, 2),
+            "range_low": round(range_low, 2),
+            "range_size": round(range_size, 2),
+            "close": round(close, 2),
+            "position_ratio": round(position_ratio, 3),
+            "near_low": near_low,
+            "near_high": near_high,
+            "mid_range": mid_range,
+            "buy_good_location": buy_good_location,
+            "sell_good_location": sell_good_location,
+        }
+
+        range_reversal_strategies = {
+            "RANGE_SWEEP_RECLAIM",
+            "VWAP_RANGE_MEAN_REVERSION",
+            "LIQUIDITY_SWEEP",
+            "LIQUIDITY_TRAP",
+            "FAILED_BREAKOUT_REVERSAL",
+            "FAILED_FVG_REVERSAL",
+            "FRACTAL_SWEEP",
+            "VWAP_RECLAIM",
+        }
+
+        breakout_strategies = {
+            "ORB",
+            "ORB_V00",
+            "FAST",
+            "STRICT",
+            "SNIPER_V2",
+            "WAVETREND_MOMENTUM",
+            "TRIANGLE_PENNANT",
+            "FLAG",
+            "FLAG_REFINED",
+        }
+
+        if strategy in range_reversal_strategies and (buy_good_location or sell_good_location):
+            return module_pass(
+                "CONSOLIDATION_LOCATION",
+                required=required,
+                confidence=76,
+                score_delta=2,
+                source_type=SOURCE_MT5_NATIVE,
+                reason="Range/reversal setup is located near the correct range edge.",
+                evidence=evidence,
+            )
+
+        if strategy in range_reversal_strategies and mid_range:
+            return module_neutral(
+                "CONSOLIDATION_LOCATION",
+                required=required,
+                confidence=70,
+                score_delta=-3,
+                source_type=SOURCE_MT5_NATIVE,
+                reason="Range/reversal setup is located near the middle of consolidation; higher fake-setup risk.",
+                evidence=evidence,
+            )
+
+        if strategy in breakout_strategies and mid_range:
+            return module_neutral(
+                "CONSOLIDATION_LOCATION",
+                required=required,
+                confidence=60,
+                score_delta=-1,
+                source_type=SOURCE_MT5_NATIVE,
+                reason="Breakout/momentum setup is still inside the middle of consolidation.",
+                evidence=evidence,
+            )
+
+        return module_neutral(
+            "CONSOLIDATION_LOCATION",
+            required=required,
+            confidence=55,
+            score_delta=0,
+            source_type=SOURCE_MT5_NATIVE,
+            reason="Consolidation location is not decisive.",
+            evidence=evidence,
+        )
+
+    except Exception as exc:
+        return module_error(
+            "CONSOLIDATION_LOCATION",
+            required=required,
+            source_type=SOURCE_MT5_NATIVE,
+            reason=f"Consolidation location error: {exc}",
+        )
+
+
+def confirm_news_context_awareness(
+    *,
+    signal_data=None,
+    required=False,
+):
+    """
+    News context awareness.
+
+    This does not fetch news. It only reads news context already attached
+    to the setup by existing news modules.
+    """
+
+    signal_data = signal_data or {}
+    news_context = signal_data.get("news_context")
+    news_tag = signal_data.get("news_tag") or signal_data.get("setup_news_tag")
+
+    if not news_context and not news_tag:
+        return module_neutral(
+            "NEWS_CONTEXT",
+            required=required,
+            confidence=50,
+            score_delta=0,
+            source_type=SOURCE_MT5_NATIVE,
+            reason="No news context attached to setup.",
+        )
+
+    evidence = {
+        "news_tag": news_tag,
+        "news_context": news_context,
+    }
+
+    text = str(news_context or news_tag or "").upper()
+
+    high_risk_keywords = [
+        "FOMC",
+        "CPI",
+        "PPI",
+        "NFP",
+        "NONFARM",
+        "GDP",
+        "PMI",
+        "POWELL",
+        "FED",
+        "INTEREST",
+        "RATE",
+        "HIGH",
+        "BLACKOUT",
+    ]
+
+    high_risk = any(keyword in text for keyword in high_risk_keywords)
+
+    if high_risk:
+        return module_neutral(
+            "NEWS_CONTEXT",
+            required=required,
+            confidence=75,
+            score_delta=-2,
+            source_type=SOURCE_MT5_NATIVE,
+            reason="High-impact news context detected; execution should remain more selective.",
+            evidence=evidence,
+        )
+
+    return module_neutral(
+        "NEWS_CONTEXT",
+        required=required,
+        confidence=55,
+        score_delta=0,
+        source_type=SOURCE_MT5_NATIVE,
+        reason="News context attached but not classified as high-risk by confirmation engine.",
+        evidence=evidence,
+    )
+
+
+
 def confirm_comex_order_flow(
     *,
     signal_data=None,
@@ -970,6 +1569,38 @@ def run_universal_confirmation(
     )
 
     results.append(
+        confirm_session_context(
+            signal_data=signal_data,
+            session=session,
+            required=False,
+        )
+    )
+
+    results.append(
+        confirm_price_action_structure(
+            signal_data=signal_data,
+            df=df,
+            required=False,
+        )
+    )
+
+    results.append(
+        confirm_consolidation_location(
+            signal_data=signal_data,
+            df=df,
+            market_condition=market_condition,
+            required=False,
+        )
+    )
+
+    results.append(
+        confirm_news_context_awareness(
+            signal_data=signal_data,
+            required=False,
+        )
+    )
+
+    results.append(
         confirm_entry_quality(
             signal_data=signal_data,
             trade_plan=trade_plan,
@@ -1049,4 +1680,8 @@ __all__ = [
     "module_error",
     "confirm_comex_order_flow",
     "confirm_mt5_volume_proxy",
+    "confirm_session_context",
+    "confirm_price_action_structure",
+    "confirm_consolidation_location",
+    "confirm_news_context_awareness",
 ]
