@@ -1318,6 +1318,304 @@ def confirm_news_context_awareness(
 
 
 
+
+
+def _find_confirmation_module_result(results, module_name):
+    module_name = _safe_upper(module_name)
+
+    for item in results or []:
+        if _safe_upper(item.get("module")) == module_name:
+            return item
+
+    return None
+
+
+def confirm_consolidation_policy_audit(
+    *,
+    signal_data=None,
+    market_condition=None,
+    results=None,
+    required=False,
+):
+    """
+    Consolidation-specific audit policy.
+
+    Purpose:
+    - detect fake setup risk inside ranges
+    - summarize whether a setup is range-edge, mid-range, breakout-quality,
+      sweep/reclaim-supported, or weak/noisy
+    - observe-only in Phase 1E
+
+    This module must not execute trades, block trades, or modify trade_plan.
+    """
+
+    signal_data = signal_data or {}
+    results = results or []
+
+    strategy = _safe_upper(signal_data.get("strategy"))
+    signal = _safe_upper(signal_data.get("signal"), "")
+    entry_model = _safe_upper(signal_data.get("entry_model"), "")
+    market_condition = _safe_upper(
+        market_condition or signal_data.get("market_condition"),
+        "UNKNOWN",
+    )
+
+    consolidation_regimes = {
+        "RANGING",
+        "RANGE",
+        "SIDEWAYS",
+        "CONSOLIDATION",
+        "LOW_VOLATILITY",
+        "COMPRESSION",
+    }
+
+    if market_condition not in consolidation_regimes:
+        return module_disabled(
+            "CONSOLIDATION_POLICY_AUDIT",
+            required=required,
+            source_type=SOURCE_MT5_NATIVE,
+            reason="Consolidation policy is disabled because market condition is not range/consolidation.",
+            evidence={
+                "strategy": strategy,
+                "signal": signal,
+                "entry_model": entry_model,
+                "market_condition": market_condition,
+            },
+        )
+
+    location_result = _find_confirmation_module_result(results, "CONSOLIDATION_LOCATION")
+    structure_result = _find_confirmation_module_result(results, "PRICE_ACTION_STRUCTURE")
+    volume_result = _find_confirmation_module_result(results, "MT5_VOLUME_PROXY")
+    entry_quality_result = _find_confirmation_module_result(results, "ENTRY_QUALITY")
+    session_result = _find_confirmation_module_result(results, "SESSION_CONTEXT")
+
+    location_evidence = (location_result or {}).get("evidence", {}) or {}
+    structure_evidence = (structure_result or {}).get("evidence", {}) or {}
+    volume_evidence = (volume_result or {}).get("evidence", {}) or {}
+    entry_quality_evidence = (entry_quality_result or {}).get("evidence", {}) or {}
+    session_evidence = (session_result or {}).get("evidence", {}) or {}
+
+    range_reversal_strategies = {
+        "RANGE_SWEEP_RECLAIM",
+        "VWAP_RANGE_MEAN_REVERSION",
+        "LIQUIDITY_SWEEP",
+        "LIQUIDITY_TRAP",
+        "FAILED_BREAKOUT_REVERSAL",
+        "FAILED_FVG_REVERSAL",
+        "FRACTAL_SWEEP",
+        "VWAP_RECLAIM",
+        "STRUCTURE_LIQUIDITY",
+        "EXTREME_SWEEP_RECLAIM",
+    }
+
+    breakout_strategies = {
+        "ORB",
+        "ORB_V00",
+        "SESSION_ORB_RETEST",
+        "FAST",
+        "STRICT",
+        "SNIPER_V2",
+        "WAVETREND_MOMENTUM",
+        "TRIANGLE_PENNANT",
+        "FLAG",
+        "FLAG_REFINED",
+    }
+
+    structural_strategies = {
+        "FVG",
+        "ORDER_BLOCK",
+        "OB_FVG_COMBO",
+        "BREAKER_BLOCK",
+        "RELIEF_RALLY",
+        "HTF_TREND_PULLBACK",
+        "MTF_OB_ENTRY",
+        "LVN_FVG_RECLAIM",
+        "FVG_CE_MITIGATION",
+        "SUPPLY_DEMAND_RETEST",
+        "MTF_SR_FVG_RECLAIM",
+    }
+
+    if strategy in range_reversal_strategies:
+        policy_family = "RANGE_REVERSAL"
+    elif strategy in breakout_strategies:
+        policy_family = "RANGE_BREAKOUT"
+    elif strategy in structural_strategies:
+        policy_family = "STRUCTURAL_IN_RANGE"
+    else:
+        policy_family = "UNKNOWN_IN_RANGE"
+
+    mid_range = bool(location_evidence.get("mid_range", False))
+    near_low = bool(location_evidence.get("near_low", False))
+    near_high = bool(location_evidence.get("near_high", False))
+    buy_good_location = bool(location_evidence.get("buy_good_location", False))
+    sell_good_location = bool(location_evidence.get("sell_good_location", False))
+    edge_location_confirms = buy_good_location or sell_good_location
+
+    displacement = bool(structure_evidence.get("displacement", False))
+    bullish_bos = bool(structure_evidence.get("bullish_bos", False))
+    bearish_bos = bool(structure_evidence.get("bearish_bos", False))
+    sweep_confirms = bool(structure_evidence.get("sweep_confirms_signal", False))
+
+    bos_confirms = (
+        (signal == "BUY" and bullish_bos)
+        or (signal == "SELL" and bearish_bos)
+    )
+
+    volume_status = _safe_upper((volume_result or {}).get("status"), "")
+    relative_volume_ratio = _safe_float(volume_evidence.get("relative_volume_ratio"))
+    volume_expansion = volume_status == STATUS_PASS and (
+        relative_volume_ratio is None or relative_volume_ratio >= 1.10
+    )
+
+    rr = _safe_float(entry_quality_evidence.get("rr"))
+
+    risk_flags = []
+    support_flags = []
+
+    if policy_family == "RANGE_REVERSAL":
+        if edge_location_confirms:
+            support_flags.append("range_edge_location_confirms_reversal")
+        else:
+            risk_flags.append("range_reversal_not_at_correct_edge")
+
+        if mid_range:
+            risk_flags.append("range_reversal_mid_range_fake_risk")
+
+        if sweep_confirms:
+            support_flags.append("sweep_reclaim_confirms_reversal")
+        else:
+            risk_flags.append("range_reversal_without_sweep_reclaim_confirmation")
+
+    elif policy_family == "RANGE_BREAKOUT":
+        if bos_confirms:
+            support_flags.append("breakout_close_confirms_direction")
+        else:
+            risk_flags.append("breakout_without_bos_close_confirmation")
+
+        if displacement:
+            support_flags.append("displacement_supports_breakout")
+        else:
+            risk_flags.append("breakout_without_displacement")
+
+        if volume_expansion:
+            support_flags.append("proxy_volume_expansion_supports_breakout")
+        else:
+            risk_flags.append("breakout_without_proxy_volume_expansion")
+
+        if mid_range and not bos_confirms:
+            risk_flags.append("breakout_still_mid_range_without_acceptance")
+
+    elif policy_family == "STRUCTURAL_IN_RANGE":
+        if sweep_confirms or bos_confirms:
+            support_flags.append("structure_confirms_direction")
+        else:
+            risk_flags.append("structural_setup_inside_range_without_clear_confirmation")
+
+        if mid_range and not sweep_confirms and not bos_confirms:
+            risk_flags.append("structural_setup_mid_range_noise_risk")
+
+    else:
+        if mid_range:
+            risk_flags.append("unknown_strategy_mid_range_in_consolidation")
+        if sweep_confirms or bos_confirms or displacement:
+            support_flags.append("some_price_action_support_exists")
+
+    if rr is not None and rr >= 1.5:
+        support_flags.append("rr_buffer_acceptable")
+    elif rr is not None and rr < 1.2:
+        risk_flags.append("low_rr_inside_consolidation")
+
+    evidence = {
+        "strategy": strategy,
+        "signal": signal,
+        "entry_model": entry_model,
+        "market_condition": market_condition,
+        "policy_family": policy_family,
+        "mid_range": mid_range,
+        "near_low": near_low,
+        "near_high": near_high,
+        "edge_location_confirms": edge_location_confirms,
+        "displacement": displacement,
+        "bos_confirms": bos_confirms,
+        "sweep_confirms": sweep_confirms,
+        "volume_expansion": volume_expansion,
+        "relative_volume_ratio": relative_volume_ratio,
+        "rr": rr,
+        "session_family": session_evidence.get("strategy_family"),
+        "risk_flags": risk_flags,
+        "support_flags": support_flags,
+    }
+
+    risk_count = len(risk_flags)
+    support_count = len(support_flags)
+
+    if risk_count >= 3:
+        return module_neutral(
+            "CONSOLIDATION_POLICY_AUDIT",
+            required=required,
+            confidence=82,
+            score_delta=-5,
+            source_type=SOURCE_MT5_NATIVE,
+            reason="High fake-setup risk inside consolidation: " + ", ".join(risk_flags),
+            evidence=evidence,
+        )
+
+    if risk_count == 2:
+        return module_neutral(
+            "CONSOLIDATION_POLICY_AUDIT",
+            required=required,
+            confidence=76,
+            score_delta=-3,
+            source_type=SOURCE_MT5_NATIVE,
+            reason="Moderate fake-setup risk inside consolidation: " + ", ".join(risk_flags),
+            evidence=evidence,
+        )
+
+    if risk_count == 1:
+        return module_neutral(
+            "CONSOLIDATION_POLICY_AUDIT",
+            required=required,
+            confidence=68,
+            score_delta=-1,
+            source_type=SOURCE_MT5_NATIVE,
+            reason="Minor consolidation caution: " + ", ".join(risk_flags),
+            evidence=evidence,
+        )
+
+    if support_count >= 3:
+        return module_pass(
+            "CONSOLIDATION_POLICY_AUDIT",
+            required=required,
+            confidence=78,
+            score_delta=3,
+            source_type=SOURCE_MT5_NATIVE,
+            reason="Consolidation setup has strong contextual support: " + ", ".join(support_flags),
+            evidence=evidence,
+        )
+
+    if support_count >= 2:
+        return module_pass(
+            "CONSOLIDATION_POLICY_AUDIT",
+            required=required,
+            confidence=70,
+            score_delta=2,
+            source_type=SOURCE_MT5_NATIVE,
+            reason="Consolidation setup has acceptable contextual support: " + ", ".join(support_flags),
+            evidence=evidence,
+        )
+
+    return module_neutral(
+        "CONSOLIDATION_POLICY_AUDIT",
+        required=required,
+        confidence=55,
+        score_delta=0,
+        source_type=SOURCE_MT5_NATIVE,
+        reason="Consolidation policy is neutral.",
+        evidence=evidence,
+    )
+
+
+
 def confirm_comex_order_flow(
     *,
     signal_data=None,
@@ -1619,6 +1917,15 @@ def run_universal_confirmation(
     )
 
     results.append(
+        confirm_consolidation_policy_audit(
+            signal_data=signal_data,
+            market_condition=market_condition,
+            results=results,
+            required=False,
+        )
+    )
+
+    results.append(
         confirm_comex_order_flow(
             signal_data=signal_data,
             orderflow_snapshot=orderflow_snapshot,
@@ -1684,4 +1991,5 @@ __all__ = [
     "confirm_price_action_structure",
     "confirm_consolidation_location",
     "confirm_news_context_awareness",
+    "confirm_consolidation_policy_audit",
 ]
