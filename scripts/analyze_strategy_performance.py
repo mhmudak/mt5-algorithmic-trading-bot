@@ -1380,5 +1380,144 @@ def main():
     else:
         print(intrabar_trade_report[trade_cols].head(30).to_string(index=False))
 
+
+
+# ============================================================
+# Confirmation Observation Analyzer Integration
+# Phase 1K
+# ============================================================
+
+def _confirmation_analyzer_cli_value(argv, option_name, default=None):
+    """
+    Extract simple CLI values without depending on the main analyzer parser.
+
+    Supports:
+        --source-dir value
+        --source-dir=value
+        --min-samples value
+        --min-samples=value
+    """
+
+    argv = list(argv or [])
+
+    for index, item in enumerate(argv):
+        if item == option_name and index + 1 < len(argv):
+            return argv[index + 1]
+
+        prefix = option_name + "="
+
+        if str(item).startswith(prefix):
+            return str(item)[len(prefix):]
+
+    return default
+
+
+def run_confirmation_observation_analyzer_from_strategy_analyzer():
+    """
+    Run confirmation-engine observation analysis after the main
+    strategy-performance analyzer finishes.
+
+    This must never break the main analyzer.
+    """
+
+    try:
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        try:
+            from config import settings
+            enabled = getattr(
+                settings,
+                "ENABLE_CONFIRMATION_OBSERVATION_ANALYZER_IN_MAIN_ANALYZER",
+                True,
+            )
+        except Exception:
+            enabled = True
+
+        if not enabled:
+            print("[CONFIRMATION ANALYZER INTEGRATION] skipped: disabled in settings")
+            return False
+
+        project_root = Path(__file__).resolve().parents[1]
+        script_path = Path(__file__).resolve().parent / "analyze_confirmation_observations.py"
+
+        if not script_path.exists():
+            print(
+                "[CONFIRMATION ANALYZER INTEGRATION] skipped: "
+                f"{script_path} not found"
+            )
+            return False
+
+        source_dir = _confirmation_analyzer_cli_value(
+            sys.argv,
+            "--source-dir",
+            default=None,
+        )
+
+        output_dir = _confirmation_analyzer_cli_value(
+            sys.argv,
+            "--output-dir",
+            default=None,
+        )
+
+        min_samples = _confirmation_analyzer_cli_value(
+            sys.argv,
+            "--min-samples",
+            default="5",
+        )
+
+        cmd = [
+            sys.executable,
+            str(script_path),
+        ]
+
+        if source_dir:
+            cmd.extend(["--source-dir", source_dir])
+
+        if output_dir:
+            cmd.extend(["--output-dir", output_dir])
+
+        if min_samples:
+            cmd.extend(["--min-samples", str(min_samples)])
+
+        print()
+        print("[CONFIRMATION ANALYZER INTEGRATION] running")
+        print("command =", " ".join(str(part) for part in cmd))
+
+        completed = subprocess.run(
+            cmd,
+            cwd=str(project_root),
+            text=True,
+            capture_output=True,
+        )
+
+        if completed.stdout.strip():
+            print(completed.stdout.strip())
+
+        if completed.stderr.strip():
+            print("[CONFIRMATION ANALYZER STDERR]")
+            print(completed.stderr.strip())
+
+        if completed.returncode != 0:
+            print(
+                "[CONFIRMATION ANALYZER INTEGRATION] warning: "
+                f"confirmation analyzer exited with code {completed.returncode}"
+            )
+            return False
+
+        print("[CONFIRMATION ANALYZER INTEGRATION] done")
+        return True
+
+    except Exception as exc:
+        print(
+            "[CONFIRMATION ANALYZER INTEGRATION] warning: "
+            f"failed safely: {exc}"
+        )
+        return False
+
+
+
 if __name__ == "__main__":
     main()
+    run_confirmation_observation_analyzer_from_strategy_analyzer()
