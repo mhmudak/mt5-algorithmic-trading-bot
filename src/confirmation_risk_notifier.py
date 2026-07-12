@@ -1,4 +1,5 @@
 import importlib
+import inspect
 import logging
 import time
 
@@ -47,33 +48,143 @@ def _safe_int(value, default=0):
         return default
 
 
-def _find_result(report, module_name):
-    module_name = _safe_upper(module_name)
-
-    for item in report.get("results", []) or []:
-        if _safe_upper(item.get("module")) == module_name:
-            return item
-
-    return None
-
-
 def _telegram_sender_candidates():
     """
-    Try known project notifier modules/functions without hard-coupling this
-    confirmation engine layer to one Telegram implementation.
+    Known project notifier module/function candidates.
+
+    Keep this broad because projects often name Telegram helpers differently.
+    The resolver below tests imports safely and never breaks live execution.
     """
 
-    return [
-        ("src.notifier", "send_telegram_message"),
-        ("src.notifier", "send_message"),
-        ("src.notifier", "notify"),
-        ("src.telegram_notifier", "send_telegram_message"),
-        ("src.telegram_notifier", "send_message"),
-        ("src.telegram_alerts", "send_telegram_message"),
-        ("src.telegram_alerts", "send_message"),
-        ("src.telegram_utils", "send_telegram_message"),
-        ("src.telegram_utils", "send_message"),
+    modules = [
+        "src.notifier",
+        "src.telegram_notifier",
+        "src.telegram_alerts",
+        "src.telegram_utils",
+        "src.notifiers",
+        "src.telegram",
+        "src.bot_notifier",
+        "src.alert_notifier",
+        "src.notifications",
     ]
+
+    functions = [
+        "send_telegram_message",
+        "send_telegram_alert",
+        "send_telegram_notification",
+        "send_message",
+        "send_notification",
+        "notify",
+        "telegram_notify",
+        "send_notifier_message",
+        "send_bot_message",
+        "send_alert",
+    ]
+
+    return [
+        (module_name, function_name)
+        for module_name in modules
+        for function_name in functions
+    ]
+
+
+def resolve_telegram_sender():
+    """
+    Return the first compatible Telegram sender found.
+
+    Returns:
+        (module_name, function_name, callable) or (None, None, None)
+    """
+
+    for module_name, function_name in _telegram_sender_candidates():
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+
+        fn = getattr(module, function_name, None)
+
+        if callable(fn):
+            return module_name, function_name, fn
+
+    return None, None, None
+
+
+def get_telegram_sender_diagnostics():
+    """
+    Useful for smoke tests and debugging.
+    """
+
+    diagnostics = []
+    found = None
+
+    for module_name, function_name in _telegram_sender_candidates():
+        item = {
+            "module": module_name,
+            "function": function_name,
+            "module_imported": False,
+            "function_found": False,
+            "callable": False,
+            "signature": None,
+            "error": None,
+        }
+
+        try:
+            module = importlib.import_module(module_name)
+            item["module_imported"] = True
+
+            fn = getattr(module, function_name, None)
+
+            if fn is not None:
+                item["function_found"] = True
+                item["callable"] = callable(fn)
+
+                try:
+                    item["signature"] = str(inspect.signature(fn))
+                except Exception:
+                    item["signature"] = "signature_unavailable"
+
+                if callable(fn) and found is None:
+                    found = item.copy()
+
+        except Exception as exc:
+            item["error"] = str(exc)
+
+        diagnostics.append(item)
+
+    return {
+        "found": found,
+        "checked_count": len(diagnostics),
+        "diagnostics": diagnostics,
+    }
+
+
+def _call_sender(fn, message):
+    """
+    Try common function signatures safely.
+    """
+
+    call_attempts = [
+        lambda: fn(message),
+        lambda: fn(text=message),
+        lambda: fn(body=message),
+        lambda: fn(message=message),
+        lambda: fn(msg=message),
+    ]
+
+    last_error = None
+
+    for attempt in call_attempts:
+        try:
+            attempt()
+            return True, None
+        except TypeError as exc:
+            last_error = exc
+            continue
+        except Exception as exc:
+            return False, exc
+
+    return False, last_error
 
 
 def _send_telegram_message(message):
@@ -84,33 +195,30 @@ def _send_telegram_message(message):
     the warning is logged only.
     """
 
-    for module_name, function_name in _telegram_sender_candidates():
-        try:
-            module = importlib.import_module(module_name)
-            fn = getattr(module, function_name, None)
+    module_name, function_name, fn = resolve_telegram_sender()
 
-            if fn is None:
-                continue
+    if fn is None:
+        logger.warning(
+            "[CONFIRMATION RISK] No compatible Telegram notifier found. Message was not sent."
+        )
+        logger.warning("[CONFIRMATION RISK MESSAGE]\n%s", message)
+        return False
 
-            try:
-                fn(message)
-                return True
-            except TypeError:
-                try:
-                    fn(text=message)
-                    return True
-                except TypeError:
-                    try:
-                        fn(body=message)
-                        return True
-                    except TypeError:
-                        continue
+    ok, error = _call_sender(fn, message)
 
-        except Exception:
-            continue
+    if ok:
+        logger.info(
+            "[CONFIRMATION RISK] Telegram sender used: %s.%s",
+            module_name,
+            function_name,
+        )
+        return True
 
     logger.warning(
-        "[CONFIRMATION RISK] No compatible Telegram notifier found. Message was not sent."
+        "[CONFIRMATION RISK] Telegram sender failed: %s.%s | error=%s",
+        module_name,
+        function_name,
+        error,
     )
     logger.warning("[CONFIRMATION RISK MESSAGE]\n%s", message)
     return False
@@ -165,7 +273,7 @@ def build_confirmation_risk_alert(
     """
     Build alert payload if confirmation engine detects a serious risk.
 
-    Phase 1G focuses on observe-only Telegram warnings.
+    Phase 1G/1H focuses on observe-only Telegram warnings.
     """
 
     report = report or {}
@@ -311,6 +419,15 @@ def build_confirmation_risk_alert(
         evidence=evidence,
     )
 
+    source_bucket = (
+        setup_source_bucket
+        or signal_data.get("setup_source_bucket")
+        or signal_data.get("execution_bucket")
+        or trade_plan.get("setup_source_bucket")
+        or trade_plan.get("execution_bucket")
+        or "UNKNOWN"
+    )
+
     message_lines = [
         "⚠️ CONFIRMATION ENGINE RISK",
         "",
@@ -323,7 +440,7 @@ def build_confirmation_risk_alert(
         f"Signal: {signal}",
         f"Entry Model: {entry_model}",
         f"Setup ID: {setup_id}",
-        f"Source Bucket: {setup_source_bucket or signal_data.get('setup_source_bucket') or signal_data.get('execution_bucket') or trade_plan.get('setup_source_bucket') or trade_plan.get('execution_bucket') or 'UNKNOWN'}",
+        f"Source Bucket: {source_bucket}",
         "",
         f"Session: {session}",
         f"Market: {market_condition}",
@@ -426,4 +543,6 @@ def maybe_notify_confirmation_risk(
 __all__ = [
     "build_confirmation_risk_alert",
     "maybe_notify_confirmation_risk",
+    "resolve_telegram_sender",
+    "get_telegram_sender_diagnostics",
 ]
