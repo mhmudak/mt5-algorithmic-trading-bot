@@ -1518,6 +1518,153 @@ def run_confirmation_observation_analyzer_from_strategy_analyzer():
 
 
 
+
+
+def inject_confirmation_summary_into_strategy_report():
+    """
+    Phase 1L.
+
+    Inject confirmation-engine observation summary into the main
+    strategy_performance_report.json.
+
+    This must never break the main analyzer.
+    """
+
+    try:
+        import json
+        import sys
+        from pathlib import Path
+
+        try:
+            from config import settings
+            enabled = getattr(
+                settings,
+                "ENABLE_CONFIRMATION_SUMMARY_IN_STRATEGY_REPORT",
+                True,
+            )
+        except Exception:
+            enabled = True
+
+        if not enabled:
+            print("[CONFIRMATION REPORT INTEGRATION] skipped: disabled in settings")
+            return False
+
+        project_root = Path(__file__).resolve().parents[1]
+
+        source_dir = _confirmation_analyzer_cli_value(
+            sys.argv,
+            "--source-dir",
+            default=None,
+        )
+
+        output_dir_arg = _confirmation_analyzer_cli_value(
+            sys.argv,
+            "--output-dir",
+            default=None,
+        )
+
+        if output_dir_arg:
+            output_dir = Path(output_dir_arg)
+        else:
+            if source_dir:
+                account_name = Path(source_dir).name
+            else:
+                try:
+                    from src.account_context import get_account_file
+                    account_name = Path(get_account_file("trades.json")).parent.name
+                except Exception:
+                    account_name = "UNKNOWN_ACCOUNT"
+
+            output_dir = (
+                project_root
+                / "data"
+                / "strategy_intelligence"
+                / account_name
+            )
+
+        strategy_report_path = output_dir / "strategy_performance_report.json"
+        confirmation_summary_path = output_dir / "confirmation_observation_summary.json"
+
+        if not strategy_report_path.exists():
+            print(
+                "[CONFIRMATION REPORT INTEGRATION] skipped: "
+                f"{strategy_report_path} not found"
+            )
+            return False
+
+        if not confirmation_summary_path.exists():
+            print(
+                "[CONFIRMATION REPORT INTEGRATION] skipped: "
+                f"{confirmation_summary_path} not found"
+            )
+            return False
+
+        with strategy_report_path.open("r", encoding="utf-8") as f:
+            strategy_report = json.load(f)
+
+        with confirmation_summary_path.open("r", encoding="utf-8") as f:
+            confirmation_summary = json.load(f)
+
+        observation_count = int(confirmation_summary.get("observation_count") or 0)
+        module_row_count = int(confirmation_summary.get("module_row_count") or 0)
+        known_outcome_count = int(confirmation_summary.get("known_outcome_count") or 0)
+        matched_outcome_count = int(confirmation_summary.get("matched_outcome_count") or 0)
+
+        if observation_count <= 0:
+            status = "NO_OBSERVATIONS_YET"
+        elif known_outcome_count <= 0:
+            status = "OBSERVING_WAITING_FOR_OUTCOMES"
+        elif known_outcome_count < int(confirmation_summary.get("min_samples") or 5):
+            status = "LOW_SAMPLE_TRACKING"
+        else:
+            status = "READY_FOR_ANALYSIS"
+
+        strategy_report["confirmation_engine"] = {
+            "enabled": True,
+            "integration_phase": "Phase 1L",
+            "status": status,
+            "source_dir": confirmation_summary.get("source_dir"),
+            "output_dir": confirmation_summary.get("output_dir"),
+            "observations_file": confirmation_summary.get("observations_file"),
+            "outcomes_file": confirmation_summary.get("outcomes_file"),
+            "observation_count": observation_count,
+            "joined_observation_count": confirmation_summary.get("joined_observation_count"),
+            "module_row_count": module_row_count,
+            "outcome_count": confirmation_summary.get("outcome_count"),
+            "matched_outcome_count": matched_outcome_count,
+            "known_outcome_count": known_outcome_count,
+            "min_samples": confirmation_summary.get("min_samples"),
+            "generated_files": confirmation_summary.get("generated_files", {}),
+            "top_module_recommendations": confirmation_summary.get("top_module_recommendations", []),
+            "top_risk_flag_recommendations": confirmation_summary.get("top_risk_flag_recommendations", []),
+            "notes": [
+                "Confirmation engine is still observe-only.",
+                "Negative module score_delta does not block trades yet.",
+                "COMEX_ORDER_FLOW remains disabled until a real futures provider is connected.",
+                "Use confirmation_module_performance.csv and confirmation_risk_flag_performance.csv after enough samples.",
+            ],
+        }
+
+        with strategy_report_path.open("w", encoding="utf-8") as f:
+            json.dump(strategy_report, f, indent=2, ensure_ascii=False, sort_keys=True)
+
+        print("[CONFIRMATION REPORT INTEGRATION] injected confirmation_engine summary")
+        print("strategy_report =", strategy_report_path)
+        print("confirmation_status =", status)
+        print("observation_count =", observation_count)
+        print("known_outcome_count =", known_outcome_count)
+
+        return True
+
+    except Exception as exc:
+        print(
+            "[CONFIRMATION REPORT INTEGRATION] warning: "
+            f"failed safely: {exc}"
+        )
+        return False
+
+
 if __name__ == "__main__":
     main()
     run_confirmation_observation_analyzer_from_strategy_analyzer()
+    inject_confirmation_summary_into_strategy_report()

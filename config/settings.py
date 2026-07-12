@@ -1978,3 +1978,11 @@ CONFIRMATION_RISK_TELEGRAM_MODULES = [
 
 CONFIRMATION_RISK_TELEGRAM_INCLUDE_OBSERVE_ONLY_NOTE = True
 
+# ============================================================
+# Confirmation Engine Analyzer / Report Integration
+# Phase 1K / 1L
+# ============================================================
+
+ENABLE_CONFIRMATION_OBSERVATION_ANALYZER_IN_MAIN_ANALYZER = True
+ENABLE_CONFIRMATION_SUMMARY_IN_STRATEGY_REPORT = True
+
