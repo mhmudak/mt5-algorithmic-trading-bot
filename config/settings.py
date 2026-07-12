@@ -7,7 +7,7 @@ load_dotenv()
 # =========================
 # Google Sheets Logging
 # =========================
-ENABLE_GOOGLE_SHEETS_LOGGING = True
+ENABLE_GOOGLE_SHEETS_LOGGING = False
 GOOGLE_SHEETS_WEBHOOK_URL = os.getenv("GOOGLE_SHEETS_WEBHOOK_URL", "")
 GOOGLE_SHEETS_WEBHOOK_SECRET = os.getenv("GOOGLE_SHEETS_WEBHOOK_SECRET", "")
 
@@ -1305,6 +1305,7 @@ INTRABAR_PRICE_EVENT_ALLOWED_STRATEGIES = [
     "RELIEF_RALLY",
     "STRUCTURE_LIQUIDITY",
     "MICRO_SR_SWEEP_RECLAIM",
+    "ORDER_BLOCK",
     "EXTREME_SWEEP_RECLAIM",
     "RANGE_SWEEP_RECLAIM",
     "VWAP_RECLAIM",
@@ -1321,165 +1322,348 @@ INTRABAR_PRICE_EVENT_EXPIRY_SECONDS = 180
 INTRABAR_PRICE_EVENT_EXTRA_SL_PRICE = 2.0
 
 INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = {
+    # ---------------------------------------------------------
+    # OPENING RANGE BREAKOUT
+    # Fast continuation strategy.
+    # Needs EMA alignment but should not wait for M5 confirmation.
+    # ---------------------------------------------------------
     "ORB_V00": {
         "trigger": "DIRECT_BREAKOUT",
         "level_source": "ORB_RANGE",
         "lookback_bars": 15,
+
         "min_score": 96,
-        "min_rr": 1.5,
+        "min_rr": 1.50,
+        "target_rr": 1.80,
+
         "min_break_distance": 0.30,
         "max_break_distance": 3.50,
         "reclaim_buffer": 0.20,
+
         "require_ema_alignment": True,
         "require_m5_confirmation": False,
+
+        "min_sl_distance": 3.50,
+        "max_sl_distance": 10.00,
+        "min_tp_distance": 6.00,
+        "max_tp_distance": 20.00,
     },
 
     "ORB": {
         "trigger": "DIRECT_BREAKOUT",
         "level_source": "ORB_RANGE",
         "lookback_bars": 15,
+
         "min_score": 95,
-        "min_rr": 1.5,
+        "min_rr": 1.50,
+        "target_rr": 1.75,
+
         "min_break_distance": 0.30,
         "max_break_distance": 4.00,
         "reclaim_buffer": 0.20,
+
         "require_ema_alignment": True,
         "require_m5_confirmation": False,
+
+        "min_sl_distance": 4.00,
+        "max_sl_distance": 12.00,
+        "min_tp_distance": 7.00,
+        "max_tp_distance": 24.00,
     },
 
+    # ---------------------------------------------------------
+    # LIQUIDITY REVERSAL STRATEGIES
+    # EMA alignment is intentionally disabled because a valid
+    # sweep can initially occur against the current EMA direction.
+    # M5 confirmation helps avoid entering during the sweep itself.
+    # ---------------------------------------------------------
     "LIQUIDITY_SWEEP": {
         "trigger": "SWEEP_RECLAIM",
         "level_source": "RECENT_RANGE",
         "lookback_bars": 12,
+
         "min_score": 95,
-        "min_rr": 1.3,
+        "min_rr": 1.30,
+        "target_rr": 1.55,
+
         "min_break_distance": 0.25,
         "max_break_distance": 3.50,
         "reclaim_buffer": 0.20,
-        "require_ema_alignment": True,
-        "require_m5_confirmation": False,
+
+        "require_ema_alignment": False,
+        "require_m5_confirmation": True,
+
+        "min_sl_distance": 3.50,
+        "max_sl_distance": 10.00,
+        "min_tp_distance": 5.00,
+        "max_tp_distance": 18.00,
     },
 
     "LIQUIDITY_TRAP": {
         "trigger": "TRAP_RECLAIM",
         "level_source": "RECENT_RANGE",
         "lookback_bars": 12,
+
         "min_score": 96,
-        "min_rr": 1.3,
+        "min_rr": 1.30,
+        "target_rr": 1.60,
+
         "min_break_distance": 0.30,
-        "max_break_distance": 3.50,
+        "max_break_distance": 4.00,
         "reclaim_buffer": 0.25,
-        "require_ema_alignment": True,
-        "require_m5_confirmation": False,
+
+        "require_ema_alignment": False,
+        "require_m5_confirmation": True,
+
+        "min_sl_distance": 4.00,
+        "max_sl_distance": 11.00,
+        "min_tp_distance": 6.00,
+        "max_tp_distance": 20.00,
     },
 
+    # ---------------------------------------------------------
+    # COUNTERTREND / RELIEF REVERSAL
+    # Wider stops and stronger M5 confirmation are appropriate.
+    # ---------------------------------------------------------
     "RELIEF_RALLY": {
         "trigger": "REVERSAL_RECLAIM",
         "level_source": "RECENT_RANGE",
         "lookback_bars": 16,
+
         "min_score": 96,
         "min_rr": 1.35,
+        "target_rr": 1.60,
+
         "min_break_distance": 0.35,
         "max_break_distance": 4.50,
         "reclaim_buffer": 0.30,
+
         "require_ema_alignment": False,
         "require_m5_confirmation": True,
+
+        "min_sl_distance": 4.50,
+        "max_sl_distance": 14.00,
+        "min_tp_distance": 7.00,
+        "max_tp_distance": 24.00,
     },
 
+    # ---------------------------------------------------------
+    # STRUCTURE CONTINUATION
+    # Requires both EMA alignment and M5 confirmation because it
+    # must prove that the structure break is continuing.
+    # ---------------------------------------------------------
     "STRUCTURE_LIQUIDITY": {
         "trigger": "STRUCTURE_CONTINUATION",
         "level_source": "RECENT_STRUCTURE",
         "lookback_bars": 18,
+
         "min_score": 96,
-        "min_rr": 1.4,
+        "min_rr": 1.40,
+        "target_rr": 1.70,
+
         "min_break_distance": 0.35,
         "max_break_distance": 4.00,
         "reclaim_buffer": 0.25,
+
         "require_ema_alignment": True,
         "require_m5_confirmation": True,
+
+        "min_sl_distance": 4.00,
+        "max_sl_distance": 12.00,
+        "min_tp_distance": 7.00,
+        "max_tp_distance": 22.00,
     },
 
+    # ---------------------------------------------------------
+    # MICRO SUPPORT / RESISTANCE
+    # Smaller structure means tighter break, stop and target ranges.
+    # M5 confirmation would often arrive too late.
+    # ---------------------------------------------------------
     "MICRO_SR_SWEEP_RECLAIM": {
         "trigger": "SWEEP_RECLAIM",
         "level_source": "MICRO_RANGE",
         "lookback_bars": 8,
+
         "min_score": 96,
-        "min_rr": 1.2,
+        "min_rr": 1.20,
+        "target_rr": 1.35,
+
         "min_break_distance": 0.20,
         "max_break_distance": 2.50,
         "reclaim_buffer": 0.15,
+
         "require_ema_alignment": False,
         "require_m5_confirmation": False,
+
+        "min_sl_distance": 2.50,
+        "max_sl_distance": 8.00,
+        "min_tp_distance": 4.00,
+        "max_tp_distance": 12.00,
     },
 
+    # ---------------------------------------------------------
+    # ORDER BLOCK
+    # The entry requires a reaction/reclaim from a recent structural
+    # zone. M5 confirmation is used to avoid entering while price is
+    # still cutting through the block.
+    #
+    # Existing trigger/source names are used for compatibility.
+    # ---------------------------------------------------------
+    "ORDER_BLOCK": {
+        "trigger": "REVERSAL_RECLAIM",
+        "level_source": "RECENT_STRUCTURE",
+        "lookback_bars": 20,
+
+        "min_score": 96,
+        "min_rr": 1.30,
+        "target_rr": 1.55,
+
+        "min_break_distance": 0.25,
+        "max_break_distance": 5.00,
+        "reclaim_buffer": 0.30,
+
+        "require_ema_alignment": False,
+        "require_m5_confirmation": True,
+
+        "min_sl_distance": 4.00,
+        "max_sl_distance": 14.00,
+        "min_tp_distance": 6.00,
+        "max_tp_distance": 24.00,
+    },
+
+    # ---------------------------------------------------------
+    # EXTREME RANGE SWEEP
+    # Wider structural move, therefore larger permissible stop,
+    # target and sweep distances.
+    # ---------------------------------------------------------
     "EXTREME_SWEEP_RECLAIM": {
         "trigger": "SWEEP_RECLAIM",
         "level_source": "EXTREME_RANGE",
         "lookback_bars": 20,
+
         "min_score": 96,
-        "min_rr": 1.4,
+        "min_rr": 1.40,
+        "target_rr": 1.65,
+
         "min_break_distance": 0.40,
         "max_break_distance": 5.00,
         "reclaim_buffer": 0.30,
-        "require_ema_alignment": True,
+
+        "require_ema_alignment": False,
         "require_m5_confirmation": True,
+
+        "min_sl_distance": 5.00,
+        "max_sl_distance": 16.00,
+        "min_tp_distance": 8.00,
+        "max_tp_distance": 28.00,
     },
 
+    # ---------------------------------------------------------
+    # STANDARD RANGE SWEEP
+    # Faster than an extreme sweep and therefore no mandatory M5
+    # confirmation, but its permissible distances remain controlled.
+    # ---------------------------------------------------------
     "RANGE_SWEEP_RECLAIM": {
         "trigger": "SWEEP_RECLAIM",
         "level_source": "RECENT_RANGE",
         "lookback_bars": 14,
+
         "min_score": 95,
         "min_rr": 1.25,
+        "target_rr": 1.45,
+
         "min_break_distance": 0.25,
         "max_break_distance": 3.50,
         "reclaim_buffer": 0.20,
+
         "require_ema_alignment": False,
         "require_m5_confirmation": False,
+
+        "min_sl_distance": 3.00,
+        "max_sl_distance": 10.00,
+        "min_tp_distance": 5.00,
+        "max_tp_distance": 18.00,
     },
 
+    # ---------------------------------------------------------
+    # VWAP RECLAIM
+    # VWAP itself supplies the directional context, so strict EMA
+    # alignment is unnecessary. M5 confirmation prevents a weak touch.
+    # ---------------------------------------------------------
     "VWAP_RECLAIM": {
         "trigger": "VWAP_RECLAIM",
         "level_source": "VWAP_CONTEXT",
         "lookback_bars": 10,
+
         "min_score": 96,
         "min_rr": 1.25,
+        "target_rr": 1.45,
+
         "min_break_distance": 0.20,
         "max_break_distance": 3.00,
         "reclaim_buffer": 0.20,
+
         "require_ema_alignment": False,
         "require_m5_confirmation": True,
+
+        "min_sl_distance": 3.00,
+        "max_sl_distance": 9.00,
+        "min_tp_distance": 5.00,
+        "max_tp_distance": 16.00,
     },
-    
+
+    # ---------------------------------------------------------
+    # VWAP + LIQUIDITY RECLAIM
+    # Stronger setup than basic VWAP reclaim, but it requires a
+    # higher score and allows slightly larger structural distances.
+    # ---------------------------------------------------------
     "INTRABAR_VWAP_LIQUIDITY_RECLAIM": {
         "trigger": "VWAP_LIQUIDITY_RECLAIM",
         "level_source": "RECENT_RANGE",
         "lookback_bars": 14,
+
         "min_score": 97,
         "min_rr": 1.35,
+        "target_rr": 1.60,
+
         "min_break_distance": 0.30,
         "max_break_distance": 4.00,
         "reclaim_buffer": 0.25,
+
         "require_ema_alignment": False,
         "require_m5_confirmation": True,
+
+        "min_sl_distance": 4.00,
+        "max_sl_distance": 12.00,
+        "min_tp_distance": 6.00,
+        "max_tp_distance": 22.00,
     },
-    
+
+    # ---------------------------------------------------------
+    # FAILED FVG REVERSAL
+    # Kept as the reference profile because its settings already
+    # reflect the strategy's actual reversal geometry accurately.
+    # ---------------------------------------------------------
     "FAILED_FVG_REVERSAL": {
         "trigger": "FAILED_FVG_REVERSAL_RECLAIM",
         "level_source": "RECENT_RANGE",
         "lookback_bars": 20,
+
         "min_score": 96,
         "min_rr": 1.10,
         "target_rr": 1.25,
+
         "min_break_distance": 0.20,
         "max_break_distance": 8.00,
         "reclaim_buffer": 0.25,
+
         "require_ema_alignment": False,
         "require_m5_confirmation": True,
-        "min_sl_distance": 4.0,
-        "max_sl_distance": 12.0,
-        "min_tp_distance": 6.0,
-        "max_tp_distance": 20.0,
+
+        "min_sl_distance": 4.00,
+        "max_sl_distance": 12.00,
+        "min_tp_distance": 6.00,
+        "max_tp_distance": 20.00,
     },
 }
 
