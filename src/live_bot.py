@@ -47,6 +47,11 @@ from src.strategy_advisory import (
     is_advisory_risky,
 )
 
+from src.confirmation_engine import (
+    run_universal_confirmation,
+    format_confirmation_report,
+)
+
 from src.protected_reentry import (
     get_protected_reentry_context,
     apply_protected_reentry_confirmation,
@@ -90,6 +95,7 @@ from config.settings import (
     ATR_PERIOD,
     BREAKOUT_LOOKBACK,
     BREAKOUT_BUFFER,
+    MAX_SPREAD,
     FORCE_SIGNAL,
     ENABLE_MANUAL_TRAILING,
     MANUAL_TRAILING_START_PRICE,
@@ -745,6 +751,115 @@ def apply_strategy_advisory_note(signal_data, strategy_name=None, setup_source_b
             )
 
     return advisory
+
+
+def build_confirmation_engine_audit_extra(report):
+    if not report:
+        return {}
+
+    return {
+        "confirmation_engine_version": report.get("engine_version"),
+        "confirmation_mode": report.get("mode"),
+        "confirmation_approved": report.get("approved"),
+        "confirmation_confidence": report.get("confidence"),
+        "confirmation_score_delta": report.get("score_delta"),
+        "confirmation_summary": report.get("summary"),
+        "confirmation_disabled_layers": report.get("disabled_layers", []),
+        "confirmation_required_failed_modules": [
+            item.get("module")
+            for item in report.get("required_failed", []) or []
+        ],
+        "confirmation_optional_failed_modules": [
+            item.get("module")
+            for item in report.get("optional_failed", []) or []
+        ],
+        "confirmation_modules": [
+            {
+                "module": item.get("module"),
+                "status": item.get("status"),
+                "confidence": item.get("confidence"),
+                "score_delta": item.get("score_delta"),
+                "required": item.get("required"),
+                "source_type": item.get("source_type"),
+                "reason": item.get("reason"),
+            }
+            for item in report.get("results", []) or []
+        ],
+    }
+
+
+def observe_universal_confirmation_for_setup(
+    *,
+    selected_signal_data,
+    trade_plan,
+    df,
+    tick,
+    session_name,
+    market_condition,
+    min_rr_required=None,
+    max_spread=None,
+):
+    """
+    Phase 1B observe-only integration.
+
+    This must not block trades, change score, change trade_plan,
+    or alter execution behavior.
+    """
+
+    selected_signal_data = selected_signal_data or {}
+    trade_plan = trade_plan or {}
+
+    try:
+        report = run_universal_confirmation(
+            signal_data=selected_signal_data,
+            trade_plan=trade_plan,
+            df=df,
+            tick=tick,
+            session=session_name,
+            market_condition=market_condition,
+            orderflow_snapshot=None,
+            min_rr=min_rr_required,
+            max_spread=max_spread,
+            enforce_required=False,
+        )
+
+        selected_signal_data["confirmation_engine"] = report
+        selected_signal_data["confirmation_engine_summary"] = report.get("summary")
+        selected_signal_data["confirmation_engine_confidence"] = report.get("confidence")
+        selected_signal_data["confirmation_engine_score_delta"] = report.get("score_delta")
+        selected_signal_data["confirmation_engine_mode"] = report.get("mode")
+
+        logger.info(format_confirmation_report(report))
+
+        log_setup_event(
+            setup_id=selected_signal_data.get("setup_id") or trade_plan.get("setup_id"),
+            event="CONFIRMATION_ENGINE_OBSERVATION",
+            strategy=selected_signal_data.get("strategy") or trade_plan.get("strategy"),
+            signal=selected_signal_data.get("signal") or trade_plan.get("signal"),
+            entry_model=trade_plan.get("entry_model") or selected_signal_data.get("entry_model"),
+            score=selected_signal_data.get("score"),
+            session=session_name,
+            market_condition=market_condition,
+            entry=trade_plan.get("entry_price"),
+            sl=trade_plan.get("stop_loss"),
+            tp=trade_plan.get("take_profit"),
+            rr=trade_plan.get("rr") or trade_plan.get("risk_reward"),
+            required_rr=min_rr_required,
+            reason="Universal confirmation engine observe-only report",
+            extra=build_confirmation_engine_audit_extra(report),
+        )
+
+        return report
+
+    except Exception as exc:
+        logger.error(
+            f"[CONFIRMATION ENGINE] Observe-only confirmation failed | "
+            f"setup_id={selected_signal_data.get('setup_id') or trade_plan.get('setup_id')} "
+            f"error={exc}"
+        )
+        selected_signal_data["confirmation_engine_error"] = str(exc)
+        return None
+
 
 def check_setup_outcome_memory_guard(signal_data, setup_id, strategy_name, signal, trade_plan=None):
     if not ENABLE_SETUP_OUTCOME_MEMORY_GUARD:
@@ -10982,6 +11097,17 @@ def process_cycle(last_processed_candle_time):
                 best_setup["wait_reason"] = f"M5 execution confirmation pending: {m5_confirm_reason}"
 
             return current_candle_time
+
+        confirmation_report = observe_universal_confirmation_for_setup(
+            selected_signal_data=selected_signal_data,
+            trade_plan=trade_plan,
+            df=df,
+            tick=tick,
+            session_name=session_name,
+            market_condition=market_condition,
+            min_rr_required=min_rr_required if "min_rr_required" in locals() else None,
+            max_spread=MAX_SPREAD,
+        )
 
         logger.info("🔥 Executing trade...")
 
