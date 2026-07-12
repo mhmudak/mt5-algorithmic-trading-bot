@@ -5890,6 +5890,17 @@ def process_wait_better_entry_setups(df, tick, account_info, market_condition, s
             },
         )
         
+        observe_universal_confirmation_for_setup(
+            selected_signal_data=setup_data,
+            trade_plan=trade_plan,
+            df=df,
+            tick=tick,
+            session_name=session_name,
+            market_condition=market_condition,
+            min_rr_required=required_rr,
+            max_spread=MAX_SPREAD,
+        )
+
         apply_strategy_advisory_note(
             signal_data=setup_data,
             strategy_name=strategy_name,
@@ -6161,6 +6172,17 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
             },
         )
         
+        observe_universal_confirmation_for_setup(
+            selected_signal_data=setup_data,
+            trade_plan=trade_plan,
+            df=df,
+            tick=tick,
+            session_name=session_name,
+            market_condition=market_condition,
+            min_rr_required=required_rr,
+            max_spread=MAX_SPREAD,
+        )
+
         apply_strategy_advisory_note(
             signal_data=setup_data,
             strategy_name=strategy_name,
@@ -6462,6 +6484,17 @@ def process_wait_tick_sniper_setups(df, tick, account_info, market_condition, se
             },
         )
         
+        observe_universal_confirmation_for_setup(
+            selected_signal_data=setup_data,
+            trade_plan=trade_plan,
+            df=df,
+            tick=tick,
+            session_name=active_session,
+            market_condition=active_market_condition,
+            min_rr_required=required_rr,
+            max_spread=MAX_SPREAD,
+        )
+
         apply_strategy_advisory_note(
             signal_data=setup_data,
             strategy_name=strategy_name,
