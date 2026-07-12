@@ -6,6 +6,23 @@ import sys
 import pandas as pd
 
 
+def configure_utf8_console_output():
+    """
+    Prevent Windows cp1252 console crashes when printing Telegram emojis.
+    """
+
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 if str(PROJECT_ROOT) not in sys.path:
@@ -41,6 +58,8 @@ def build_test_dataframe():
 
 
 def main():
+    configure_utf8_console_output()
+
     parser = argparse.ArgumentParser(
         description="Test confirmation-engine Telegram risk alerts."
     )
