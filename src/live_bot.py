@@ -813,6 +813,16 @@ def observe_universal_confirmation_for_setup(
     trade_plan = trade_plan or {}
 
     try:
+        from config import settings as _confirmation_settings
+
+        if not getattr(_confirmation_settings, "ENABLE_CONFIRMATION_ENGINE_OBSERVE_ONLY", True):
+            logger.info("[CONFIRMATION ENGINE] Observe-only layer disabled by settings.")
+            return None
+
+    except Exception:
+        pass
+
+    try:
         report = run_universal_confirmation(
             signal_data=selected_signal_data,
             trade_plan=trade_plan,
@@ -913,7 +923,7 @@ def observe_universal_confirmation_from_scope(
     try:
         scope = scope or {}
 
-        selected_signal_data = _confirmation_scope_get_first(
+        raw_selected_signal_data = _confirmation_scope_get_first(
             scope,
             [
                 "selected_signal_data",
@@ -929,10 +939,12 @@ def observe_universal_confirmation_from_scope(
             ],
         )
 
-        if not isinstance(selected_signal_data, dict):
+        if isinstance(raw_selected_signal_data, dict):
+            selected_signal_data = dict(raw_selected_signal_data)
+        else:
             selected_signal_data = {}
 
-        trade_plan = _confirmation_scope_get_first(
+        raw_trade_plan = _confirmation_scope_get_first(
             scope,
             [
                 "trade_plan",
@@ -944,10 +956,13 @@ def observe_universal_confirmation_from_scope(
                 "candidate_trade_plan",
                 "event_trade_plan",
                 "intrabar_trade_plan",
+                "immediate_trade_plan",
             ],
         )
 
-        if not isinstance(trade_plan, dict):
+        if isinstance(raw_trade_plan, dict):
+            trade_plan = dict(raw_trade_plan)
+        else:
             trade_plan = {}
 
         strategy_name = _confirmation_scope_get_first(

@@ -1986,3 +1986,14 @@ CONFIRMATION_RISK_TELEGRAM_INCLUDE_OBSERVE_ONLY_NOTE = True
 ENABLE_CONFIRMATION_OBSERVATION_ANALYZER_IN_MAIN_ANALYZER = True
 ENABLE_CONFIRMATION_SUMMARY_IN_STRATEGY_REPORT = True
 
+# ============================================================
+# Confirmation Engine Runtime Safety
+# Phase 1O
+# ============================================================
+
+ENABLE_CONFIRMATION_ENGINE_OBSERVE_ONLY = True
+
+# The confirmation engine remains observe-only.
+# It must not block trades or modify execution behavior.
+CONFIRMATION_ENGINE_OBSERVE_ONLY_MODE = True
+
