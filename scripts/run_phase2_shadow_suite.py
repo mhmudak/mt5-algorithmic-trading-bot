@@ -38,6 +38,7 @@ def resolve_paths(source_dir):
         "live_observation_staleness": output_dir / "confirmation_live_observation_staleness_report.json",
         "actual_shadow_maturity": output_dir / "actual_shadow_maturity_report.json",
         "trade_tracker_close_safety": output_dir / "trade_tracker_close_reconciliation_safety_report.json",
+        "postfix_trade_reconciliation": output_dir / "postfix_trade_reconciliation_report.json",
     }
 
 
@@ -203,6 +204,15 @@ def append_csv_row(path, row):
         "trade_tracker_unresolved_keeps_open",
         "trade_tracker_resolved_saves_close_price",
         "trade_tracker_unresolved_pending_flag",
+        "postfix_trade_reconciliation_all_ok",
+        "postfix_trade_reconciliation_recommendation",
+        "postfix_current_trade_count",
+        "postfix_baseline_trade_count",
+        "postfix_new_trade_count",
+        "postfix_new_closed_trade_count",
+        "postfix_new_clean_closed_trade_count",
+        "postfix_pending_reconciliation_count",
+        "postfix_issue_trade_count",
     ]
 
     exists = path.exists()
@@ -295,6 +305,15 @@ def build_progress_snapshot(summary, min_unique_setups, min_clean_known_outcomes
         "trade_tracker_unresolved_keeps_open": counts.get("trade_tracker_unresolved_keeps_open"),
         "trade_tracker_resolved_saves_close_price": counts.get("trade_tracker_resolved_saves_close_price"),
         "trade_tracker_unresolved_pending_flag": counts.get("trade_tracker_unresolved_pending_flag"),
+        "postfix_trade_reconciliation_all_ok": counts.get("postfix_trade_reconciliation_all_ok"),
+        "postfix_trade_reconciliation_recommendation": counts.get("postfix_trade_reconciliation_recommendation"),
+        "postfix_current_trade_count": counts.get("postfix_current_trade_count"),
+        "postfix_baseline_trade_count": counts.get("postfix_baseline_trade_count"),
+        "postfix_new_trade_count": counts.get("postfix_new_trade_count"),
+        "postfix_new_closed_trade_count": counts.get("postfix_new_closed_trade_count"),
+        "postfix_new_clean_closed_trade_count": counts.get("postfix_new_clean_closed_trade_count"),
+        "postfix_pending_reconciliation_count": counts.get("postfix_pending_reconciliation_count"),
+        "postfix_issue_trade_count": counts.get("postfix_issue_trade_count"),
     }
 
 
@@ -466,6 +485,15 @@ def main():
                 source_dir_arg,
             ],
         },
+        {
+            "name": "Check post-fix trade reconciliation",
+            "command": [
+                python_exe,
+                "scripts/check_postfix_trade_reconciliation.py",
+                "--source-dir",
+                source_dir_arg,
+            ],
+        },
     ]
 
     results = []
@@ -487,6 +515,7 @@ def main():
     live_observation_staleness = load_json(paths["live_observation_staleness"]) or {}
     actual_shadow_maturity = load_json(paths["actual_shadow_maturity"]) or {}
     trade_tracker_close_safety = load_json(paths["trade_tracker_close_safety"]) or {}
+    postfix_trade_reconciliation = load_json(paths["postfix_trade_reconciliation"]) or {}
 
     all_steps_ok = all(step.get("ok") for step in results)
 
@@ -551,6 +580,15 @@ def main():
             "trade_tracker_unresolved_keeps_open": (trade_tracker_close_safety.get("checks") or {}).get("unresolved_keeps_status_open"),
             "trade_tracker_resolved_saves_close_price": (trade_tracker_close_safety.get("checks") or {}).get("resolved_saves_close_price"),
             "trade_tracker_unresolved_pending_flag": (trade_tracker_close_safety.get("checks") or {}).get("unresolved_sets_pending_true"),
+            "postfix_trade_reconciliation_all_ok": postfix_trade_reconciliation.get("all_ok"),
+            "postfix_trade_reconciliation_recommendation": postfix_trade_reconciliation.get("recommendation"),
+            "postfix_current_trade_count": (postfix_trade_reconciliation.get("counts") or {}).get("current_trade_count"),
+            "postfix_baseline_trade_count": (postfix_trade_reconciliation.get("counts") or {}).get("baseline_trade_count"),
+            "postfix_new_trade_count": (postfix_trade_reconciliation.get("counts") or {}).get("new_postfix_trade_count"),
+            "postfix_new_closed_trade_count": (postfix_trade_reconciliation.get("counts") or {}).get("new_postfix_closed_trade_count"),
+            "postfix_new_clean_closed_trade_count": (postfix_trade_reconciliation.get("counts") or {}).get("new_postfix_clean_closed_trade_count"),
+            "postfix_pending_reconciliation_count": (postfix_trade_reconciliation.get("counts") or {}).get("new_postfix_pending_reconciliation_count"),
+            "postfix_issue_trade_count": (postfix_trade_reconciliation.get("counts") or {}).get("new_postfix_issue_trade_count"),
         },
         "next_actions": shadow_readiness.get("next_actions") or [],
         "steps": [compact_step_output(step) for step in results],
@@ -569,6 +607,7 @@ def main():
             "live_observation_staleness": str(paths["live_observation_staleness"]),
             "actual_shadow_maturity": str(paths["actual_shadow_maturity"]),
             "trade_tracker_close_safety": str(paths["trade_tracker_close_safety"]),
+            "postfix_trade_reconciliation": str(paths["postfix_trade_reconciliation"]),
         },
         "notes": [
             "This runner does not modify live trading behavior.",
@@ -647,6 +686,17 @@ def main():
     text_lines.append(f"unresolved_keeps_status_open = {summary['counts'].get('trade_tracker_unresolved_keeps_open')}")
     text_lines.append(f"unresolved_pending_flag = {summary['counts'].get('trade_tracker_unresolved_pending_flag')}")
     text_lines.append(f"resolved_saves_close_price = {summary['counts'].get('trade_tracker_resolved_saves_close_price')}")
+    text_lines.append("")
+    text_lines.append("[POST-FIX TRADE RECONCILIATION]")
+    text_lines.append(f"all_ok = {summary['counts'].get('postfix_trade_reconciliation_all_ok')}")
+    text_lines.append(f"recommendation = {summary['counts'].get('postfix_trade_reconciliation_recommendation')}")
+    text_lines.append(f"baseline_trade_count = {summary['counts'].get('postfix_baseline_trade_count')}")
+    text_lines.append(f"current_trade_count = {summary['counts'].get('postfix_current_trade_count')}")
+    text_lines.append(f"new_postfix_trade_count = {summary['counts'].get('postfix_new_trade_count')}")
+    text_lines.append(f"new_postfix_closed_trade_count = {summary['counts'].get('postfix_new_closed_trade_count')}")
+    text_lines.append(f"new_postfix_clean_closed_trade_count = {summary['counts'].get('postfix_new_clean_closed_trade_count')}")
+    text_lines.append(f"new_postfix_pending_reconciliation_count = {summary['counts'].get('postfix_pending_reconciliation_count')}")
+    text_lines.append(f"new_postfix_issue_trade_count = {summary['counts'].get('postfix_issue_trade_count')}")
     text_lines.append("")
     text_lines.append("[NEXT ACTIONS]")
 
