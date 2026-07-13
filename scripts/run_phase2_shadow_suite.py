@@ -34,6 +34,7 @@ def resolve_paths(source_dir):
         "outcome_quality_debug": output_dir / "confirmation_outcome_quality_debug.json",
         "duplicate_audit": output_dir / "confirmation_duplicate_observation_audit.json",
         "shadow_persistence": output_dir / "confirmation_shadow_persistence_report.json",
+        "shadow_observe_only_safety": output_dir / "confirmation_shadow_observe_only_safety_report.json",
     }
 
 
@@ -172,6 +173,12 @@ def append_csv_row(path, row):
         "shadow_persistence_populated_count",
         "shadow_persistence_missing_count",
         "shadow_persistence_populated_rate",
+        "shadow_observe_only_safety_all_ok",
+        "shadow_observe_only_safety_recommendation",
+        "shadow_observe_only_settings_ok",
+        "shadow_observe_only_policy_sample_ok",
+        "shadow_observe_only_live_violation_count",
+        "shadow_observe_only_live_status",
     ]
 
     exists = path.exists()
@@ -237,6 +244,12 @@ def build_progress_snapshot(summary, min_unique_setups, min_clean_known_outcomes
         "shadow_persistence_populated_count": counts.get("shadow_persistence_populated_count"),
         "shadow_persistence_missing_count": counts.get("shadow_persistence_missing_count"),
         "shadow_persistence_populated_rate": counts.get("shadow_persistence_populated_rate"),
+        "shadow_observe_only_safety_all_ok": counts.get("shadow_observe_only_safety_all_ok"),
+        "shadow_observe_only_safety_recommendation": counts.get("shadow_observe_only_safety_recommendation"),
+        "shadow_observe_only_settings_ok": counts.get("shadow_observe_only_settings_ok"),
+        "shadow_observe_only_policy_sample_ok": counts.get("shadow_observe_only_policy_sample_ok"),
+        "shadow_observe_only_live_violation_count": counts.get("shadow_observe_only_live_violation_count"),
+        "shadow_observe_only_live_status": counts.get("shadow_observe_only_live_status"),
     }
 
 
@@ -370,6 +383,15 @@ def main():
                 source_dir_arg,
             ],
         },
+        {
+            "name": "Check shadow observe-only safety",
+            "command": [
+                python_exe,
+                "scripts/check_shadow_observe_only_safety.py",
+                "--source-dir",
+                source_dir_arg,
+            ],
+        },
     ]
 
     results = []
@@ -387,6 +409,7 @@ def main():
     outcome_debug = load_json(paths["outcome_quality_debug"]) or {}
     duplicate_audit = load_json(paths["duplicate_audit"]) or {}
     shadow_persistence = load_json(paths["shadow_persistence"]) or {}
+    shadow_observe_only_safety = load_json(paths["shadow_observe_only_safety"]) or {}
 
     all_steps_ok = all(step.get("ok") for step in results)
 
@@ -424,6 +447,12 @@ def main():
             "shadow_persistence_populated_count": (shadow_persistence.get("counts") or {}).get("shadow_populated_observation_count"),
             "shadow_persistence_missing_count": (shadow_persistence.get("counts") or {}).get("shadow_missing_observation_count"),
             "shadow_persistence_populated_rate": (shadow_persistence.get("counts") or {}).get("shadow_populated_rate"),
+            "shadow_observe_only_safety_all_ok": shadow_observe_only_safety.get("all_ok"),
+            "shadow_observe_only_safety_recommendation": shadow_observe_only_safety.get("recommendation"),
+            "shadow_observe_only_settings_ok": (shadow_observe_only_safety.get("settings_check") or {}).get("ok"),
+            "shadow_observe_only_policy_sample_ok": (shadow_observe_only_safety.get("policy_sample_check") or {}).get("ok"),
+            "shadow_observe_only_live_violation_count": (shadow_observe_only_safety.get("live_rows_check") or {}).get("violation_count"),
+            "shadow_observe_only_live_status": (shadow_observe_only_safety.get("live_rows_check") or {}).get("status"),
         },
         "next_actions": shadow_readiness.get("next_actions") or [],
         "steps": [compact_step_output(step) for step in results],
@@ -438,6 +467,7 @@ def main():
             "outcome_quality_debug": str(paths["outcome_quality_debug"]),
             "duplicate_audit": str(paths["duplicate_audit"]),
             "shadow_persistence": str(paths["shadow_persistence"]),
+            "shadow_observe_only_safety": str(paths["shadow_observe_only_safety"]),
         },
         "notes": [
             "This runner does not modify live trading behavior.",
@@ -481,6 +511,14 @@ def main():
     text_lines.append(f"shadow_missing_observation_count = {summary['counts'].get('shadow_persistence_missing_count')}")
     text_lines.append(f"shadow_populated_rate = {summary['counts'].get('shadow_persistence_populated_rate')}")
     text_lines.append(f"shadow_persistence_recommendation = {summary['counts'].get('shadow_persistence_recommendation')}")
+    text_lines.append("")
+    text_lines.append("[SHADOW OBSERVE-ONLY SAFETY]")
+    text_lines.append(f"all_ok = {summary['counts'].get('shadow_observe_only_safety_all_ok')}")
+    text_lines.append(f"settings_ok = {summary['counts'].get('shadow_observe_only_settings_ok')}")
+    text_lines.append(f"policy_sample_ok = {summary['counts'].get('shadow_observe_only_policy_sample_ok')}")
+    text_lines.append(f"live_violation_count = {summary['counts'].get('shadow_observe_only_live_violation_count')}")
+    text_lines.append(f"live_status = {summary['counts'].get('shadow_observe_only_live_status')}")
+    text_lines.append(f"recommendation = {summary['counts'].get('shadow_observe_only_safety_recommendation')}")
     text_lines.append("")
     text_lines.append("[NEXT ACTIONS]")
 
