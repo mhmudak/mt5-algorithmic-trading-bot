@@ -187,8 +187,17 @@ def build_confirmation_summary_message(
         if delta < 0 or module.get("status") in {"FAIL", "ERROR"}:
             negative_modules.append(module)
 
+    shadow_decision = report.get("shadow_decision")
+    shadow_reason = report.get("shadow_reason")
+    shadow_score = report.get("shadow_score")
+    shadow_action = report.get("shadow_action")
+
     lines = [
         "🧠 CONFIRMATION ENGINE",
+        "",
+        f"Shadow Decision: {shadow_decision}",
+        f"Shadow Score: {shadow_score}",
+        f"Shadow Action: {shadow_action}",
         "",
         f"Confidence: {confidence}",
         f"Score Delta: {score_delta}",
@@ -245,6 +254,10 @@ def build_confirmation_summary_message(
                 f"conf {module.get('confidence')} | "
                 f"Δ {module.get('score_delta')}"
             )
+
+    if shadow_reason:
+        lines.append("")
+        lines.append(f"Shadow Reason: {shadow_reason}")
 
     if summary:
         lines.append("")

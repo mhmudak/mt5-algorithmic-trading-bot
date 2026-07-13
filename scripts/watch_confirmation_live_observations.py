@@ -239,6 +239,30 @@ def summarize_latest(rows):
                 ["confirmation_report", "score_delta"],
             ],
         ),
+        "shadow_decision": extract_value(
+            row,
+            ["shadow_decision"],
+            nested_candidates=[
+                ["report", "shadow_decision"],
+                ["confirmation_report", "shadow_decision"],
+            ],
+        ),
+        "shadow_score": extract_value(
+            row,
+            ["shadow_score"],
+            nested_candidates=[
+                ["report", "shadow_score"],
+                ["confirmation_report", "shadow_score"],
+            ],
+        ),
+        "shadow_reason": extract_value(
+            row,
+            ["shadow_reason"],
+            nested_candidates=[
+                ["report", "shadow_reason"],
+                ["confirmation_report", "shadow_reason"],
+            ],
+        ),
         "module_count": len(modules),
         "risky_modules": risky_modules,
     }
@@ -297,6 +321,9 @@ def print_snapshot(snapshot):
     print("approved =", latest.get("approved"))
     print("confidence =", latest.get("confidence"))
     print("score_delta =", latest.get("score_delta"))
+    print("shadow_decision =", latest.get("shadow_decision"))
+    print("shadow_score =", latest.get("shadow_score"))
+    print("shadow_reason =", latest.get("shadow_reason"))
     print("module_count =", latest.get("module_count"))
 
     risky_modules = latest.get("risky_modules") or []

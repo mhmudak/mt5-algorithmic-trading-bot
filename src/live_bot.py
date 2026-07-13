@@ -55,6 +55,7 @@ from src.confirmation_engine import (
 from src.confirmation_observation_logger import log_confirmation_observation
 from src.confirmation_risk_notifier import maybe_notify_confirmation_risk
 from src.confirmation_summary_notifier import maybe_notify_confirmation_summary
+from src.confirmation_shadow_policy import apply_confirmation_shadow_policy
 
 from src.protected_reentry import (
     get_protected_reentry_context,
@@ -849,6 +850,8 @@ def observe_universal_confirmation_for_setup(
             or trade_plan.get("setup_source_bucket")
             or trade_plan.get("execution_bucket")
         )
+
+        apply_confirmation_shadow_policy(report)
 
         log_confirmation_observation(
             report=report,

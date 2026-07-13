@@ -293,6 +293,30 @@ def summarize_observations(rows, latest_limit=10):
                     ["confirmation_report", "score_delta"],
                 ],
             ),
+            "shadow_decision": extract_value(
+                row,
+                ["shadow_decision"],
+                nested_candidates=[
+                    ["report", "shadow_decision"],
+                    ["confirmation_report", "shadow_decision"],
+                ],
+            ),
+            "shadow_score": extract_value(
+                row,
+                ["shadow_score"],
+                nested_candidates=[
+                    ["report", "shadow_score"],
+                    ["confirmation_report", "shadow_score"],
+                ],
+            ),
+            "shadow_reason": extract_value(
+                row,
+                ["shadow_reason"],
+                nested_candidates=[
+                    ["report", "shadow_reason"],
+                    ["confirmation_report", "shadow_reason"],
+                ],
+            ),
             "module_count": len(modules),
             "risky_modules": risky_modules,
         })
@@ -419,6 +443,7 @@ def main():
                 f"bucket={item.get('bucket')} "
                 f"confidence={item.get('confidence')} "
                 f"score_delta={item.get('score_delta')} "
+                f"shadow={item.get('shadow_decision')} "
                 f"modules={item.get('module_count')}"
             )
 
