@@ -33,6 +33,7 @@ def resolve_paths(source_dir):
         "phase2_base_readiness": output_dir / "phase2_readiness_report.json",
         "outcome_quality_debug": output_dir / "confirmation_outcome_quality_debug.json",
         "duplicate_audit": output_dir / "confirmation_duplicate_observation_audit.json",
+        "shadow_persistence": output_dir / "confirmation_shadow_persistence_report.json",
     }
 
 
@@ -165,6 +166,12 @@ def append_csv_row(path, row):
         "duplicate_audit_group_count",
         "duplicate_audit_observation_count",
         "duplicate_audit_recommendation",
+        "shadow_persistence_code_level_ready",
+        "shadow_persistence_live_present",
+        "shadow_persistence_recommendation",
+        "shadow_persistence_populated_count",
+        "shadow_persistence_missing_count",
+        "shadow_persistence_populated_rate",
     ]
 
     exists = path.exists()
@@ -224,6 +231,12 @@ def build_progress_snapshot(summary, min_unique_setups, min_clean_known_outcomes
         "duplicate_audit_group_count": counts.get("duplicate_audit_group_count"),
         "duplicate_audit_observation_count": counts.get("duplicate_audit_observation_count"),
         "duplicate_audit_recommendation": counts.get("duplicate_audit_recommendation"),
+        "shadow_persistence_code_level_ready": counts.get("shadow_persistence_code_level_ready"),
+        "shadow_persistence_live_present": counts.get("shadow_persistence_live_present"),
+        "shadow_persistence_recommendation": counts.get("shadow_persistence_recommendation"),
+        "shadow_persistence_populated_count": counts.get("shadow_persistence_populated_count"),
+        "shadow_persistence_missing_count": counts.get("shadow_persistence_missing_count"),
+        "shadow_persistence_populated_rate": counts.get("shadow_persistence_populated_rate"),
     }
 
 
@@ -348,6 +361,15 @@ def main():
                 "20",
             ],
         },
+        {
+            "name": "Check shadow persistence",
+            "command": [
+                python_exe,
+                "scripts/check_confirmation_shadow_persistence.py",
+                "--source-dir",
+                source_dir_arg,
+            ],
+        },
     ]
 
     results = []
@@ -364,6 +386,7 @@ def main():
     base_readiness = load_json(paths["phase2_base_readiness"]) or {}
     outcome_debug = load_json(paths["outcome_quality_debug"]) or {}
     duplicate_audit = load_json(paths["duplicate_audit"]) or {}
+    shadow_persistence = load_json(paths["shadow_persistence"]) or {}
 
     all_steps_ok = all(step.get("ok") for step in results)
 
@@ -395,6 +418,12 @@ def main():
             "duplicate_audit_group_count": duplicate_audit.get("duplicate_group_count"),
             "duplicate_audit_observation_count": duplicate_audit.get("duplicate_observation_count"),
             "duplicate_audit_recommendation": duplicate_audit.get("recommendation"),
+            "shadow_persistence_code_level_ready": shadow_persistence.get("code_level_ready"),
+            "shadow_persistence_live_present": shadow_persistence.get("live_shadow_observations_present"),
+            "shadow_persistence_recommendation": shadow_persistence.get("recommendation"),
+            "shadow_persistence_populated_count": (shadow_persistence.get("counts") or {}).get("shadow_populated_observation_count"),
+            "shadow_persistence_missing_count": (shadow_persistence.get("counts") or {}).get("shadow_missing_observation_count"),
+            "shadow_persistence_populated_rate": (shadow_persistence.get("counts") or {}).get("shadow_populated_rate"),
         },
         "next_actions": shadow_readiness.get("next_actions") or [],
         "steps": [compact_step_output(step) for step in results],
@@ -408,6 +437,7 @@ def main():
             "phase2_base_readiness": str(paths["phase2_base_readiness"]),
             "outcome_quality_debug": str(paths["outcome_quality_debug"]),
             "duplicate_audit": str(paths["duplicate_audit"]),
+            "shadow_persistence": str(paths["shadow_persistence"]),
         },
         "notes": [
             "This runner does not modify live trading behavior.",
@@ -443,6 +473,14 @@ def main():
     text_lines.append(f"duplicate_audit_group_count = {summary['counts'].get('duplicate_audit_group_count')}")
     text_lines.append(f"duplicate_audit_observation_count = {summary['counts'].get('duplicate_audit_observation_count')}")
     text_lines.append(f"duplicate_audit_recommendation = {summary['counts'].get('duplicate_audit_recommendation')}")
+    text_lines.append("")
+    text_lines.append("[SHADOW PERSISTENCE]")
+    text_lines.append(f"code_level_ready = {summary['counts'].get('shadow_persistence_code_level_ready')}")
+    text_lines.append(f"live_shadow_observations_present = {summary['counts'].get('shadow_persistence_live_present')}")
+    text_lines.append(f"shadow_populated_observation_count = {summary['counts'].get('shadow_persistence_populated_count')}")
+    text_lines.append(f"shadow_missing_observation_count = {summary['counts'].get('shadow_persistence_missing_count')}")
+    text_lines.append(f"shadow_populated_rate = {summary['counts'].get('shadow_persistence_populated_rate')}")
+    text_lines.append(f"shadow_persistence_recommendation = {summary['counts'].get('shadow_persistence_recommendation')}")
     text_lines.append("")
     text_lines.append("[NEXT ACTIONS]")
 
