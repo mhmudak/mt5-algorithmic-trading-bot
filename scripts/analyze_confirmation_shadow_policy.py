@@ -487,6 +487,18 @@ def aggregate(rows, group_fields, min_samples=5, min_known=10):
         be = sum(1 for x in items if x.get("breakeven"))
         mixed = sum(1 for x in items if x.get("mixed_tp_sl"))
 
+        clean_items = [
+            x
+            for x in items
+            if x.get("known_outcome") and not x.get("mixed_tp_sl")
+        ]
+
+        clean_known = len(clean_items)
+        clean_tp = sum(1 for x in clean_items if x.get("tp_hit"))
+        clean_sl = sum(1 for x in clean_items if x.get("sl_hit"))
+        clean_w10 = sum(1 for x in clean_items if x.get("w10_hit"))
+        clean_be = sum(1 for x in clean_items if x.get("breakeven"))
+
         avg_conf = round(sum(safe_float(x.get("confidence")) for x in items) / n, 3) if n else 0
         avg_delta = round(sum(safe_float(x.get("score_delta")) for x in items) / n, 3) if n else 0
         avg_shadow = round(sum(safe_float(x.get("shadow_score")) for x in items) / n, 3) if n else 0
@@ -498,6 +510,10 @@ def aggregate(rows, group_fields, min_samples=5, min_known=10):
         w10_rate = round(w10 / known_base, 4) if known_base else None
         mixed_rate = round(mixed / known_base, 4) if known_base else None
 
+        clean_tp_rate = round(clean_tp / clean_known, 4) if clean_known else None
+        clean_sl_rate = round(clean_sl / clean_known, 4) if clean_known else None
+        clean_w10_rate = round(clean_w10 / clean_known, 4) if clean_known else None
+
         row = {
             "group": "|".join(str(x) for x in key),
             "n": n,
@@ -508,10 +524,18 @@ def aggregate(rows, group_fields, min_samples=5, min_known=10):
             "w10_count": w10,
             "breakeven_count": be,
             "mixed_tp_sl_count": mixed,
+            "clean_known_outcome_count": clean_known,
+            "clean_tp_count": clean_tp,
+            "clean_sl_count": clean_sl,
+            "clean_w10_count": clean_w10,
+            "clean_breakeven_count": clean_be,
             "tp_rate": tp_rate,
             "sl_rate": sl_rate,
             "w10_rate": w10_rate,
             "mixed_tp_sl_rate": mixed_rate,
+            "clean_tp_rate": clean_tp_rate,
+            "clean_sl_rate": clean_sl_rate,
+            "clean_w10_rate": clean_w10_rate,
             "avg_confidence": avg_conf,
             "avg_score_delta": avg_delta,
             "avg_shadow_score": avg_shadow,
@@ -524,15 +548,15 @@ def aggregate(rows, group_fields, min_samples=5, min_known=10):
 
         if n < min_samples:
             recommendation = "TRACK_MORE"
-        elif known < min_known:
-            recommendation = "SHADOW_ONLY_NEED_MORE_OUTCOMES"
         elif mixed_rate is not None and mixed_rate >= 0.30:
             recommendation = "OUTCOME_DATA_AMBIGUOUS_REVIEW_FIRST"
-        elif decision in {"HIGH_RISK", "BLOCK_CANDIDATE_OBSERVE_ONLY"} and sl_rate is not None and sl_rate >= 0.60:
+        elif clean_known < min_known:
+            recommendation = "SHADOW_ONLY_NEED_MORE_CLEAN_OUTCOMES"
+        elif decision in {"HIGH_RISK", "BLOCK_CANDIDATE_OBSERVE_ONLY"} and clean_sl_rate is not None and clean_sl_rate >= 0.60:
             recommendation = "FUTURE_BLOCK_REVIEW_CANDIDATE"
-        elif decision in {"CAUTION"} and sl_rate is not None and sl_rate >= 0.50:
+        elif decision in {"CAUTION"} and clean_sl_rate is not None and clean_sl_rate >= 0.50:
             recommendation = "KEEP_CAUTION_LABEL"
-        elif decision in {"STRONG_SUPPORT", "SUPPORT"} and w10_rate is not None and w10_rate >= 0.60 and (sl_rate is None or sl_rate <= 0.35):
+        elif decision in {"STRONG_SUPPORT", "SUPPORT"} and clean_w10_rate is not None and clean_w10_rate >= 0.60 and (clean_sl_rate is None or clean_sl_rate <= 0.35):
             recommendation = "SUPPORT_LABEL_LOOKS_USEFUL"
         else:
             recommendation = "OBSERVE_MORE"
@@ -655,6 +679,11 @@ def main():
         "matched_outcome_count_unique": sum(1 for x in unique_rows if x.get("matched_outcome")),
         "known_outcome_count_unique": sum(1 for x in unique_rows if x.get("known_outcome")),
         "mixed_tp_sl_count_unique": sum(1 for x in unique_rows if x.get("mixed_tp_sl")),
+        "clean_known_outcome_count_unique": sum(
+            1
+            for x in unique_rows
+            if x.get("known_outcome") and not x.get("mixed_tp_sl")
+        ),
         "shadow_backfilled_count_raw": sum(1 for x in rows if x.get("shadow_backfilled")),
         "shadow_backfilled_count_unique": sum(1 for x in unique_rows if x.get("shadow_backfilled")),
         "decision_performance_raw": decision_perf,
@@ -676,8 +705,8 @@ def main():
             "Phase 2C is analyzer-only.",
             "No trades are blocked.",
             "Unique setup performance is more important than raw observation performance.",
-            "If TP and SL are both true, the outcome is treated as mixed/ambiguous for future blocking decisions.",
-            "Blocking decisions require more unique known outcomes.",
+            "If TP and SL are both true, the outcome is treated as mixed/ambiguous and excluded from clean outcome rates.",
+            "Blocking decisions require more unique clean known outcomes.",
         ],
     }
 
@@ -697,6 +726,7 @@ def main():
     print("known_outcome_count_raw =", report["known_outcome_count_raw"])
     print("known_outcome_count_unique =", report["known_outcome_count_unique"])
     print("mixed_tp_sl_count_unique =", report["mixed_tp_sl_count_unique"])
+    print("clean_known_outcome_count_unique =", report["clean_known_outcome_count_unique"])
     print("outcome_quality_issue_count =", report["outcome_quality_issue_count"])
     print("unique_rows_csv =", paths["unique_rows_csv"])
     print("decision_perf_unique_csv =", paths["decision_perf_unique_csv"])
@@ -710,7 +740,8 @@ def main():
             print(
                 f"{row.get('shadow_decision')} | "
                 f"n={row.get('n')} known={row.get('known_outcome_count')} "
-                f"tp_rate={row.get('tp_rate')} sl_rate={row.get('sl_rate')} "
+                f"clean_known={row.get('clean_known_outcome_count')} "
+                f"clean_tp={row.get('clean_tp_rate')} clean_sl={row.get('clean_sl_rate')} "
                 f"mixed={row.get('mixed_tp_sl_rate')} "
                 f"rec={row.get('recommendation')}"
             )
