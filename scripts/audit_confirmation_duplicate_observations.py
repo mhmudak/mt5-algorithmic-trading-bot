@@ -140,6 +140,15 @@ def get_bucket(row):
     return row.get("setup_source_bucket") or row.get("execution_bucket") or "UNKNOWN"
 
 
+def has_shadow_fields(row):
+    return bool(
+        row.get("shadow_decision")
+        or row.get("shadow_action")
+        or row.get("shadow_score") is not None
+        or row.get("shadow_policy_version")
+    )
+
+
 def make_group_key(row):
     setup_id = row.get("setup_id")
 
@@ -195,6 +204,18 @@ def summarize_group(key, items):
         if row.get("shadow_decision") is not None
     ])
 
+    shadow_populated_count = sum(1 for row in items_sorted if has_shadow_fields(row))
+    shadow_missing_count = len(items_sorted) - shadow_populated_count
+
+    post_shadow_items = [
+        row
+        for row in items_sorted
+        if has_shadow_fields(row)
+    ]
+
+    post_shadow_count = len(post_shadow_items)
+    post_shadow_duplicate_count = max(0, post_shadow_count - 1)
+
     module_counts = compact_values([
         len(get_modules(row))
         for row in items_sorted
@@ -246,12 +267,19 @@ def summarize_group(key, items):
         "confidence_values": confidence_values,
         "score_delta_values": score_delta_values,
         "shadow_decisions": shadow_decisions,
+        "shadow_populated_count": shadow_populated_count,
+        "shadow_missing_count": shadow_missing_count,
+        "group_has_shadow": shadow_populated_count > 0,
+        "group_all_legacy_pre_shadow": shadow_populated_count == 0,
+        "post_shadow_observation_count": post_shadow_count,
+        "post_shadow_duplicate_count": post_shadow_duplicate_count,
         "module_counts": module_counts,
         "unique_signature_count": len(exact_signature_set),
         "exact_duplicate_like": len(exact_signature_set) == 1 and count > 1,
         "latest_confidence": safe_float(last.get("confidence"), 0.0),
         "latest_score_delta": safe_float(last.get("score_delta"), 0.0),
         "latest_shadow_decision": last.get("shadow_decision"),
+        "latest_has_shadow": has_shadow_fields(last),
     }
 
 
@@ -307,14 +335,41 @@ def main():
     duplicate_observation_count = sum(row.get("duplicate_count", 0) for row in all_group_rows)
     duplicate_group_count = len(duplicate_rows)
 
+    shadow_populated_observation_count = sum(1 for row in parsed_rows if has_shadow_fields(row))
+    shadow_missing_observation_count = raw_observation_count - shadow_populated_observation_count
+
+    post_shadow_duplicate_observation_count = sum(
+        row.get("post_shadow_duplicate_count", 0)
+        for row in all_group_rows
+    )
+
+    post_shadow_duplicate_group_count = sum(
+        1
+        for row in all_group_rows
+        if row.get("post_shadow_duplicate_count", 0) > 0
+    )
+
+    post_shadow_duplicate_rate = (
+        round(post_shadow_duplicate_observation_count / shadow_populated_observation_count, 4)
+        if shadow_populated_observation_count
+        else 0.0
+    )
+
+    legacy_duplicate_observation_count = max(
+        0,
+        duplicate_observation_count - post_shadow_duplicate_observation_count,
+    )
+
     duplicate_rate = round(duplicate_observation_count / raw_observation_count, 4) if raw_observation_count else 0.0
 
-    if duplicate_rate >= 0.50:
-        recommendation = "HIGH_DUPLICATION_REVIEW_LOGGER_COOLDOWN"
-    elif duplicate_rate >= 0.25:
-        recommendation = "MODERATE_DUPLICATION_MONITOR_OR_ADD_COOLDOWN"
+    if shadow_populated_observation_count < 10:
+        recommendation = "MONITOR_MORE_POST_SHADOW_DATA"
+    elif post_shadow_duplicate_rate >= 0.50:
+        recommendation = "HIGH_POST_SHADOW_DUPLICATION_REVIEW_LOGGER_COOLDOWN"
+    elif post_shadow_duplicate_rate >= 0.25:
+        recommendation = "MODERATE_POST_SHADOW_DUPLICATION_MONITOR_OR_ADD_COOLDOWN"
     else:
-        recommendation = "DUPLICATION_ACCEPTABLE"
+        recommendation = "POST_SHADOW_DUPLICATION_ACCEPTABLE"
 
     report = {
         "created_at": datetime.now().isoformat(),
@@ -326,6 +381,12 @@ def main():
         "duplicate_observation_count": duplicate_observation_count,
         "duplicate_group_count": duplicate_group_count,
         "duplicate_rate": duplicate_rate,
+        "shadow_populated_observation_count": shadow_populated_observation_count,
+        "shadow_missing_observation_count": shadow_missing_observation_count,
+        "post_shadow_duplicate_observation_count": post_shadow_duplicate_observation_count,
+        "post_shadow_duplicate_group_count": post_shadow_duplicate_group_count,
+        "post_shadow_duplicate_rate": post_shadow_duplicate_rate,
+        "legacy_duplicate_observation_count": legacy_duplicate_observation_count,
         "recommendation": recommendation,
         "top_duplicates": duplicate_rows[:args.top],
         "generated_files": {
@@ -335,6 +396,8 @@ def main():
         "notes": [
             "This script does not modify live trading behavior.",
             "Exact duplicate-like rows usually mean the same setup is being observed repeatedly with unchanged confirmation output.",
+            "shadow=None rows are usually legacy pre-shadow observations.",
+            "Use post_shadow_duplicate_rate before deciding whether to add a logger-level cooldown.",
             "Analyzer dedupe already protects performance stats, but logger-level cooldown may reduce file noise later.",
         ],
     }
@@ -348,6 +411,12 @@ def main():
     print("duplicate_observation_count =", duplicate_observation_count)
     print("duplicate_group_count =", duplicate_group_count)
     print("duplicate_rate =", duplicate_rate)
+    print("shadow_populated_observation_count =", shadow_populated_observation_count)
+    print("shadow_missing_observation_count =", shadow_missing_observation_count)
+    print("post_shadow_duplicate_observation_count =", post_shadow_duplicate_observation_count)
+    print("post_shadow_duplicate_group_count =", post_shadow_duplicate_group_count)
+    print("post_shadow_duplicate_rate =", post_shadow_duplicate_rate)
+    print("legacy_duplicate_observation_count =", legacy_duplicate_observation_count)
     print("recommendation =", recommendation)
     print("audit_csv =", paths["audit_csv"])
     print("audit_json =", paths["audit_json"])
@@ -364,7 +433,9 @@ def main():
                 f"count={row.get('observation_count')} "
                 f"dupes={row.get('duplicate_count')} "
                 f"exact_like={row.get('exact_duplicate_like')} "
-                f"shadow={row.get('latest_shadow_decision')}"
+                f"shadow={row.get('latest_shadow_decision')} "
+                f"post_shadow_count={row.get('post_shadow_observation_count')} "
+                f"post_shadow_dupes={row.get('post_shadow_duplicate_count')}"
             )
 
 
