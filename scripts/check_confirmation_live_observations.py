@@ -97,10 +97,13 @@ def get_nested(row, keys, default=None):
 
 def extract_modules(row):
     candidates = [
+        row.get("modules"),
         row.get("results"),
         row.get("module_results"),
         get_nested(row, ["report", "results"]),
+        get_nested(row, ["report", "modules"]),
         get_nested(row, ["confirmation_report", "results"]),
+        get_nested(row, ["confirmation_report", "modules"]),
     ]
 
     for value in candidates:

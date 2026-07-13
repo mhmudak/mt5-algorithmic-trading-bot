@@ -1997,3 +1997,17 @@ ENABLE_CONFIRMATION_ENGINE_OBSERVE_ONLY = True
 # It must not block trades or modify execution behavior.
 CONFIRMATION_ENGINE_OBSERVE_ONLY_MODE = True
 
+# ============================================================
+# Confirmation Engine Telegram Summary
+# Phase 1T
+# ============================================================
+
+TELEGRAM_NOTIFY_CONFIRMATION_ENGINE_SUMMARY = True
+
+# Avoid repeated Telegram summaries for same setup/bucket.
+CONFIRMATION_SUMMARY_TELEGRAM_COOLDOWN_MINUTES = 10
+
+# Keep summary messages concise.
+CONFIRMATION_SUMMARY_TELEGRAM_INCLUDE_MODULE_DETAILS = True
+CONFIRMATION_SUMMARY_TELEGRAM_MAX_MODULES = 6
+

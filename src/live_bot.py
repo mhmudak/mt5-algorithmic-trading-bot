@@ -54,6 +54,7 @@ from src.confirmation_engine import (
 
 from src.confirmation_observation_logger import log_confirmation_observation
 from src.confirmation_risk_notifier import maybe_notify_confirmation_risk
+from src.confirmation_summary_notifier import maybe_notify_confirmation_summary
 
 from src.protected_reentry import (
     get_protected_reentry_context,
@@ -858,6 +859,13 @@ def observe_universal_confirmation_for_setup(
         )
 
         maybe_notify_confirmation_risk(
+            report=report,
+            signal_data=selected_signal_data,
+            trade_plan=trade_plan,
+            setup_source_bucket=setup_source_bucket_for_confirmation,
+        )
+
+        maybe_notify_confirmation_summary(
             report=report,
             signal_data=selected_signal_data,
             trade_plan=trade_plan,
