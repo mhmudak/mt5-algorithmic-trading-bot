@@ -18,6 +18,12 @@ except Exception:
 DEFAULT_OBSERVATIONS_FILENAME = "confirmation_observations.jsonl"
 DEFAULT_OBSERVATIONS_CSV_FILENAME = "confirmation_observations.csv"
 
+# Phase 2AH:
+# Prevent duplicate confirmation observations from inflating shadow statistics.
+# This affects observation logging only. It must never block trade execution.
+CONFIRMATION_OBSERVATION_DUPLICATE_GUARD_ENABLED = True
+CONFIRMATION_OBSERVATION_DUPLICATE_LOOKBACK_ROWS = 50
+
 
 def _project_root():
     return Path(__file__).resolve().parents[1]
@@ -262,6 +268,92 @@ def build_confirmation_observation_record(
     return _json_safe(record)
 
 
+def _observation_duplicate_key(record):
+    """
+    Build a stable duplicate key for confirmation observation rows.
+
+    The guard intentionally uses setup identity + shadow label, not created_at,
+    because repeated observations of the exact same setup in the same live loop
+    should not inflate post-shadow statistics.
+    """
+
+    record = record or {}
+
+    return (
+        str(record.get("setup_id") or "").strip(),
+        str(record.get("strategy") or "").strip(),
+        str(record.get("signal") or "").strip(),
+        str(record.get("setup_source_bucket") or "").strip(),
+        str(record.get("shadow_decision") or "").strip(),
+    )
+
+
+def _recent_confirmation_observation_keys(path, lookback_rows=None):
+    path = Path(path)
+
+    if not path.exists():
+        return set()
+
+    if lookback_rows is None:
+        lookback_rows = CONFIRMATION_OBSERVATION_DUPLICATE_LOOKBACK_ROWS
+
+    try:
+        lookback_rows = int(lookback_rows)
+    except Exception:
+        lookback_rows = CONFIRMATION_OBSERVATION_DUPLICATE_LOOKBACK_ROWS
+
+    if lookback_rows <= 0:
+        lookback_rows = CONFIRMATION_OBSERVATION_DUPLICATE_LOOKBACK_ROWS
+
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            lines = f.readlines()[-lookback_rows:]
+    except Exception as exc:
+        logger.warning(
+            "[CONFIRMATION OBSERVATION] duplicate guard read failed: %s",
+            exc,
+        )
+        return set()
+
+    keys = set()
+
+    for line in lines:
+        line = line.strip()
+
+        if not line:
+            continue
+
+        try:
+            existing = json.loads(line)
+        except Exception:
+            continue
+
+        key = _observation_duplicate_key(existing)
+
+        if all(key):
+            keys.add(key)
+
+    return keys
+
+
+def is_duplicate_confirmation_observation(record, file_path=None, lookback_rows=None):
+    if not CONFIRMATION_OBSERVATION_DUPLICATE_GUARD_ENABLED:
+        return False
+
+    path = Path(file_path) if file_path else get_confirmation_observations_file()
+    key = _observation_duplicate_key(record)
+
+    if not all(key):
+        return False
+
+    recent_keys = _recent_confirmation_observation_keys(
+        path,
+        lookback_rows=lookback_rows,
+    )
+
+    return key in recent_keys
+
+
 def append_jsonl_record(record, file_path=None):
     path = Path(file_path) if file_path else get_confirmation_observations_file()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -297,7 +389,22 @@ def log_confirmation_observation(
             notes=notes,
         )
 
-        path = append_jsonl_record(record, file_path=file_path)
+        path = Path(file_path) if file_path else get_confirmation_observations_file()
+
+        if is_duplicate_confirmation_observation(record, file_path=path):
+            logger.info(
+                "[CONFIRMATION OBSERVATION] duplicate skipped | "
+                "setup_id=%s strategy=%s signal=%s shadow=%s path=%s",
+                record.get("setup_id"),
+                record.get("strategy"),
+                record.get("signal"),
+                record.get("shadow_decision"),
+                path,
+            )
+
+            return path
+
+        path = append_jsonl_record(record, file_path=path)
 
         logger.info(
             "[CONFIRMATION OBSERVATION] saved | setup_id=%s | path=%s",
@@ -396,6 +503,7 @@ __all__ = [
     "get_confirmation_observations_file",
     "build_confirmation_observation_record",
     "log_confirmation_observation",
+    "is_duplicate_confirmation_observation",
     "read_confirmation_observations",
     "export_confirmation_observations_to_csv",
 ]
