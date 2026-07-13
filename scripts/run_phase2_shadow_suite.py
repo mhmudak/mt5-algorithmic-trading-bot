@@ -35,6 +35,7 @@ def resolve_paths(source_dir):
         "duplicate_audit": output_dir / "confirmation_duplicate_observation_audit.json",
         "shadow_persistence": output_dir / "confirmation_shadow_persistence_report.json",
         "shadow_observe_only_safety": output_dir / "confirmation_shadow_observe_only_safety_report.json",
+        "live_observation_staleness": output_dir / "confirmation_live_observation_staleness_report.json",
     }
 
 
@@ -179,6 +180,12 @@ def append_csv_row(path, row):
         "shadow_observe_only_policy_sample_ok",
         "shadow_observe_only_live_violation_count",
         "shadow_observe_only_live_status",
+        "live_observation_staleness_status",
+        "live_observation_staleness_recommendation",
+        "live_observation_file_age_minutes",
+        "live_observation_file_stale",
+        "live_observation_file_mtime",
+        "live_observation_shadow_count",
     ]
 
     exists = path.exists()
@@ -250,6 +257,12 @@ def build_progress_snapshot(summary, min_unique_setups, min_clean_known_outcomes
         "shadow_observe_only_policy_sample_ok": counts.get("shadow_observe_only_policy_sample_ok"),
         "shadow_observe_only_live_violation_count": counts.get("shadow_observe_only_live_violation_count"),
         "shadow_observe_only_live_status": counts.get("shadow_observe_only_live_status"),
+        "live_observation_staleness_status": counts.get("live_observation_staleness_status"),
+        "live_observation_staleness_recommendation": counts.get("live_observation_staleness_recommendation"),
+        "live_observation_file_age_minutes": counts.get("live_observation_file_age_minutes"),
+        "live_observation_file_stale": counts.get("live_observation_file_stale"),
+        "live_observation_file_mtime": counts.get("live_observation_file_mtime"),
+        "live_observation_shadow_count": counts.get("live_observation_shadow_count"),
     }
 
 
@@ -392,6 +405,17 @@ def main():
                 source_dir_arg,
             ],
         },
+        {
+            "name": "Check live observation staleness",
+            "command": [
+                python_exe,
+                "scripts/check_confirmation_live_observation_staleness.py",
+                "--source-dir",
+                source_dir_arg,
+                "--stale-minutes",
+                "60",
+            ],
+        },
     ]
 
     results = []
@@ -410,6 +434,7 @@ def main():
     duplicate_audit = load_json(paths["duplicate_audit"]) or {}
     shadow_persistence = load_json(paths["shadow_persistence"]) or {}
     shadow_observe_only_safety = load_json(paths["shadow_observe_only_safety"]) or {}
+    live_observation_staleness = load_json(paths["live_observation_staleness"]) or {}
 
     all_steps_ok = all(step.get("ok") for step in results)
 
@@ -453,6 +478,12 @@ def main():
             "shadow_observe_only_policy_sample_ok": (shadow_observe_only_safety.get("policy_sample_check") or {}).get("ok"),
             "shadow_observe_only_live_violation_count": (shadow_observe_only_safety.get("live_rows_check") or {}).get("violation_count"),
             "shadow_observe_only_live_status": (shadow_observe_only_safety.get("live_rows_check") or {}).get("status"),
+            "live_observation_staleness_status": live_observation_staleness.get("status"),
+            "live_observation_staleness_recommendation": live_observation_staleness.get("recommendation"),
+            "live_observation_file_age_minutes": (live_observation_staleness.get("file_status") or {}).get("file_age_minutes"),
+            "live_observation_file_stale": (live_observation_staleness.get("file_status") or {}).get("file_stale"),
+            "live_observation_file_mtime": (live_observation_staleness.get("file_status") or {}).get("file_mtime"),
+            "live_observation_shadow_count": (live_observation_staleness.get("counts") or {}).get("shadow_populated_observation_count"),
         },
         "next_actions": shadow_readiness.get("next_actions") or [],
         "steps": [compact_step_output(step) for step in results],
@@ -468,6 +499,7 @@ def main():
             "duplicate_audit": str(paths["duplicate_audit"]),
             "shadow_persistence": str(paths["shadow_persistence"]),
             "shadow_observe_only_safety": str(paths["shadow_observe_only_safety"]),
+            "live_observation_staleness": str(paths["live_observation_staleness"]),
         },
         "notes": [
             "This runner does not modify live trading behavior.",
@@ -519,6 +551,14 @@ def main():
     text_lines.append(f"live_violation_count = {summary['counts'].get('shadow_observe_only_live_violation_count')}")
     text_lines.append(f"live_status = {summary['counts'].get('shadow_observe_only_live_status')}")
     text_lines.append(f"recommendation = {summary['counts'].get('shadow_observe_only_safety_recommendation')}")
+    text_lines.append("")
+    text_lines.append("[LIVE OBSERVATION STALENESS]")
+    text_lines.append(f"status = {summary['counts'].get('live_observation_staleness_status')}")
+    text_lines.append(f"recommendation = {summary['counts'].get('live_observation_staleness_recommendation')}")
+    text_lines.append(f"file_mtime = {summary['counts'].get('live_observation_file_mtime')}")
+    text_lines.append(f"file_age_minutes = {summary['counts'].get('live_observation_file_age_minutes')}")
+    text_lines.append(f"file_stale = {summary['counts'].get('live_observation_file_stale')}")
+    text_lines.append(f"shadow_populated_observation_count = {summary['counts'].get('live_observation_shadow_count')}")
     text_lines.append("")
     text_lines.append("[NEXT ACTIONS]")
 
