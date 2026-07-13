@@ -137,6 +137,77 @@ def boolish(value):
     return text in {"1", "TRUE", "YES", "Y", "TP", "SL", "HIT", "WIN", "LOSS"}
 
 
+def normalize_outcome_text(value):
+    return str(value or "").strip().upper()
+
+
+def outcome_text_is_tp(text):
+    text = normalize_outcome_text(text)
+
+    return text in {
+        "TP",
+        "TP_HIT",
+        "TP_TOUCH",
+        "TAKE_PROFIT",
+        "TAKE_PROFIT_HIT",
+        "WIN",
+    }
+
+
+def outcome_text_is_sl(text):
+    text = normalize_outcome_text(text)
+
+    return text in {
+        "SL",
+        "SL_HIT",
+        "SL_TOUCH",
+        "STOP_LOSS",
+        "STOP_LOSS_HIT",
+        "LOSS",
+    }
+
+
+def outcome_text_is_w10(text):
+    text = normalize_outcome_text(text)
+
+    return text in {
+        "W10",
+        "W10_HIT",
+        "W10_ONLY",
+        "MOVED_10",
+        "MOVED_10_PIPS",
+    }
+
+
+def outcome_text_is_breakeven(text):
+    text = normalize_outcome_text(text)
+
+    return text in {
+        "BE",
+        "BREAKEVEN",
+        "BREAK_EVEN",
+    }
+
+
+def resolve_primary_outcome_text(row):
+    """
+    Use the most specific outcome field first.
+
+    Important:
+    - final_outcome=TP_TOUCH should dominate status=EXPIRED.
+    - status=EXPIRED alone is not SL.
+    - Avoid substring matching like "SL" in "SOMETHING".
+    """
+
+    for key in ["final_outcome", "outcome", "result"]:
+        value = normalize_outcome_text(row.get(key))
+
+        if value:
+            return value
+
+    return normalize_outcome_text(row.get("status"))
+
+
 def resolve_paths(source_dir):
     source_dir = Path(source_dir)
 
@@ -243,60 +314,75 @@ def get_shadow(row):
 
 
 def normalize_outcome(row):
-    outcome_text = str(
-        row.get("outcome")
-        or row.get("final_outcome")
-        or row.get("result")
-        or row.get("status")
-        or ""
-    ).upper()
+    row = row or {}
 
-    tp_hit = (
-        boolish(row.get("tp_hit"))
-        or boolish(row.get("hit_tp"))
-        or "TP" in outcome_text
-        or "WIN" in outcome_text
-    )
+    outcome_text = resolve_primary_outcome_text(row)
 
-    sl_hit = (
-        boolish(row.get("sl_hit"))
-        or boolish(row.get("hit_sl"))
-        or "SL" in outcome_text
-        or "LOSS" in outcome_text
-    )
+    explicit_tp = boolish(row.get("tp_hit")) or boolish(row.get("hit_tp"))
+    explicit_sl = boolish(row.get("sl_hit")) or boolish(row.get("hit_sl"))
+    explicit_w10 = boolish(row.get("w10_hit")) or boolish(row.get("w10")) or boolish(row.get("moved_10"))
+    explicit_be = boolish(row.get("breakeven"))
+
+    tp_hit = explicit_tp or outcome_text_is_tp(outcome_text)
+    sl_hit = explicit_sl or outcome_text_is_sl(outcome_text)
 
     w10_hit = (
-        boolish(row.get("w10_hit"))
-        or boolish(row.get("w10"))
-        or boolish(row.get("moved_10"))
+        explicit_w10
+        or outcome_text_is_w10(outcome_text)
         or safe_float(row.get("max_favorable_pips"), 0.0) >= 10
         or safe_float(row.get("max_favorable"), 0.0) >= 10
     )
 
-    breakeven = (
-        boolish(row.get("breakeven"))
-        or "BREAKEVEN" in outcome_text
-        or "BE" == outcome_text.strip()
-    )
+    breakeven = explicit_be or outcome_text_is_breakeven(outcome_text)
+
+    # Strict final_outcome precedence.
+    # If final_outcome says TP_TOUCH, do not allow legacy/derived SL flags
+    # to make the setup mixed. final_outcome is the canonical tracker result.
+    if outcome_text_is_tp(outcome_text):
+        tp_hit = True
+        sl_hit = False
+    elif outcome_text_is_sl(outcome_text):
+        tp_hit = False
+        sl_hit = True
+    elif outcome_text_is_breakeven(outcome_text):
+        tp_hit = False
+        sl_hit = False
+        breakeven = True
+    elif outcome_text_is_w10(outcome_text) and not explicit_tp and not explicit_sl:
+        tp_hit = False
+        sl_hit = False
+        w10_hit = True
 
     mixed_tp_sl = tp_hit and sl_hit
 
-    known = tp_hit or sl_hit or w10_hit or breakeven or outcome_text in {
-        "TP",
-        "SL",
-        "WIN",
-        "LOSS",
-        "BREAKEVEN",
-        "BE",
-        "CLOSED",
-    }
+    known = (
+        tp_hit
+        or sl_hit
+        or w10_hit
+        or breakeven
+        or outcome_text in {
+            "TP",
+            "TP_HIT",
+            "TP_TOUCH",
+            "SL",
+            "SL_HIT",
+            "SL_TOUCH",
+            "W10",
+            "W10_HIT",
+            "WIN",
+            "LOSS",
+            "BREAKEVEN",
+            "BE",
+            "CLOSED",
+        }
+    )
 
     if mixed_tp_sl:
         label = "MIXED_TP_AND_SL"
     elif tp_hit:
-        label = "TP"
+        label = "TP_TOUCH" if outcome_text == "TP_TOUCH" else "TP"
     elif sl_hit:
-        label = "SL"
+        label = "SL_TOUCH" if outcome_text == "SL_TOUCH" else "SL"
     elif breakeven:
         label = "BREAKEVEN"
     elif w10_hit:
@@ -342,8 +428,8 @@ def normalize_outcome(row):
         "max_favorable": max_favorable,
         "max_adverse": max_adverse,
         "outcome_quality_flags": outcome_quality_flags,
+        "primary_outcome_text": outcome_text,
     }
-
 
 def load_outcomes_by_setup_id(path):
     rows = as_list(read_json(path, default=[]))

@@ -217,36 +217,115 @@ def find_matching_trades(trades, setup_id):
     return matches
 
 
+
+
+def normalize_outcome_text(value):
+    return str(value or "").strip().upper()
+
+
+def outcome_text_is_tp(text):
+    text = normalize_outcome_text(text)
+
+    return text in {
+        "TP",
+        "TP_HIT",
+        "TP_TOUCH",
+        "TAKE_PROFIT",
+        "TAKE_PROFIT_HIT",
+        "WIN",
+    }
+
+
+def outcome_text_is_sl(text):
+    text = normalize_outcome_text(text)
+
+    return text in {
+        "SL",
+        "SL_HIT",
+        "SL_TOUCH",
+        "STOP_LOSS",
+        "STOP_LOSS_HIT",
+        "LOSS",
+    }
+
+
+def outcome_text_is_w10(text):
+    text = normalize_outcome_text(text)
+
+    return text in {
+        "W10",
+        "W10_HIT",
+        "W10_ONLY",
+        "MOVED_10",
+        "MOVED_10_PIPS",
+    }
+
+
+def outcome_text_is_breakeven(text):
+    text = normalize_outcome_text(text)
+
+    return text in {
+        "BE",
+        "BREAKEVEN",
+        "BREAK_EVEN",
+    }
+
+
+def resolve_primary_outcome_text(row):
+    """
+    Strict precedence.
+
+    final_outcome=TP_TOUCH must dominate status=EXPIRED.
+    status=EXPIRED alone is not SL.
+    No substring matching.
+    """
+
+    row = row or {}
+
+    for key in ["final_outcome", "outcome", "result"]:
+        value = normalize_outcome_text(row.get(key))
+
+        if value:
+            return value
+
+    return normalize_outcome_text(row.get("status"))
+
+
 def extract_outcome_flags(raw_outcome):
-    text = str(
-        raw_outcome.get("outcome")
-        or raw_outcome.get("final_outcome")
-        or raw_outcome.get("result")
-        or raw_outcome.get("status")
-        or ""
-    ).upper()
+    raw_outcome = raw_outcome or {}
 
-    tp_hit = (
-        safe_bool(raw_outcome.get("tp_hit"))
-        or safe_bool(raw_outcome.get("hit_tp"))
-        or "TP" in text
-        or "WIN" in text
-    )
+    text = resolve_primary_outcome_text(raw_outcome)
 
-    sl_hit = (
-        safe_bool(raw_outcome.get("sl_hit"))
-        or safe_bool(raw_outcome.get("hit_sl"))
-        or "SL" in text
-        or "LOSS" in text
-    )
-
-    w10_hit = (
+    explicit_tp = safe_bool(raw_outcome.get("tp_hit")) or safe_bool(raw_outcome.get("hit_tp"))
+    explicit_sl = safe_bool(raw_outcome.get("sl_hit")) or safe_bool(raw_outcome.get("hit_sl"))
+    explicit_w10 = (
         safe_bool(raw_outcome.get("w10_hit"))
         or safe_bool(raw_outcome.get("w10"))
         or safe_bool(raw_outcome.get("moved_10"))
+    )
+
+    tp_hit = explicit_tp or outcome_text_is_tp(text)
+    sl_hit = explicit_sl or outcome_text_is_sl(text)
+
+    w10_hit = (
+        explicit_w10
+        or outcome_text_is_w10(text)
         or safe_float(raw_outcome.get("max_favorable"), 0.0) >= 10
         or safe_float(raw_outcome.get("max_favorable_pips"), 0.0) >= 10
     )
+
+    # Strict final_outcome precedence.
+    # final_outcome=TP_TOUCH means TP true and SL false.
+    if outcome_text_is_tp(text):
+        tp_hit = True
+        sl_hit = False
+    elif outcome_text_is_sl(text):
+        tp_hit = False
+        sl_hit = True
+    elif outcome_text_is_w10(text) and not explicit_tp and not explicit_sl:
+        tp_hit = False
+        sl_hit = False
+        w10_hit = True
 
     return {
         "outcome_text": text,
@@ -267,7 +346,6 @@ def extract_outcome_flags(raw_outcome):
             0.0,
         ),
     }
-
 
 def infer_quality_diagnosis(raw_outcome, matching_trades):
     flags = extract_outcome_flags(raw_outcome)
