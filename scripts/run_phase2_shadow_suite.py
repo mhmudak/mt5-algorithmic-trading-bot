@@ -36,6 +36,7 @@ def resolve_paths(source_dir):
         "shadow_persistence": output_dir / "confirmation_shadow_persistence_report.json",
         "shadow_observe_only_safety": output_dir / "confirmation_shadow_observe_only_safety_report.json",
         "live_observation_staleness": output_dir / "confirmation_live_observation_staleness_report.json",
+        "actual_shadow_maturity": output_dir / "actual_shadow_maturity_report.json",
     }
 
 
@@ -186,6 +187,15 @@ def append_csv_row(path, row):
         "live_observation_file_stale",
         "live_observation_file_mtime",
         "live_observation_shadow_count",
+        "actual_shadow_maturity_ready",
+        "actual_shadow_maturity_recommendation",
+        "actual_shadow_observation_count",
+        "actual_shadow_unique_setup_count",
+        "actual_shadow_min_rows",
+        "actual_shadow_min_unique_setups",
+        "actual_shadow_rows_ready",
+        "actual_shadow_unique_ready",
+        "actual_shadow_legacy_or_missing_count",
     ]
 
     exists = path.exists()
@@ -263,6 +273,15 @@ def build_progress_snapshot(summary, min_unique_setups, min_clean_known_outcomes
         "live_observation_file_stale": counts.get("live_observation_file_stale"),
         "live_observation_file_mtime": counts.get("live_observation_file_mtime"),
         "live_observation_shadow_count": counts.get("live_observation_shadow_count"),
+        "actual_shadow_maturity_ready": counts.get("actual_shadow_maturity_ready"),
+        "actual_shadow_maturity_recommendation": counts.get("actual_shadow_maturity_recommendation"),
+        "actual_shadow_observation_count": counts.get("actual_shadow_observation_count"),
+        "actual_shadow_unique_setup_count": counts.get("actual_shadow_unique_setup_count"),
+        "actual_shadow_min_rows": counts.get("actual_shadow_min_rows"),
+        "actual_shadow_min_unique_setups": counts.get("actual_shadow_min_unique_setups"),
+        "actual_shadow_rows_ready": counts.get("actual_shadow_rows_ready"),
+        "actual_shadow_unique_ready": counts.get("actual_shadow_unique_ready"),
+        "actual_shadow_legacy_or_missing_count": counts.get("actual_shadow_legacy_or_missing_count"),
     }
 
 
@@ -416,6 +435,15 @@ def main():
                 "60",
             ],
         },
+        {
+            "name": "Check actual shadow maturity",
+            "command": [
+                python_exe,
+                "scripts/check_actual_shadow_maturity.py",
+                "--source-dir",
+                source_dir_arg,
+            ],
+        },
     ]
 
     results = []
@@ -435,6 +463,7 @@ def main():
     shadow_persistence = load_json(paths["shadow_persistence"]) or {}
     shadow_observe_only_safety = load_json(paths["shadow_observe_only_safety"]) or {}
     live_observation_staleness = load_json(paths["live_observation_staleness"]) or {}
+    actual_shadow_maturity = load_json(paths["actual_shadow_maturity"]) or {}
 
     all_steps_ok = all(step.get("ok") for step in results)
 
@@ -484,6 +513,15 @@ def main():
             "live_observation_file_stale": (live_observation_staleness.get("file_status") or {}).get("file_stale"),
             "live_observation_file_mtime": (live_observation_staleness.get("file_status") or {}).get("file_mtime"),
             "live_observation_shadow_count": (live_observation_staleness.get("counts") or {}).get("shadow_populated_observation_count"),
+            "actual_shadow_maturity_ready": actual_shadow_maturity.get("live_shadow_maturity_ready"),
+            "actual_shadow_maturity_recommendation": actual_shadow_maturity.get("recommendation"),
+            "actual_shadow_observation_count": (actual_shadow_maturity.get("counts") or {}).get("actual_shadow_observation_count"),
+            "actual_shadow_unique_setup_count": (actual_shadow_maturity.get("counts") or {}).get("actual_shadow_unique_setup_count"),
+            "actual_shadow_min_rows": (actual_shadow_maturity.get("counts") or {}).get("min_actual_shadow_rows"),
+            "actual_shadow_min_unique_setups": (actual_shadow_maturity.get("counts") or {}).get("min_actual_shadow_unique_setups"),
+            "actual_shadow_rows_ready": (actual_shadow_maturity.get("counts") or {}).get("actual_shadow_rows_ready"),
+            "actual_shadow_unique_ready": (actual_shadow_maturity.get("counts") or {}).get("actual_shadow_unique_ready"),
+            "actual_shadow_legacy_or_missing_count": (actual_shadow_maturity.get("counts") or {}).get("legacy_or_missing_shadow_count"),
         },
         "next_actions": shadow_readiness.get("next_actions") or [],
         "steps": [compact_step_output(step) for step in results],
@@ -500,6 +538,7 @@ def main():
             "shadow_persistence": str(paths["shadow_persistence"]),
             "shadow_observe_only_safety": str(paths["shadow_observe_only_safety"]),
             "live_observation_staleness": str(paths["live_observation_staleness"]),
+            "actual_shadow_maturity": str(paths["actual_shadow_maturity"]),
         },
         "notes": [
             "This runner does not modify live trading behavior.",
@@ -559,6 +598,17 @@ def main():
     text_lines.append(f"file_age_minutes = {summary['counts'].get('live_observation_file_age_minutes')}")
     text_lines.append(f"file_stale = {summary['counts'].get('live_observation_file_stale')}")
     text_lines.append(f"shadow_populated_observation_count = {summary['counts'].get('live_observation_shadow_count')}")
+    text_lines.append("")
+    text_lines.append("[ACTUAL SHADOW MATURITY]")
+    text_lines.append(f"ready = {summary['counts'].get('actual_shadow_maturity_ready')}")
+    text_lines.append(f"recommendation = {summary['counts'].get('actual_shadow_maturity_recommendation')}")
+    text_lines.append(f"actual_shadow_observation_count = {summary['counts'].get('actual_shadow_observation_count')}")
+    text_lines.append(f"actual_shadow_unique_setup_count = {summary['counts'].get('actual_shadow_unique_setup_count')}")
+    text_lines.append(f"min_actual_shadow_rows = {summary['counts'].get('actual_shadow_min_rows')}")
+    text_lines.append(f"min_actual_shadow_unique_setups = {summary['counts'].get('actual_shadow_min_unique_setups')}")
+    text_lines.append(f"actual_shadow_rows_ready = {summary['counts'].get('actual_shadow_rows_ready')}")
+    text_lines.append(f"actual_shadow_unique_ready = {summary['counts'].get('actual_shadow_unique_ready')}")
+    text_lines.append(f"legacy_or_missing_shadow_count = {summary['counts'].get('actual_shadow_legacy_or_missing_count')}")
     text_lines.append("")
     text_lines.append("[NEXT ACTIONS]")
 
