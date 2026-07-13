@@ -32,6 +32,7 @@ def resolve_paths(source_dir):
         "phase2_shadow_readiness": output_dir / "phase2_shadow_readiness_report.json",
         "phase2_base_readiness": output_dir / "phase2_readiness_report.json",
         "outcome_quality_debug": output_dir / "confirmation_outcome_quality_debug.json",
+        "duplicate_audit": output_dir / "confirmation_duplicate_observation_audit.json",
     }
 
 
@@ -160,6 +161,10 @@ def append_csv_row(path, row):
         "clean_known_outcome_progress",
         "remaining_unique_setups",
         "remaining_clean_known_outcomes",
+        "duplicate_audit_rate",
+        "duplicate_audit_group_count",
+        "duplicate_audit_observation_count",
+        "duplicate_audit_recommendation",
     ]
 
     exists = path.exists()
@@ -215,6 +220,10 @@ def build_progress_snapshot(summary, min_unique_setups, min_clean_known_outcomes
         "clean_known_outcome_progress": clean_progress,
         "remaining_unique_setups": remaining_unique,
         "remaining_clean_known_outcomes": remaining_clean,
+        "duplicate_audit_rate": counts.get("duplicate_audit_rate"),
+        "duplicate_audit_group_count": counts.get("duplicate_audit_group_count"),
+        "duplicate_audit_observation_count": counts.get("duplicate_audit_observation_count"),
+        "duplicate_audit_recommendation": counts.get("duplicate_audit_recommendation"),
     }
 
 
@@ -328,6 +337,17 @@ def main():
                 source_dir_arg,
             ],
         },
+        {
+            "name": "Audit duplicate observations",
+            "command": [
+                python_exe,
+                "scripts/audit_confirmation_duplicate_observations.py",
+                "--source-dir",
+                source_dir_arg,
+                "--top",
+                "20",
+            ],
+        },
     ]
 
     results = []
@@ -343,6 +363,7 @@ def main():
     shadow_readiness = load_json(paths["phase2_shadow_readiness"]) or {}
     base_readiness = load_json(paths["phase2_base_readiness"]) or {}
     outcome_debug = load_json(paths["outcome_quality_debug"]) or {}
+    duplicate_audit = load_json(paths["duplicate_audit"]) or {}
 
     all_steps_ok = all(step.get("ok") for step in results)
 
@@ -370,6 +391,10 @@ def main():
             "outcome_quality_issue_count": shadow_policy_report.get("outcome_quality_issue_count"),
             "debugged_outcome_issue_count": outcome_debug.get("debugged_issue_count"),
             "debug_mixed_tp_sl_count": outcome_debug.get("mixed_tp_sl_count"),
+            "duplicate_audit_rate": duplicate_audit.get("duplicate_rate"),
+            "duplicate_audit_group_count": duplicate_audit.get("duplicate_group_count"),
+            "duplicate_audit_observation_count": duplicate_audit.get("duplicate_observation_count"),
+            "duplicate_audit_recommendation": duplicate_audit.get("recommendation"),
         },
         "next_actions": shadow_readiness.get("next_actions") or [],
         "steps": [compact_step_output(step) for step in results],
@@ -382,6 +407,7 @@ def main():
             "phase2_shadow_readiness": str(paths["phase2_shadow_readiness"]),
             "phase2_base_readiness": str(paths["phase2_base_readiness"]),
             "outcome_quality_debug": str(paths["outcome_quality_debug"]),
+            "duplicate_audit": str(paths["duplicate_audit"]),
         },
         "notes": [
             "This runner does not modify live trading behavior.",
@@ -411,6 +437,12 @@ def main():
     text_lines.append(f"clean_known_outcome_progress = {round((summary['counts'].get('clean_known_outcome_count_unique') or 0) / args.min_clean_known_outcomes, 4) if args.min_clean_known_outcomes else None}")
     text_lines.append(f"remaining_unique_setups = {max(0, args.min_unique_setups - int(summary['counts'].get('unique_setup_count') or 0))}")
     text_lines.append(f"remaining_clean_known_outcomes = {max(0, args.min_clean_known_outcomes - int(summary['counts'].get('clean_known_outcome_count_unique') or 0))}")
+    text_lines.append("")
+    text_lines.append("[DUPLICATE AUDIT]")
+    text_lines.append(f"duplicate_audit_rate = {summary['counts'].get('duplicate_audit_rate')}")
+    text_lines.append(f"duplicate_audit_group_count = {summary['counts'].get('duplicate_audit_group_count')}")
+    text_lines.append(f"duplicate_audit_observation_count = {summary['counts'].get('duplicate_audit_observation_count')}")
+    text_lines.append(f"duplicate_audit_recommendation = {summary['counts'].get('duplicate_audit_recommendation')}")
     text_lines.append("")
     text_lines.append("[NEXT ACTIONS]")
 
