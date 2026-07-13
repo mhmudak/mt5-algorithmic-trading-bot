@@ -153,8 +153,12 @@ def resolve_paths(source_dir):
         "observations_file": source_dir / "confirmation_observations.jsonl",
         "outcomes_file": source_dir / "setup_outcomes.json",
         "shadow_rows_csv": output_dir / "confirmation_shadow_observations.csv",
+        "unique_rows_csv": output_dir / "confirmation_shadow_unique_setups.csv",
         "decision_perf_csv": output_dir / "confirmation_shadow_decision_performance.csv",
+        "decision_perf_unique_csv": output_dir / "confirmation_shadow_decision_performance_unique.csv",
         "strategy_bucket_perf_csv": output_dir / "confirmation_shadow_strategy_bucket_performance.csv",
+        "strategy_bucket_perf_unique_csv": output_dir / "confirmation_shadow_strategy_bucket_performance_unique.csv",
+        "outcome_quality_csv": output_dir / "confirmation_shadow_outcome_quality.csv",
         "report_json": output_dir / "phase2_shadow_policy_report.json",
     }
 
@@ -266,6 +270,7 @@ def normalize_outcome(row):
         or boolish(row.get("w10"))
         or boolish(row.get("moved_10"))
         or safe_float(row.get("max_favorable_pips"), 0.0) >= 10
+        or safe_float(row.get("max_favorable"), 0.0) >= 10
     )
 
     breakeven = (
@@ -273,6 +278,8 @@ def normalize_outcome(row):
         or "BREAKEVEN" in outcome_text
         or "BE" == outcome_text.strip()
     )
+
+    mixed_tp_sl = tp_hit and sl_hit
 
     known = tp_hit or sl_hit or w10_hit or breakeven or outcome_text in {
         "TP",
@@ -284,7 +291,9 @@ def normalize_outcome(row):
         "CLOSED",
     }
 
-    if tp_hit:
+    if mixed_tp_sl:
+        label = "MIXED_TP_AND_SL"
+    elif tp_hit:
         label = "TP"
     elif sl_hit:
         label = "SL"
@@ -297,6 +306,31 @@ def normalize_outcome(row):
     else:
         label = "UNKNOWN"
 
+    max_favorable = safe_float(
+        row.get("max_favorable")
+        or row.get("max_favorable_pips")
+        or row.get("max_favorable_move"),
+        0.0,
+    )
+
+    max_adverse = safe_float(
+        row.get("max_adverse")
+        or row.get("max_adverse_pips")
+        or row.get("max_adverse_move"),
+        0.0,
+    )
+
+    outcome_quality_flags = []
+
+    if mixed_tp_sl:
+        outcome_quality_flags.append("tp_and_sl_both_true")
+
+    if known and label == "UNKNOWN":
+        outcome_quality_flags.append("known_but_label_unknown")
+
+    if w10_hit and not tp_hit and not sl_hit:
+        outcome_quality_flags.append("w10_without_final_tp_sl")
+
     return {
         "known_outcome": known,
         "outcome_label": label,
@@ -304,18 +338,10 @@ def normalize_outcome(row):
         "sl_hit": sl_hit,
         "w10_hit": w10_hit,
         "breakeven": breakeven,
-        "max_favorable": safe_float(
-            row.get("max_favorable")
-            or row.get("max_favorable_pips")
-            or row.get("max_favorable_move"),
-            0.0,
-        ),
-        "max_adverse": safe_float(
-            row.get("max_adverse")
-            or row.get("max_adverse_pips")
-            or row.get("max_adverse_move"),
-            0.0,
-        ),
+        "mixed_tp_sl": mixed_tp_sl,
+        "max_favorable": max_favorable,
+        "max_adverse": max_adverse,
+        "outcome_quality_flags": outcome_quality_flags,
     }
 
 
@@ -340,6 +366,22 @@ def load_outcomes_by_setup_id(path):
     return by_id
 
 
+def make_unique_key(row):
+    setup_id = row.get("setup_id")
+
+    if setup_id:
+        return f"setup_id::{setup_id}"
+
+    return "|".join([
+        "fallback",
+        str(row.get("strategy")),
+        str(row.get("signal")),
+        str(row.get("bucket")),
+        str(row.get("entry")),
+        str(row.get("created_at")),
+    ])
+
+
 def normalize_observations(rows, outcomes_by_id):
     normalized = []
 
@@ -361,6 +403,14 @@ def normalize_observations(rows, outcomes_by_id):
             "line_no": row.get("_line_no"),
             "created_at": row.get("created_at"),
             "setup_id": setup_id,
+            "unique_key": make_unique_key({
+                "setup_id": setup_id,
+                "strategy": strategy,
+                "signal": signal,
+                "bucket": bucket,
+                "entry": row.get("entry"),
+                "created_at": row.get("created_at"),
+            }),
             "strategy": strategy,
             "signal": signal,
             "bucket": bucket,
@@ -384,11 +434,38 @@ def normalize_observations(rows, outcomes_by_id):
             "sl_hit": outcome.get("sl_hit", False),
             "w10_hit": outcome.get("w10_hit", False),
             "breakeven": outcome.get("breakeven", False),
+            "mixed_tp_sl": outcome.get("mixed_tp_sl", False),
             "max_favorable": outcome.get("max_favorable"),
             "max_adverse": outcome.get("max_adverse"),
+            "outcome_quality_flags": outcome.get("outcome_quality_flags", []),
         })
 
     return normalized
+
+
+def deduplicate_rows(rows):
+    grouped = defaultdict(list)
+
+    for row in rows:
+        grouped[row.get("unique_key")].append(row)
+
+    unique_rows = []
+
+    for unique_key, items in grouped.items():
+        # Keep the latest observation for the same setup, because it has the most recent shadow policy fields.
+        items_sorted = sorted(items, key=lambda x: safe_int(x.get("line_no"), 0))
+        latest = dict(items_sorted[-1])
+
+        latest["duplicate_observation_count"] = len(items_sorted)
+        latest["first_line_no"] = items_sorted[0].get("line_no")
+        latest["last_line_no"] = items_sorted[-1].get("line_no")
+        latest["dedupe_method"] = "latest_by_setup_id_or_fallback_key"
+
+        unique_rows.append(latest)
+
+    unique_rows.sort(key=lambda x: safe_int(x.get("last_line_no"), 0))
+
+    return unique_rows
 
 
 def aggregate(rows, group_fields, min_samples=5, min_known=10):
@@ -408,6 +485,7 @@ def aggregate(rows, group_fields, min_samples=5, min_known=10):
         sl = sum(1 for x in items if x.get("sl_hit"))
         w10 = sum(1 for x in items if x.get("w10_hit"))
         be = sum(1 for x in items if x.get("breakeven"))
+        mixed = sum(1 for x in items if x.get("mixed_tp_sl"))
 
         avg_conf = round(sum(safe_float(x.get("confidence")) for x in items) / n, 3) if n else 0
         avg_delta = round(sum(safe_float(x.get("score_delta")) for x in items) / n, 3) if n else 0
@@ -418,6 +496,7 @@ def aggregate(rows, group_fields, min_samples=5, min_known=10):
         tp_rate = round(tp / known_base, 4) if known_base else None
         sl_rate = round(sl / known_base, 4) if known_base else None
         w10_rate = round(w10 / known_base, 4) if known_base else None
+        mixed_rate = round(mixed / known_base, 4) if known_base else None
 
         row = {
             "group": "|".join(str(x) for x in key),
@@ -428,9 +507,11 @@ def aggregate(rows, group_fields, min_samples=5, min_known=10):
             "sl_count": sl,
             "w10_count": w10,
             "breakeven_count": be,
+            "mixed_tp_sl_count": mixed,
             "tp_rate": tp_rate,
             "sl_rate": sl_rate,
             "w10_rate": w10_rate,
+            "mixed_tp_sl_rate": mixed_rate,
             "avg_confidence": avg_conf,
             "avg_score_delta": avg_delta,
             "avg_shadow_score": avg_shadow,
@@ -445,6 +526,8 @@ def aggregate(rows, group_fields, min_samples=5, min_known=10):
             recommendation = "TRACK_MORE"
         elif known < min_known:
             recommendation = "SHADOW_ONLY_NEED_MORE_OUTCOMES"
+        elif mixed_rate is not None and mixed_rate >= 0.30:
+            recommendation = "OUTCOME_DATA_AMBIGUOUS_REVIEW_FIRST"
         elif decision in {"HIGH_RISK", "BLOCK_CANDIDATE_OBSERVE_ONLY"} and sl_rate is not None and sl_rate >= 0.60:
             recommendation = "FUTURE_BLOCK_REVIEW_CANDIDATE"
         elif decision in {"CAUTION"} and sl_rate is not None and sl_rate >= 0.50:
@@ -469,9 +552,36 @@ def aggregate(rows, group_fields, min_samples=5, min_known=10):
     return output
 
 
+def build_outcome_quality_rows(rows):
+    output = []
+
+    for row in rows:
+        flags = row.get("outcome_quality_flags") or []
+
+        if flags or row.get("mixed_tp_sl"):
+            output.append({
+                "setup_id": row.get("setup_id"),
+                "strategy": row.get("strategy"),
+                "signal": row.get("signal"),
+                "bucket": row.get("bucket"),
+                "shadow_decision": row.get("shadow_decision"),
+                "known_outcome": row.get("known_outcome"),
+                "outcome_label": row.get("outcome_label"),
+                "tp_hit": row.get("tp_hit"),
+                "sl_hit": row.get("sl_hit"),
+                "w10_hit": row.get("w10_hit"),
+                "mixed_tp_sl": row.get("mixed_tp_sl"),
+                "flags": flags,
+                "max_favorable": row.get("max_favorable"),
+                "max_adverse": row.get("max_adverse"),
+            })
+
+    return output
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Analyze Phase 2A shadow confirmation policy labels."
+        description="Analyze Phase 2A shadow confirmation policy labels with dedupe and outcome quality checks."
     )
 
     parser.add_argument(
@@ -500,9 +610,17 @@ def main():
     outcomes_by_id = load_outcomes_by_setup_id(paths["outcomes_file"])
 
     rows = normalize_observations(observations, outcomes_by_id)
+    unique_rows = deduplicate_rows(rows)
 
     decision_perf = aggregate(
         rows,
+        ["shadow_decision"],
+        min_samples=args.min_samples,
+        min_known=args.min_known_outcomes,
+    )
+
+    decision_perf_unique = aggregate(
+        unique_rows,
         ["shadow_decision"],
         min_samples=args.min_samples,
         min_known=args.min_known_outcomes,
@@ -515,56 +633,97 @@ def main():
         min_known=args.min_known_outcomes,
     )
 
+    strategy_bucket_perf_unique = aggregate(
+        unique_rows,
+        ["shadow_decision", "strategy", "bucket"],
+        min_samples=args.min_samples,
+        min_known=args.min_known_outcomes,
+    )
+
+    outcome_quality_rows = build_outcome_quality_rows(unique_rows)
+
     report = {
         "created_at": datetime.now().isoformat(),
-        "phase": "Phase 2B",
+        "phase": "Phase 2C",
         "source_dir": str(paths["source_dir"]),
         "output_dir": str(paths["output_dir"]),
-        "observation_count": len(rows),
-        "matched_outcome_count": sum(1 for x in rows if x.get("matched_outcome")),
-        "known_outcome_count": sum(1 for x in rows if x.get("known_outcome")),
-        "shadow_backfilled_count": sum(1 for x in rows if x.get("shadow_backfilled")),
-        "decision_performance": decision_perf,
-        "top_strategy_bucket_performance": strategy_bucket_perf[:50],
+        "raw_observation_count": len(rows),
+        "unique_setup_count": len(unique_rows),
+        "duplicate_observation_count": max(0, len(rows) - len(unique_rows)),
+        "matched_outcome_count_raw": sum(1 for x in rows if x.get("matched_outcome")),
+        "known_outcome_count_raw": sum(1 for x in rows if x.get("known_outcome")),
+        "matched_outcome_count_unique": sum(1 for x in unique_rows if x.get("matched_outcome")),
+        "known_outcome_count_unique": sum(1 for x in unique_rows if x.get("known_outcome")),
+        "mixed_tp_sl_count_unique": sum(1 for x in unique_rows if x.get("mixed_tp_sl")),
+        "shadow_backfilled_count_raw": sum(1 for x in rows if x.get("shadow_backfilled")),
+        "shadow_backfilled_count_unique": sum(1 for x in unique_rows if x.get("shadow_backfilled")),
+        "decision_performance_raw": decision_perf,
+        "decision_performance_unique": decision_perf_unique,
+        "top_strategy_bucket_performance_raw": strategy_bucket_perf[:50],
+        "top_strategy_bucket_performance_unique": strategy_bucket_perf_unique[:50],
+        "outcome_quality_issue_count": len(outcome_quality_rows),
         "generated_files": {
             "shadow_rows_csv": str(paths["shadow_rows_csv"]),
+            "unique_rows_csv": str(paths["unique_rows_csv"]),
             "decision_perf_csv": str(paths["decision_perf_csv"]),
+            "decision_perf_unique_csv": str(paths["decision_perf_unique_csv"]),
             "strategy_bucket_perf_csv": str(paths["strategy_bucket_perf_csv"]),
+            "strategy_bucket_perf_unique_csv": str(paths["strategy_bucket_perf_unique_csv"]),
+            "outcome_quality_csv": str(paths["outcome_quality_csv"]),
             "report_json": str(paths["report_json"]),
         },
         "notes": [
-            "Phase 2B is analyzer-only.",
+            "Phase 2C is analyzer-only.",
             "No trades are blocked.",
-            "Old observations without shadow fields are backfilled using current Phase 2A policy.",
-            "Blocking decisions require more known outcomes.",
+            "Unique setup performance is more important than raw observation performance.",
+            "If TP and SL are both true, the outcome is treated as mixed/ambiguous for future blocking decisions.",
+            "Blocking decisions require more unique known outcomes.",
         ],
     }
 
     write_csv(paths["shadow_rows_csv"], rows)
+    write_csv(paths["unique_rows_csv"], unique_rows)
     write_csv(paths["decision_perf_csv"], decision_perf)
+    write_csv(paths["decision_perf_unique_csv"], decision_perf_unique)
     write_csv(paths["strategy_bucket_perf_csv"], strategy_bucket_perf)
+    write_csv(paths["strategy_bucket_perf_unique_csv"], strategy_bucket_perf_unique)
+    write_csv(paths["outcome_quality_csv"], outcome_quality_rows)
     write_json(paths["report_json"], report)
 
-    print("[PHASE 2B SHADOW POLICY ANALYZER] done")
-    print("observation_count =", report["observation_count"])
-    print("matched_outcome_count =", report["matched_outcome_count"])
-    print("known_outcome_count =", report["known_outcome_count"])
-    print("shadow_backfilled_count =", report["shadow_backfilled_count"])
-    print("shadow_rows_csv =", paths["shadow_rows_csv"])
-    print("decision_perf_csv =", paths["decision_perf_csv"])
-    print("strategy_bucket_perf_csv =", paths["strategy_bucket_perf_csv"])
+    print("[PHASE 2C SHADOW ANALYZER QUALITY] done")
+    print("raw_observation_count =", report["raw_observation_count"])
+    print("unique_setup_count =", report["unique_setup_count"])
+    print("duplicate_observation_count =", report["duplicate_observation_count"])
+    print("known_outcome_count_raw =", report["known_outcome_count_raw"])
+    print("known_outcome_count_unique =", report["known_outcome_count_unique"])
+    print("mixed_tp_sl_count_unique =", report["mixed_tp_sl_count_unique"])
+    print("outcome_quality_issue_count =", report["outcome_quality_issue_count"])
+    print("unique_rows_csv =", paths["unique_rows_csv"])
+    print("decision_perf_unique_csv =", paths["decision_perf_unique_csv"])
+    print("outcome_quality_csv =", paths["outcome_quality_csv"])
     print("report =", paths["report_json"])
 
-    if decision_perf:
+    if decision_perf_unique:
         print()
-        print("[DECISION PERFORMANCE]")
-        for row in decision_perf:
+        print("[UNIQUE DECISION PERFORMANCE]")
+        for row in decision_perf_unique:
             print(
                 f"{row.get('shadow_decision')} | "
                 f"n={row.get('n')} known={row.get('known_outcome_count')} "
                 f"tp_rate={row.get('tp_rate')} sl_rate={row.get('sl_rate')} "
-                f"w10_rate={row.get('w10_rate')} "
+                f"mixed={row.get('mixed_tp_sl_rate')} "
                 f"rec={row.get('recommendation')}"
+            )
+
+    if outcome_quality_rows:
+        print()
+        print("[OUTCOME QUALITY ISSUES]")
+        for row in outcome_quality_rows[:10]:
+            print(
+                f"{row.get('setup_id')} | "
+                f"{row.get('strategy')} | "
+                f"label={row.get('outcome_label')} | "
+                f"flags={row.get('flags')}"
             )
 
 
