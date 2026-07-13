@@ -1,4 +1,5 @@
 import argparse
+import csv
 import json
 import subprocess
 import sys
@@ -25,6 +26,8 @@ def resolve_paths(source_dir):
         "output_dir": output_dir,
         "suite_json": output_dir / "phase2_shadow_suite_report.json",
         "suite_txt": output_dir / "phase2_shadow_suite_output.txt",
+        "history_jsonl": output_dir / "phase2_shadow_suite_history.jsonl",
+        "history_csv": output_dir / "phase2_shadow_suite_history.csv",
         "phase2_shadow_report": output_dir / "phase2_shadow_policy_report.json",
         "phase2_shadow_readiness": output_dir / "phase2_shadow_readiness_report.json",
         "phase2_base_readiness": output_dir / "phase2_readiness_report.json",
@@ -122,6 +125,97 @@ def write_text(path, text):
         f.write(text)
 
     return path
+
+
+def append_jsonl(path, row):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+
+    return path
+
+
+def append_csv_row(path, row):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    headers = [
+        "created_at",
+        "account_name",
+        "all_steps_ok",
+        "shadow_monitoring_ready",
+        "shadow_calibration_ready",
+        "blocking_ready",
+        "recommendation",
+        "raw_observation_count",
+        "unique_setup_count",
+        "duplicate_observation_count",
+        "known_outcome_count_unique",
+        "clean_known_outcome_count_unique",
+        "mixed_tp_sl_count_unique",
+        "outcome_quality_issue_count",
+        "unique_setup_progress",
+        "clean_known_outcome_progress",
+        "remaining_unique_setups",
+        "remaining_clean_known_outcomes",
+    ]
+
+    exists = path.exists()
+
+    with path.open("a", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
+
+        if not exists:
+            writer.writeheader()
+
+        writer.writerow(row)
+
+    return path
+
+
+def safe_number(value, default=0):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def build_progress_snapshot(summary, min_unique_setups, min_clean_known_outcomes):
+    counts = summary.get("counts") or {}
+
+    unique_setup_count = safe_number(counts.get("unique_setup_count"), 0)
+    clean_known = safe_number(counts.get("clean_known_outcome_count_unique"), 0)
+
+    unique_progress = round(unique_setup_count / min_unique_setups, 4) if min_unique_setups else None
+    clean_progress = round(clean_known / min_clean_known_outcomes, 4) if min_clean_known_outcomes else None
+
+    remaining_unique = max(0, int(min_unique_setups - unique_setup_count))
+    remaining_clean = max(0, int(min_clean_known_outcomes - clean_known))
+
+    return {
+        "created_at": summary.get("created_at"),
+        "account_name": summary.get("account_name"),
+        "all_steps_ok": summary.get("all_steps_ok"),
+        "shadow_monitoring_ready": summary.get("shadow_monitoring_ready"),
+        "shadow_calibration_ready": summary.get("shadow_calibration_ready"),
+        "blocking_ready": summary.get("blocking_ready"),
+        "recommendation": summary.get("recommendation"),
+        "raw_observation_count": counts.get("raw_observation_count"),
+        "unique_setup_count": counts.get("unique_setup_count"),
+        "duplicate_observation_count": counts.get("duplicate_observation_count"),
+        "known_outcome_count_unique": counts.get("known_outcome_count_unique"),
+        "clean_known_outcome_count_unique": counts.get("clean_known_outcome_count_unique"),
+        "mixed_tp_sl_count_unique": counts.get("mixed_tp_sl_count_unique"),
+        "outcome_quality_issue_count": counts.get("outcome_quality_issue_count"),
+        "unique_setup_progress": unique_progress,
+        "clean_known_outcome_progress": clean_progress,
+        "remaining_unique_setups": remaining_unique,
+        "remaining_clean_known_outcomes": remaining_clean,
+    }
 
 
 def main():
@@ -282,6 +376,8 @@ def main():
         "generated_files": {
             "suite_json": str(paths["suite_json"]),
             "suite_txt": str(paths["suite_txt"]),
+            "history_jsonl": str(paths["history_jsonl"]),
+            "history_csv": str(paths["history_csv"]),
             "phase2_shadow_report": str(paths["phase2_shadow_report"]),
             "phase2_shadow_readiness": str(paths["phase2_shadow_readiness"]),
             "phase2_base_readiness": str(paths["phase2_base_readiness"]),
@@ -310,6 +406,12 @@ def main():
         text_lines.append(f"{key} = {value}")
 
     text_lines.append("")
+    text_lines.append("[PROGRESS]")
+    text_lines.append(f"unique_setup_progress = {round((summary['counts'].get('unique_setup_count') or 0) / args.min_unique_setups, 4) if args.min_unique_setups else None}")
+    text_lines.append(f"clean_known_outcome_progress = {round((summary['counts'].get('clean_known_outcome_count_unique') or 0) / args.min_clean_known_outcomes, 4) if args.min_clean_known_outcomes else None}")
+    text_lines.append(f"remaining_unique_setups = {max(0, args.min_unique_setups - int(summary['counts'].get('unique_setup_count') or 0))}")
+    text_lines.append(f"remaining_clean_known_outcomes = {max(0, args.min_clean_known_outcomes - int(summary['counts'].get('clean_known_outcome_count_unique') or 0))}")
+    text_lines.append("")
     text_lines.append("[NEXT ACTIONS]")
 
     if summary["next_actions"]:
@@ -326,8 +428,18 @@ def main():
 
     text_output = "\n".join(text_lines) + "\n"
 
+    progress_snapshot = build_progress_snapshot(
+        summary,
+        min_unique_setups=args.min_unique_setups,
+        min_clean_known_outcomes=args.min_clean_known_outcomes,
+    )
+
+    summary["progress_snapshot"] = progress_snapshot
+
     write_json(paths["suite_json"], summary)
     write_text(paths["suite_txt"], text_output)
+    append_jsonl(paths["history_jsonl"], progress_snapshot)
+    append_csv_row(paths["history_csv"], progress_snapshot)
 
     print()
     print("=" * 100)
@@ -335,6 +447,8 @@ def main():
     print("=" * 100)
     print("suite_json =", paths["suite_json"])
     print("suite_txt =", paths["suite_txt"])
+    print("history_jsonl =", paths["history_jsonl"])
+    print("history_csv =", paths["history_csv"])
 
     if not all_steps_ok:
         raise SystemExit(1)
