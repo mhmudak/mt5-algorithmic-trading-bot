@@ -37,6 +37,7 @@ def resolve_paths(source_dir):
         "shadow_observe_only_safety": output_dir / "confirmation_shadow_observe_only_safety_report.json",
         "live_observation_staleness": output_dir / "confirmation_live_observation_staleness_report.json",
         "actual_shadow_maturity": output_dir / "actual_shadow_maturity_report.json",
+        "trade_tracker_close_safety": output_dir / "trade_tracker_close_reconciliation_safety_report.json",
     }
 
 
@@ -196,6 +197,12 @@ def append_csv_row(path, row):
         "actual_shadow_rows_ready",
         "actual_shadow_unique_ready",
         "actual_shadow_legacy_or_missing_count",
+        "trade_tracker_close_safety_all_ok",
+        "trade_tracker_close_safety_recommendation",
+        "trade_tracker_detect_before_closed",
+        "trade_tracker_unresolved_keeps_open",
+        "trade_tracker_resolved_saves_close_price",
+        "trade_tracker_unresolved_pending_flag",
     ]
 
     exists = path.exists()
@@ -282,6 +289,12 @@ def build_progress_snapshot(summary, min_unique_setups, min_clean_known_outcomes
         "actual_shadow_rows_ready": counts.get("actual_shadow_rows_ready"),
         "actual_shadow_unique_ready": counts.get("actual_shadow_unique_ready"),
         "actual_shadow_legacy_or_missing_count": counts.get("actual_shadow_legacy_or_missing_count"),
+        "trade_tracker_close_safety_all_ok": counts.get("trade_tracker_close_safety_all_ok"),
+        "trade_tracker_close_safety_recommendation": counts.get("trade_tracker_close_safety_recommendation"),
+        "trade_tracker_detect_before_closed": counts.get("trade_tracker_detect_before_closed"),
+        "trade_tracker_unresolved_keeps_open": counts.get("trade_tracker_unresolved_keeps_open"),
+        "trade_tracker_resolved_saves_close_price": counts.get("trade_tracker_resolved_saves_close_price"),
+        "trade_tracker_unresolved_pending_flag": counts.get("trade_tracker_unresolved_pending_flag"),
     }
 
 
@@ -444,6 +457,15 @@ def main():
                 source_dir_arg,
             ],
         },
+        {
+            "name": "Check trade tracker close reconciliation safety",
+            "command": [
+                python_exe,
+                "scripts/check_trade_tracker_close_reconciliation_safety.py",
+                "--source-dir",
+                source_dir_arg,
+            ],
+        },
     ]
 
     results = []
@@ -464,6 +486,7 @@ def main():
     shadow_observe_only_safety = load_json(paths["shadow_observe_only_safety"]) or {}
     live_observation_staleness = load_json(paths["live_observation_staleness"]) or {}
     actual_shadow_maturity = load_json(paths["actual_shadow_maturity"]) or {}
+    trade_tracker_close_safety = load_json(paths["trade_tracker_close_safety"]) or {}
 
     all_steps_ok = all(step.get("ok") for step in results)
 
@@ -522,6 +545,12 @@ def main():
             "actual_shadow_rows_ready": (actual_shadow_maturity.get("counts") or {}).get("actual_shadow_rows_ready"),
             "actual_shadow_unique_ready": (actual_shadow_maturity.get("counts") or {}).get("actual_shadow_unique_ready"),
             "actual_shadow_legacy_or_missing_count": (actual_shadow_maturity.get("counts") or {}).get("legacy_or_missing_shadow_count"),
+            "trade_tracker_close_safety_all_ok": trade_tracker_close_safety.get("all_ok"),
+            "trade_tracker_close_safety_recommendation": trade_tracker_close_safety.get("recommendation"),
+            "trade_tracker_detect_before_closed": (trade_tracker_close_safety.get("checks") or {}).get("detect_close_before_marking_closed"),
+            "trade_tracker_unresolved_keeps_open": (trade_tracker_close_safety.get("checks") or {}).get("unresolved_keeps_status_open"),
+            "trade_tracker_resolved_saves_close_price": (trade_tracker_close_safety.get("checks") or {}).get("resolved_saves_close_price"),
+            "trade_tracker_unresolved_pending_flag": (trade_tracker_close_safety.get("checks") or {}).get("unresolved_sets_pending_true"),
         },
         "next_actions": shadow_readiness.get("next_actions") or [],
         "steps": [compact_step_output(step) for step in results],
@@ -539,6 +568,7 @@ def main():
             "shadow_observe_only_safety": str(paths["shadow_observe_only_safety"]),
             "live_observation_staleness": str(paths["live_observation_staleness"]),
             "actual_shadow_maturity": str(paths["actual_shadow_maturity"]),
+            "trade_tracker_close_safety": str(paths["trade_tracker_close_safety"]),
         },
         "notes": [
             "This runner does not modify live trading behavior.",
@@ -609,6 +639,14 @@ def main():
     text_lines.append(f"actual_shadow_rows_ready = {summary['counts'].get('actual_shadow_rows_ready')}")
     text_lines.append(f"actual_shadow_unique_ready = {summary['counts'].get('actual_shadow_unique_ready')}")
     text_lines.append(f"legacy_or_missing_shadow_count = {summary['counts'].get('actual_shadow_legacy_or_missing_count')}")
+    text_lines.append("")
+    text_lines.append("[TRADE TRACKER CLOSE SAFETY]")
+    text_lines.append(f"all_ok = {summary['counts'].get('trade_tracker_close_safety_all_ok')}")
+    text_lines.append(f"recommendation = {summary['counts'].get('trade_tracker_close_safety_recommendation')}")
+    text_lines.append(f"detect_close_before_marking_closed = {summary['counts'].get('trade_tracker_detect_before_closed')}")
+    text_lines.append(f"unresolved_keeps_status_open = {summary['counts'].get('trade_tracker_unresolved_keeps_open')}")
+    text_lines.append(f"unresolved_pending_flag = {summary['counts'].get('trade_tracker_unresolved_pending_flag')}")
+    text_lines.append(f"resolved_saves_close_price = {summary['counts'].get('trade_tracker_resolved_saves_close_price')}")
     text_lines.append("")
     text_lines.append("[NEXT ACTIONS]")
 
