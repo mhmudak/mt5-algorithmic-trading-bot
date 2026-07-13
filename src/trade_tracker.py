@@ -519,36 +519,46 @@ def update_trade_lifecycle(symbol: str):
                 current_position = open_positions_map.get(position_id)
                 changed = True
 
-        # Fully closed
+        # Fully closed / missing from open positions.
+        # Phase 2AC:
+        # Do not mark the trade CLOSED until a matching MT5 close deal is resolved.
+        # Previously, the tracker set status=CLOSED before checking close details.
+        # If no close deal was found, the trade remained saved as broken CLOSED and
+        # future lifecycle passes skipped it.
         if current_position is None:
             if tracked_remaining > 0:
-                closed_now = tracked_remaining
-                trade["closed_volume"] = round(float(trade.get("closed_volume", 0.0)) + closed_now, 2)
-                trade["remaining_volume"] = 0.0
-                trade["status"] = "CLOSED"
-                trade["close_time"] = datetime.now().isoformat()
-
                 close_details = detect_close_details(position_id, trade=trade)
 
                 if not close_details.get("found_close_deal"):
                     trade["missing_position_checks"] = int(trade.get("missing_position_checks", 0)) + 1
                     trade["last_missing_position_check"] = datetime.now().isoformat()
+                    trade["close_reconciliation_pending"] = True
+                    trade["status"] = "OPEN"
                     changed = True
-                
+
                     logger.warning(
                         f"[TRACKER] Position missing but no close deal found yet | "
                         f"position={position_id} checks={trade['missing_position_checks']} "
                         f"status remains OPEN"
                     )
-                
+
                     continue
-                
+
+                closed_now = tracked_remaining
+                trade["closed_volume"] = round(float(trade.get("closed_volume", 0.0)) + closed_now, 2)
+                trade["remaining_volume"] = 0.0
+                trade["status"] = "CLOSED"
+                trade["close_time"] = datetime.now().isoformat()
+                trade["close_reconciliation_pending"] = False
+
                 close_reason = close_details["close_reason"]
                 realized_profit = close_details["realized_profit"]
                 close_price = close_details["close_price"]
 
                 trade["close_reason"] = close_reason
                 trade["realized_profit"] = realized_profit
+                trade["close_price"] = close_price
+
                 if realized_profit > 0:
                     trade["final_result"] = "WIN"
                 elif realized_profit < 0:
