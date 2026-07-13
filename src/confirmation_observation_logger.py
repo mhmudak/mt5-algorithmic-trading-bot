@@ -159,6 +159,16 @@ def build_confirmation_observation_record(
         "approved": report.get("approved"),
         "confidence": report.get("confidence"),
         "score_delta": report.get("score_delta"),
+
+        # Phase 2M: persist shadow policy fields.
+        # These are observe-only labels and must not affect execution.
+        "shadow_decision": report.get("shadow_decision"),
+        "shadow_score": report.get("shadow_score"),
+        "shadow_action": report.get("shadow_action"),
+        "shadow_reason": report.get("shadow_reason"),
+        "shadow_policy_version": report.get("shadow_policy_version"),
+        "shadow_blocking_allowed": report.get("shadow_blocking_allowed"),
+
         "summary": report.get("summary"),
         "enforce_required": report.get("enforce_required"),
         "strategy": report.get("strategy") or signal_data.get("strategy") or trade_plan.get("strategy"),
