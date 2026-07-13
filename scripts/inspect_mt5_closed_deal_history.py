@@ -260,12 +260,15 @@ def main():
         if deal.get("entry_label") in ["OUT", "INOUT", "OUT_BY"]
     ]
 
-    if not close_deals:
-        close_deals = [
-            deal
-            for deal in symbol_window_deals
-            if deal.get("entry_label") in ["OUT", "INOUT", "OUT_BY"]
-        ]
+    # Phase 2Z:
+    # Strict mode. Never infer the target trade result from unrelated
+    # XAUUSD close deals in the same time window.
+    unrelated_symbol_close_deals = [
+        deal
+        for deal in symbol_window_deals
+        if deal.get("entry_label") in ["OUT", "INOUT", "OUT_BY"]
+        and deal not in close_deals
+    ]
 
     total_profit = sum(float(deal.get("profit") or 0) for deal in close_deals)
     total_commission = sum(float(deal.get("commission") or 0) for deal in close_deals)
@@ -306,7 +309,9 @@ def main():
         else:
             inferred["final_result_guess"] = "CLOSED_FLAT"
     else:
-        inferred["final_result_guess"] = "UNKNOWN"
+        inferred["final_result_guess"] = "TARGET_CLOSE_DEAL_NOT_FOUND"
+
+    inferred["unrelated_symbol_close_deal_count"] = len(unrelated_symbol_close_deals)
 
     report = {
         "created_at": datetime.now().isoformat(),
@@ -324,6 +329,7 @@ def main():
         "inferred": inferred,
         "matched_deals": matched_deals,
         "close_deals": close_deals,
+        "unrelated_symbol_close_deals": unrelated_symbol_close_deals,
         "symbol_window_deals": symbol_window_deals,
         "orders_in_window": raw_orders,
         "generated_files": {
@@ -359,6 +365,7 @@ def main():
     print("[DEALS]")
     print("matched_deal_count =", len(matched_deals))
     print("close_deal_count =", len(close_deals))
+    print("unrelated_symbol_close_deal_count =", len(unrelated_symbol_close_deals))
     print("symbol_window_deal_count =", len(symbol_window_deals))
 
     print()
