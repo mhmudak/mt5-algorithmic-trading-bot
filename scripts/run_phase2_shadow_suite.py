@@ -39,6 +39,7 @@ def resolve_paths(source_dir):
         "actual_shadow_maturity": output_dir / "actual_shadow_maturity_report.json",
         "trade_tracker_close_safety": output_dir / "trade_tracker_close_reconciliation_safety_report.json",
         "postfix_trade_reconciliation": output_dir / "postfix_trade_reconciliation_report.json",
+        "confirmation_duplicate_guard_safety": output_dir / "confirmation_duplicate_guard_safety_report.json",
     }
 
 
@@ -213,6 +214,12 @@ def append_csv_row(path, row):
         "postfix_new_clean_closed_trade_count",
         "postfix_pending_reconciliation_count",
         "postfix_issue_trade_count",
+        "confirmation_duplicate_guard_safety_all_ok",
+        "confirmation_duplicate_guard_safety_recommendation",
+        "confirmation_duplicate_guard_enabled",
+        "confirmation_duplicate_guard_temp_test_passed",
+        "confirmation_duplicate_guard_actual_row_count",
+        "confirmation_duplicate_guard_attempted_write_count",
     ]
 
     exists = path.exists()
@@ -314,6 +321,12 @@ def build_progress_snapshot(summary, min_unique_setups, min_clean_known_outcomes
         "postfix_new_clean_closed_trade_count": counts.get("postfix_new_clean_closed_trade_count"),
         "postfix_pending_reconciliation_count": counts.get("postfix_pending_reconciliation_count"),
         "postfix_issue_trade_count": counts.get("postfix_issue_trade_count"),
+        "confirmation_duplicate_guard_safety_all_ok": counts.get("confirmation_duplicate_guard_safety_all_ok"),
+        "confirmation_duplicate_guard_safety_recommendation": counts.get("confirmation_duplicate_guard_safety_recommendation"),
+        "confirmation_duplicate_guard_enabled": counts.get("confirmation_duplicate_guard_enabled"),
+        "confirmation_duplicate_guard_temp_test_passed": counts.get("confirmation_duplicate_guard_temp_test_passed"),
+        "confirmation_duplicate_guard_actual_row_count": counts.get("confirmation_duplicate_guard_actual_row_count"),
+        "confirmation_duplicate_guard_attempted_write_count": counts.get("confirmation_duplicate_guard_attempted_write_count"),
     }
 
 
@@ -494,6 +507,15 @@ def main():
                 source_dir_arg,
             ],
         },
+        {
+            "name": "Check confirmation duplicate guard safety",
+            "command": [
+                python_exe,
+                "scripts/check_confirmation_duplicate_guard_safety.py",
+                "--source-dir",
+                source_dir_arg,
+            ],
+        },
     ]
 
     results = []
@@ -516,6 +538,7 @@ def main():
     actual_shadow_maturity = load_json(paths["actual_shadow_maturity"]) or {}
     trade_tracker_close_safety = load_json(paths["trade_tracker_close_safety"]) or {}
     postfix_trade_reconciliation = load_json(paths["postfix_trade_reconciliation"]) or {}
+    confirmation_duplicate_guard_safety = load_json(paths["confirmation_duplicate_guard_safety"]) or {}
 
     all_steps_ok = all(step.get("ok") for step in results)
 
@@ -589,6 +612,12 @@ def main():
             "postfix_new_clean_closed_trade_count": (postfix_trade_reconciliation.get("counts") or {}).get("new_postfix_clean_closed_trade_count"),
             "postfix_pending_reconciliation_count": (postfix_trade_reconciliation.get("counts") or {}).get("new_postfix_pending_reconciliation_count"),
             "postfix_issue_trade_count": (postfix_trade_reconciliation.get("counts") or {}).get("new_postfix_issue_trade_count"),
+            "confirmation_duplicate_guard_safety_all_ok": confirmation_duplicate_guard_safety.get("all_ok"),
+            "confirmation_duplicate_guard_safety_recommendation": confirmation_duplicate_guard_safety.get("recommendation"),
+            "confirmation_duplicate_guard_enabled": (confirmation_duplicate_guard_safety.get("checks") or {}).get("duplicate_guard_enabled"),
+            "confirmation_duplicate_guard_temp_test_passed": (confirmation_duplicate_guard_safety.get("checks") or {}).get("temp_duplicate_test_passed"),
+            "confirmation_duplicate_guard_actual_row_count": (confirmation_duplicate_guard_safety.get("duplicate_test") or {}).get("actual_row_count"),
+            "confirmation_duplicate_guard_attempted_write_count": (confirmation_duplicate_guard_safety.get("duplicate_test") or {}).get("attempted_write_count"),
         },
         "next_actions": shadow_readiness.get("next_actions") or [],
         "steps": [compact_step_output(step) for step in results],
@@ -608,6 +637,7 @@ def main():
             "actual_shadow_maturity": str(paths["actual_shadow_maturity"]),
             "trade_tracker_close_safety": str(paths["trade_tracker_close_safety"]),
             "postfix_trade_reconciliation": str(paths["postfix_trade_reconciliation"]),
+            "confirmation_duplicate_guard_safety": str(paths["confirmation_duplicate_guard_safety"]),
         },
         "notes": [
             "This runner does not modify live trading behavior.",
@@ -697,6 +727,14 @@ def main():
     text_lines.append(f"new_postfix_clean_closed_trade_count = {summary['counts'].get('postfix_new_clean_closed_trade_count')}")
     text_lines.append(f"new_postfix_pending_reconciliation_count = {summary['counts'].get('postfix_pending_reconciliation_count')}")
     text_lines.append(f"new_postfix_issue_trade_count = {summary['counts'].get('postfix_issue_trade_count')}")
+    text_lines.append("")
+    text_lines.append("[CONFIRMATION DUPLICATE GUARD SAFETY]")
+    text_lines.append(f"all_ok = {summary['counts'].get('confirmation_duplicate_guard_safety_all_ok')}")
+    text_lines.append(f"recommendation = {summary['counts'].get('confirmation_duplicate_guard_safety_recommendation')}")
+    text_lines.append(f"duplicate_guard_enabled = {summary['counts'].get('confirmation_duplicate_guard_enabled')}")
+    text_lines.append(f"temp_duplicate_test_passed = {summary['counts'].get('confirmation_duplicate_guard_temp_test_passed')}")
+    text_lines.append(f"attempted_write_count = {summary['counts'].get('confirmation_duplicate_guard_attempted_write_count')}")
+    text_lines.append(f"actual_row_count = {summary['counts'].get('confirmation_duplicate_guard_actual_row_count')}")
     text_lines.append("")
     text_lines.append("[NEXT ACTIONS]")
 
