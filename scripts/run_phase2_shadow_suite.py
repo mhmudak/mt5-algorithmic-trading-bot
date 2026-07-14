@@ -40,6 +40,7 @@ def resolve_paths(source_dir):
         "trade_tracker_close_safety": output_dir / "trade_tracker_close_reconciliation_safety_report.json",
         "postfix_trade_reconciliation": output_dir / "postfix_trade_reconciliation_report.json",
         "confirmation_duplicate_guard_safety": output_dir / "confirmation_duplicate_guard_safety_report.json",
+        "postfix_outcome_reconciliation": output_dir / "postfix_outcome_reconciliation_report.json",
     }
 
 
@@ -220,6 +221,12 @@ def append_csv_row(path, row):
         "confirmation_duplicate_guard_temp_test_passed",
         "confirmation_duplicate_guard_actual_row_count",
         "confirmation_duplicate_guard_attempted_write_count",
+        "postfix_outcome_reconciliation_all_ok",
+        "postfix_outcome_reconciliation_recommendation",
+        "postfix_outcome_clean_closed_trade_count",
+        "postfix_outcome_audited_trade_count",
+        "postfix_outcome_issue_trade_count",
+        "postfix_outcome_setup_outcome_count",
     ]
 
     exists = path.exists()
@@ -327,6 +334,12 @@ def build_progress_snapshot(summary, min_unique_setups, min_clean_known_outcomes
         "confirmation_duplicate_guard_temp_test_passed": counts.get("confirmation_duplicate_guard_temp_test_passed"),
         "confirmation_duplicate_guard_actual_row_count": counts.get("confirmation_duplicate_guard_actual_row_count"),
         "confirmation_duplicate_guard_attempted_write_count": counts.get("confirmation_duplicate_guard_attempted_write_count"),
+        "postfix_outcome_reconciliation_all_ok": counts.get("postfix_outcome_reconciliation_all_ok"),
+        "postfix_outcome_reconciliation_recommendation": counts.get("postfix_outcome_reconciliation_recommendation"),
+        "postfix_outcome_clean_closed_trade_count": counts.get("postfix_outcome_clean_closed_trade_count"),
+        "postfix_outcome_audited_trade_count": counts.get("postfix_outcome_audited_trade_count"),
+        "postfix_outcome_issue_trade_count": counts.get("postfix_outcome_issue_trade_count"),
+        "postfix_outcome_setup_outcome_count": counts.get("postfix_outcome_setup_outcome_count"),
     }
 
 
@@ -508,6 +521,15 @@ def main():
             ],
         },
         {
+            "name": "Check post-fix outcome reconciliation",
+            "command": [
+                python_exe,
+                "scripts/check_postfix_outcome_reconciliation.py",
+                "--source-dir",
+                source_dir_arg,
+            ],
+        },
+        {
             "name": "Check confirmation duplicate guard safety",
             "command": [
                 python_exe,
@@ -539,6 +561,7 @@ def main():
     trade_tracker_close_safety = load_json(paths["trade_tracker_close_safety"]) or {}
     postfix_trade_reconciliation = load_json(paths["postfix_trade_reconciliation"]) or {}
     confirmation_duplicate_guard_safety = load_json(paths["confirmation_duplicate_guard_safety"]) or {}
+    postfix_outcome_reconciliation = load_json(paths["postfix_outcome_reconciliation"]) or {}
 
     all_steps_ok = all(step.get("ok") for step in results)
 
@@ -618,6 +641,12 @@ def main():
             "confirmation_duplicate_guard_temp_test_passed": (confirmation_duplicate_guard_safety.get("checks") or {}).get("temp_duplicate_test_passed"),
             "confirmation_duplicate_guard_actual_row_count": (confirmation_duplicate_guard_safety.get("duplicate_test") or {}).get("actual_row_count"),
             "confirmation_duplicate_guard_attempted_write_count": (confirmation_duplicate_guard_safety.get("duplicate_test") or {}).get("attempted_write_count"),
+            "postfix_outcome_reconciliation_all_ok": postfix_outcome_reconciliation.get("all_ok"),
+            "postfix_outcome_reconciliation_recommendation": postfix_outcome_reconciliation.get("recommendation"),
+            "postfix_outcome_clean_closed_trade_count": (postfix_outcome_reconciliation.get("counts") or {}).get("postfix_clean_closed_trade_count"),
+            "postfix_outcome_audited_trade_count": (postfix_outcome_reconciliation.get("counts") or {}).get("audited_trade_count"),
+            "postfix_outcome_issue_trade_count": (postfix_outcome_reconciliation.get("counts") or {}).get("issue_trade_count"),
+            "postfix_outcome_setup_outcome_count": (postfix_outcome_reconciliation.get("counts") or {}).get("setup_outcome_count"),
         },
         "next_actions": shadow_readiness.get("next_actions") or [],
         "steps": [compact_step_output(step) for step in results],
@@ -638,6 +667,7 @@ def main():
             "trade_tracker_close_safety": str(paths["trade_tracker_close_safety"]),
             "postfix_trade_reconciliation": str(paths["postfix_trade_reconciliation"]),
             "confirmation_duplicate_guard_safety": str(paths["confirmation_duplicate_guard_safety"]),
+            "postfix_outcome_reconciliation": str(paths["postfix_outcome_reconciliation"]),
         },
         "notes": [
             "This runner does not modify live trading behavior.",
@@ -727,6 +757,14 @@ def main():
     text_lines.append(f"new_postfix_clean_closed_trade_count = {summary['counts'].get('postfix_new_clean_closed_trade_count')}")
     text_lines.append(f"new_postfix_pending_reconciliation_count = {summary['counts'].get('postfix_pending_reconciliation_count')}")
     text_lines.append(f"new_postfix_issue_trade_count = {summary['counts'].get('postfix_issue_trade_count')}")
+    text_lines.append("")
+    text_lines.append("[POST-FIX OUTCOME RECONCILIATION]")
+    text_lines.append(f"all_ok = {summary['counts'].get('postfix_outcome_reconciliation_all_ok')}")
+    text_lines.append(f"recommendation = {summary['counts'].get('postfix_outcome_reconciliation_recommendation')}")
+    text_lines.append(f"clean_closed_trade_count = {summary['counts'].get('postfix_outcome_clean_closed_trade_count')}")
+    text_lines.append(f"audited_trade_count = {summary['counts'].get('postfix_outcome_audited_trade_count')}")
+    text_lines.append(f"issue_trade_count = {summary['counts'].get('postfix_outcome_issue_trade_count')}")
+    text_lines.append(f"setup_outcome_count = {summary['counts'].get('postfix_outcome_setup_outcome_count')}")
     text_lines.append("")
     text_lines.append("[CONFIRMATION DUPLICATE GUARD SAFETY]")
     text_lines.append(f"all_ok = {summary['counts'].get('confirmation_duplicate_guard_safety_all_ok')}")
