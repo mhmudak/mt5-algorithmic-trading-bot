@@ -6,6 +6,7 @@ import MetaTrader5 as mt5
 from src.logger import logger
 from src.notifier import send_telegram_message
 from src.setup_audit import log_setup_event
+from src.setup_outcome_reconciler import reconcile_setup_outcome_from_closed_trade
 from config.settings import (
     ENABLE_COOLDOWN_AFTER_SL,
     COOLDOWN_AFTER_SL_MINUTES,
@@ -614,6 +615,18 @@ def update_trade_lifecycle(symbol: str):
                         "closed_volume": trade.get("closed_volume", 0.0),
                     },
                 )
+
+                # Phase 2AM:
+                # Keep setup_outcomes.json synchronized with clean trade closes.
+                # Best-effort only. It must never block live execution.
+                reconcile_result = reconcile_setup_outcome_from_closed_trade(trade)
+
+                if not reconcile_result.get("ok"):
+                    logger.warning(
+                        "[TRACKER] setup outcome reconciliation issue | position=%s result=%s",
+                        position_id,
+                        reconcile_result,
+                    )
             continue
 
         # Partial close
