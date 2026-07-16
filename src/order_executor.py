@@ -1,4 +1,5 @@
 import time
+from time import perf_counter
 
 from src.logger import logger
 from datetime import datetime
@@ -349,6 +350,28 @@ def is_rollover_trading_blocked():
 
     return False, None
 
+def _execution_timing_ms(start_time):
+    try:
+        return round((perf_counter() - start_time) * 1000, 2)
+    except Exception:
+        return None
+
+
+def _log_execution_timing(stage, start_time, **extra):
+    elapsed_ms = _execution_timing_ms(start_time)
+
+    details = " ".join([
+        f"{key}={value}"
+        for key, value in extra.items()
+        if value is not None
+    ])
+
+    logger.info(
+        f"[EXECUTION TIMING] stage={stage} elapsed_ms={elapsed_ms} {details}"
+    )
+
+    return elapsed_ms
+
 def calculate_directional_slippage(signal, expected_price, execution_price):
     # Directional slippage:
     # BUY: execution above expected is adverse; below expected is favorable.
@@ -417,6 +440,15 @@ def is_favorable_execution_drift_too_high(signal, expected_price, execution_pric
     return favorable > max_favorable_drift, report
 
 def execute_trade(signal, trade_plan, symbol):
+    execution_start_ts = perf_counter()
+    _log_execution_timing(
+        "execute_trade_start",
+        execution_start_ts,
+        symbol=symbol,
+        signal=signal,
+        setup_id=trade_plan.get("setup_id") if isinstance(trade_plan, dict) else None,
+        strategy=trade_plan.get("strategy") if isinstance(trade_plan, dict) else None,
+    )
     if EXECUTION_MODE == "SIMULATION":
         print("\n[SIMULATION MODE]")
         print(f"Would execute {signal} trade:")
@@ -621,6 +653,13 @@ def execute_trade(signal, trade_plan, symbol):
         request = base_request.copy()
         request["type_filling"] = filling_mode
 
+        _log_execution_timing(
+            "before_fresh_tick",
+            execution_start_ts,
+            symbol=symbol,
+            signal=signal,
+        )
+
         fresh_tick = mt5.symbol_info_tick(symbol)
 
         if fresh_tick is None:
@@ -634,6 +673,15 @@ def execute_trade(signal, trade_plan, symbol):
         
         expected_price = float(trade_plan["entry_price"])
         current_execution_price = fresh_tick.ask if signal == "BUY" else fresh_tick.bid
+
+        _log_execution_timing(
+            "fresh_tick_received",
+            execution_start_ts,
+            symbol=symbol,
+            signal=signal,
+            expected_price=expected_price,
+            current_execution_price=round(current_execution_price, 2),
+        )
         
         slippage_blocked, pre_send_slippage_report = is_adverse_slippage_too_high(
             signal=signal,
@@ -739,6 +787,15 @@ def execute_trade(signal, trade_plan, symbol):
                 f"Reason: price moved too far before execution; setup may be stale/fake"
             )
 
+            _log_execution_timing(
+                "blocked_favorable_drift",
+                execution_start_ts,
+                symbol=symbol,
+                signal=signal,
+                favorable=round(pre_send_favorable_slippage, 2),
+                adverse=round(pre_send_adverse_slippage, 2),
+            )
+
             return False
         
         if skip_slippage_guard and slippage_blocked:
@@ -755,7 +812,25 @@ def execute_trade(signal, trade_plan, symbol):
         
         request["price"] = current_execution_price
 
+        _log_execution_timing(
+            "before_order_send",
+            execution_start_ts,
+            symbol=symbol,
+            signal=signal,
+            request_price=round(current_execution_price, 2),
+            filling_mode=filling_mode,
+        )
+
         result = mt5.order_send(request)
+
+        _log_execution_timing(
+            "after_order_send",
+            execution_start_ts,
+            symbol=symbol,
+            signal=signal,
+            filling_mode=filling_mode,
+            retcode=getattr(result, "retcode", None) if result is not None else None,
+        )
 
         if result is None:
             last_error_message = (
@@ -822,7 +897,25 @@ def execute_trade(signal, trade_plan, symbol):
             f"Absolute Movement: {round(slippage or 0.0, 2)}"
         )
 
+    _log_execution_timing(
+        "execution_success_before_register_trade",
+        execution_start_ts,
+        symbol=symbol,
+        signal=signal,
+        executed_price=executed_price,
+        adverse_slippage=adverse_slippage,
+        favorable_slippage=favorable_slippage,
+    )
+
     register_executed_trade(symbol, signal, trade_plan, result)
+
+    _log_execution_timing(
+        "execution_success_after_register_trade",
+        execution_start_ts,
+        symbol=symbol,
+        signal=signal,
+        executed_price=executed_price,
+    )
 
     send_telegram_message(
         f"✅ Trade Executed\n"
