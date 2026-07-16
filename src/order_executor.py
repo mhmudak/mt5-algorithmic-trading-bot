@@ -7,6 +7,8 @@ import MetaTrader5 as mt5
 from config.settings import (
     EXECUTION_MODE,
     MAX_SLIPPAGE,
+    ENABLE_EXECUTION_FAVORABLE_DRIFT_GUARD,
+    MAX_FAVORABLE_EXECUTION_DRIFT,
     ENABLE_PRICE_DRIFT_GUARD,
     MAX_ENTRY_PRICE_DRIFT,
     ENABLE_HIGH_SLIPPAGE_RETRACEMENT,
@@ -399,6 +401,21 @@ def is_adverse_slippage_too_high(signal, expected_price, execution_price, max_sl
 
     return adverse > max_slippage, report
 
+
+def is_favorable_execution_drift_too_high(signal, expected_price, execution_price, max_favorable_drift):
+    report = calculate_directional_slippage(
+        signal=signal,
+        expected_price=expected_price,
+        execution_price=execution_price,
+    )
+
+    favorable = report.get("favorable")
+
+    if favorable is None:
+        return False, report
+
+    return favorable > max_favorable_drift, report
+
 def execute_trade(signal, trade_plan, symbol):
     if EXECUTION_MODE == "SIMULATION":
         print("\n[SIMULATION MODE]")
@@ -677,6 +694,51 @@ def execute_trade(signal, trade_plan, symbol):
                 f"Action: This setup ID will not be executed again during memory window"
             )
         
+            return False
+
+        if (
+            ENABLE_EXECUTION_FAVORABLE_DRIFT_GUARD
+            and pre_send_favorable_slippage is not None
+            and pre_send_favorable_slippage > MAX_FAVORABLE_EXECUTION_DRIFT
+        ):
+            remember_blocked_setup(
+                setup_id=trade_plan.get("setup_id"),
+                symbol=symbol,
+                strategy=trade_plan.get("strategy", "UNKNOWN"),
+                signal=signal,
+                reason="SETUP_STALE_FAVORABLE_DRIFT",
+                expected_price=expected_price,
+                current_price=round(current_execution_price, 2),
+                slippage=round(pre_send_favorable_slippage, 2),
+                max_allowed=MAX_FAVORABLE_EXECUTION_DRIFT,
+            )
+
+            logger.warning(
+                f"[EXECUTION BLOCKED] Favorable drift too large / setup stale | "
+                f"strategy={trade_plan.get('strategy', 'UNKNOWN')} "
+                f"signal={signal} expected={expected_price} "
+                f"current={current_execution_price} "
+                f"favorable={round(pre_send_favorable_slippage, 2)} "
+                f"adverse={round(pre_send_adverse_slippage, 2)} "
+                f"absolute={round(pre_send_absolute_slippage, 2)} "
+                f"max_favorable={MAX_FAVORABLE_EXECUTION_DRIFT}"
+            )
+
+            send_telegram_message(
+                f"⛔ Trade Blocked: Favorable Drift / Setup Stale\n"
+                f"Symbol: {symbol}\n"
+                f"Signal: {signal}\n"
+                f"Strategy: {trade_plan.get('strategy', 'UNKNOWN')}\n"
+                f"Expected: {expected_price}\n"
+                f"Current: {round(current_execution_price, 2)}\n"
+                f"Favorable Drift: {round(pre_send_favorable_slippage, 2)}\n"
+                f"Adverse Slippage: {round(pre_send_adverse_slippage, 2)}\n"
+                f"Absolute Movement: {round(pre_send_absolute_slippage, 2)}\n"
+                f"Max Favorable Allowed: {MAX_FAVORABLE_EXECUTION_DRIFT}\n"
+                f"Action: No trade executed\n"
+                f"Reason: price moved too far before execution; setup may be stale/fake"
+            )
+
             return False
         
         if skip_slippage_guard and slippage_blocked:

@@ -213,6 +213,12 @@ HIGH_SLIPPAGE_WAIT_TIMEOUT_SECONDS = 1800
 HIGH_SLIPPAGE_WAIT_POLL_SECONDS = 5
 
 # =========================
+# Execution Favorable Drift / Freshness Guard
+# =========================
+ENABLE_EXECUTION_FAVORABLE_DRIFT_GUARD = True
+MAX_FAVORABLE_EXECUTION_DRIFT = 1.0
+
+# =========================
 # Execution Price Drift Guard
 # =========================
 ENABLE_PRICE_DRIFT_GUARD = True
@@ -1045,6 +1051,7 @@ EXECUTION_BLOCK_MEMORY_EXPIRY_MINUTES = 90
 EXECUTION_BLOCK_MEMORY_REASONS = [
     "HIGH_SLIPPAGE",
     "HIGH_ADVERSE_SLIPPAGE",
+    "SETUP_STALE_FAVORABLE_DRIFT",
 ]
 
 # =========================
