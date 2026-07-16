@@ -3950,7 +3950,19 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
         setup_source_bucket_override="INTRABAR",
     )
 
+    _live_execute_start_ts = time.perf_counter()
+    logger.info(
+        f"[LIVE EXECUTION TIMING] stage=before_execute_trade "
+        f"symbol={SYMBOL} signal={signal} "
+        f"setup_id={trade_plan.get('setup_id') if isinstance(trade_plan, dict) else None} "
+        f"strategy={trade_plan.get('strategy') if isinstance(trade_plan, dict) else None}"
+    )
     execution_result = execute_trade(signal, trade_plan, SYMBOL)
+    logger.info(
+        f"[LIVE EXECUTION TIMING] stage=after_execute_trade "
+        f"elapsed_ms={round((time.perf_counter() - _live_execute_start_ts) * 1000, 2)} "
+        f"symbol={SYMBOL} signal={signal} result={execution_result}"
+    )
 
     if execution_result:
         news_context = attach_news_context_to_signal_data(signal_data)
@@ -4674,7 +4686,19 @@ def process_wait_fvg_staged_entry_setups(df, tick, account_info, market_conditio
                 setup_source_bucket_override="FVG_STAGED",
             )
 
+            _live_execute_start_ts = time.perf_counter()
+            logger.info(
+                f"[LIVE EXECUTION TIMING] stage=before_execute_trade "
+                f"symbol={SYMBOL} signal={signal} "
+                f"setup_id={trade_plan.get('setup_id') if isinstance(trade_plan, dict) else None} "
+                f"strategy={trade_plan.get('strategy') if isinstance(trade_plan, dict) else None}"
+            )
             execution_result = execute_trade(signal, trade_plan, SYMBOL)
+            logger.info(
+                f"[LIVE EXECUTION TIMING] stage=after_execute_trade "
+                f"elapsed_ms={round((time.perf_counter() - _live_execute_start_ts) * 1000, 2)} "
+                f"symbol={SYMBOL} signal={signal} result={execution_result}"
+            )
 
             if execution_result:
                 save_execution_memory_report(
@@ -5237,6 +5261,19 @@ def process_mtf_conflict_candidate(
             },
         )
 
+        try:
+            observe_universal_confirmation_from_scope(
+                locals(),
+                setup_source_bucket_override="MTF_CONFLICT_TRACKED",
+            )
+            mtf_conflict_tracked_confirmation_observed = True
+        except Exception as confirmation_exc:
+            logger.warning(
+                f"[MTF CONFLICT] Confirmation observation failed for tracked setup | "
+                f"setup_id={setup_id} error={confirmation_exc}"
+            )
+
+
         if tracked:
             notify_setup_similarity_if_relevant(setup_id)
             notify_scenario_cluster_if_relevant(setup_id)
@@ -5540,7 +5577,19 @@ def process_mtf_conflict_candidate(
         setup_source_bucket_override="MTF_CONFLICT_TRACKED",
     )
 
+    _live_execute_start_ts = time.perf_counter()
+    logger.info(
+        f"[LIVE EXECUTION TIMING] stage=before_execute_trade "
+        f"symbol={SYMBOL} signal={signal} "
+        f"setup_id={mtf_trade_plan.get('setup_id') if isinstance(mtf_trade_plan, dict) else None} "
+        f"strategy={mtf_trade_plan.get('strategy') if isinstance(mtf_trade_plan, dict) else None}"
+    )
     execution_result = execute_trade(signal, mtf_trade_plan, SYMBOL)
+    logger.info(
+        f"[LIVE EXECUTION TIMING] stage=after_execute_trade "
+        f"elapsed_ms={round((time.perf_counter() - _live_execute_start_ts) * 1000, 2)} "
+        f"symbol={SYMBOL} signal={signal} result={execution_result}"
+    )
     
     logger.warning(
         f"[MTF CONFLICT] execute_trade result | "
@@ -6118,7 +6167,19 @@ def process_wait_better_entry_setups(df, tick, account_info, market_condition, s
             setup_source_bucket="BETTER_ENTRY",
         )
 
+        _live_execute_start_ts = time.perf_counter()
+        logger.info(
+            f"[LIVE EXECUTION TIMING] stage=before_execute_trade "
+            f"symbol={SYMBOL} signal={signal} "
+            f"setup_id={trade_plan.get('setup_id') if isinstance(trade_plan, dict) else None} "
+            f"strategy={trade_plan.get('strategy') if isinstance(trade_plan, dict) else None}"
+        )
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
+        logger.info(
+            f"[LIVE EXECUTION TIMING] stage=after_execute_trade "
+            f"elapsed_ms={round((time.perf_counter() - _live_execute_start_ts) * 1000, 2)} "
+            f"symbol={SYMBOL} signal={signal} result={execution_result}"
+        )
 
         if execution_result:
             save_execution_memory_report(
@@ -6400,7 +6461,19 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
             setup_source_bucket="ORB_TICK_WATCHER",
         )
 
+        _live_execute_start_ts = time.perf_counter()
+        logger.info(
+            f"[LIVE EXECUTION TIMING] stage=before_execute_trade "
+            f"symbol={SYMBOL} signal={signal} "
+            f"setup_id={trade_plan.get('setup_id') if isinstance(trade_plan, dict) else None} "
+            f"strategy={trade_plan.get('strategy') if isinstance(trade_plan, dict) else None}"
+        )
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
+        logger.info(
+            f"[LIVE EXECUTION TIMING] stage=after_execute_trade "
+            f"elapsed_ms={round((time.perf_counter() - _live_execute_start_ts) * 1000, 2)} "
+            f"symbol={SYMBOL} signal={signal} result={execution_result}"
+        )
 
         if execution_result:
             save_execution_memory_report(
@@ -6712,7 +6785,19 @@ def process_wait_tick_sniper_setups(df, tick, account_info, market_condition, se
             setup_source_bucket="TICK_SNIPER",
         )
 
+        _live_execute_start_ts = time.perf_counter()
+        logger.info(
+            f"[LIVE EXECUTION TIMING] stage=before_execute_trade "
+            f"symbol={SYMBOL} signal={signal} "
+            f"setup_id={trade_plan.get('setup_id') if isinstance(trade_plan, dict) else None} "
+            f"strategy={trade_plan.get('strategy') if isinstance(trade_plan, dict) else None}"
+        )
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
+        logger.info(
+            f"[LIVE EXECUTION TIMING] stage=after_execute_trade "
+            f"elapsed_ms={round((time.perf_counter() - _live_execute_start_ts) * 1000, 2)} "
+            f"symbol={SYMBOL} signal={signal} result={execution_result}"
+        )
 
         if execution_result:
             save_execution_memory_report(
@@ -7087,7 +7172,19 @@ def process_wait_delayed_entry_setups(df, tick, account_info, market_condition, 
             setup_source_bucket_override="SPLIT_DELAYED",
         )
 
+        _live_execute_start_ts = time.perf_counter()
+        logger.info(
+            f"[LIVE EXECUTION TIMING] stage=before_execute_trade "
+            f"symbol={SYMBOL} signal={signal} "
+            f"setup_id={trade_plan.get('setup_id') if isinstance(trade_plan, dict) else None} "
+            f"strategy={trade_plan.get('strategy') if isinstance(trade_plan, dict) else None}"
+        )
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
+        logger.info(
+            f"[LIVE EXECUTION TIMING] stage=after_execute_trade "
+            f"elapsed_ms={round((time.perf_counter() - _live_execute_start_ts) * 1000, 2)} "
+            f"symbol={SYMBOL} signal={signal} result={execution_result}"
+        )
 
         if execution_result:
             save_execution_memory_report(
@@ -7738,7 +7835,19 @@ def process_candidate_rejection_recovery_setups(
             setup_source_bucket_override="REJECTED_CANDIDATE_TRACKED",
         )
 
+        _live_execute_start_ts = time.perf_counter()
+        logger.info(
+            f"[LIVE EXECUTION TIMING] stage=before_execute_trade "
+            f"symbol={SYMBOL} signal={signal} "
+            f"setup_id={trade_plan.get('setup_id') if isinstance(trade_plan, dict) else None} "
+            f"strategy={trade_plan.get('strategy') if isinstance(trade_plan, dict) else None}"
+        )
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
+        logger.info(
+            f"[LIVE EXECUTION TIMING] stage=after_execute_trade "
+            f"elapsed_ms={round((time.perf_counter() - _live_execute_start_ts) * 1000, 2)} "
+            f"symbol={SYMBOL} signal={signal} result={execution_result}"
+        )
 
         if execution_result:
             save_execution_memory_report(
@@ -11236,9 +11345,111 @@ def process_cycle(last_processed_candle_time):
                     setup_source_bucket_override="SPLIT_IMMEDIATE",
                 )
 
+                _live_execute_start_ts = time.perf_counter()
+                logger.info(
+                    f"[LIVE EXECUTION TIMING] stage=before_execute_trade "
+                    f"symbol={SYMBOL} signal={signal} "
+                    f"setup_id={immediate_trade_plan.get('setup_id') if isinstance(immediate_trade_plan, dict) else None} "
+                    f"strategy={immediate_trade_plan.get('strategy') if isinstance(immediate_trade_plan, dict) else None}"
+                )
                 execution_result = execute_trade(signal, immediate_trade_plan, SYMBOL)
+                logger.info(
+                    f"[LIVE EXECUTION TIMING] stage=after_execute_trade "
+                    f"elapsed_ms={round((time.perf_counter() - _live_execute_start_ts) * 1000, 2)} "
+                    f"symbol={SYMBOL} signal={signal} result={execution_result}"
+                )
 
                 if not execution_result:
+                    if immediate_trade_plan.get("execution_block_reason") == "LOW_RR_HIGH_ADVERSE_SLIPPAGE":
+                        retry_signal_data = dict(selected_signal_data or {})
+                        retry_signal_data["setup_id"] = selected_signal_data.get("setup_id")
+                        retry_signal_data["strategy"] = strategy_name
+                        retry_signal_data["signal"] = signal
+                        retry_signal_data["entry_model"] = (
+                            immediate_trade_plan.get("entry_model")
+                            or selected_signal_data.get("entry_model")
+                        )
+
+                        retry_setup = register_execution_failure_retry_as_better_entry(
+                            signal_data=retry_signal_data,
+                            trade_plan=immediate_trade_plan,
+                            source="LOW_RR_RECOVERY",
+                            min_rr_required=min_rr_required,
+                            current_rr=rr_value,
+                            reason="LOW_RR_HIGH_ADVERSE_SLIPPAGE blocked immediate execution; waiting for better entry",
+                            expiry_minutes=HIGH_SLIPPAGE_RETRY_EXPIRY_MINUTES,
+                        )
+
+                        save_execution_memory_report(
+                            selected_signal_data=selected_signal_data,
+                            strategy_name=strategy_name,
+                            signal=signal,
+                            score=score,
+                            session_name=session_name,
+                            market_condition=market_condition,
+                            reason="low RR adverse slippage moved to better entry retry",
+                            trade_plan=immediate_trade_plan,
+                            decision="SPLIT_IMMEDIATE_LOW_RR_SLIPPAGE_WAIT_BETTER_ENTRY",
+                            decision_reason="low RR adverse slippage blocked execution; setup moved to WAIT_BETTER_ENTRY retry",
+                            rr_value=rr_value,
+                            required_rr=min_rr_required,
+                            execution_result=execution_result,
+                            extra={
+                                "is_split_delayed_entry": True,
+                                "parent_setup_id": selected_signal_data.get("setup_id"),
+                                "immediate_lot": immediate_lot,
+                                "delayed_lot": delayed_lot,
+                                "delayed_target": delayed_target,
+                                "retry_registered": bool(retry_setup),
+                                "execution_block_reason": immediate_trade_plan.get("execution_block_reason"),
+                                "execution_block_adverse_slippage": immediate_trade_plan.get("execution_block_adverse_slippage"),
+                                "execution_block_max_allowed": immediate_trade_plan.get("execution_block_max_allowed"),
+                            },
+                        )
+
+                        if hasattr(execution_engine, "mark_execution_failed"):
+                            execution_engine.mark_execution_failed(
+                                best_setup,
+                                "Moved to WAIT_BETTER_ENTRY after LOW_RR_HIGH_ADVERSE_SLIPPAGE",
+                            )
+
+                        log_setup_event(
+                            setup_id=selected_signal_data.get("setup_id"),
+                            event="SPLIT_IMMEDIATE_LOW_RR_SLIPPAGE_WAIT_BETTER_ENTRY",
+                            strategy=strategy_name,
+                            signal=signal,
+                            entry_model=selected_signal_data.get("entry_model"),
+                            score=score,
+                            session=session_name,
+                            market_condition=market_condition,
+                            entry=immediate_trade_plan.get("entry_price"),
+                            sl=immediate_trade_plan.get("stop_loss"),
+                            tp=immediate_trade_plan.get("take_profit"),
+                            rr=rr_value,
+                            required_rr=min_rr_required,
+                            reason="low RR adverse slippage blocked immediate execution; retry waiting for better entry",
+                            extra={
+                                "retry_registered": bool(retry_setup),
+                                "execution_block_reason": immediate_trade_plan.get("execution_block_reason"),
+                                "adverse_slippage": immediate_trade_plan.get("execution_block_adverse_slippage"),
+                                "max_allowed": immediate_trade_plan.get("execution_block_max_allowed"),
+                            },
+                        )
+
+                        send_telegram_message(
+                            f"⏳ Low-RR Slippage Block → Better Entry Retry\n"
+                            f"Symbol: {SYMBOL}\n"
+                            f"Strategy: {strategy_name}\n"
+                            f"Signal: {signal}\n"
+                            f"Setup ID: {selected_signal_data.get('setup_id')}\n"
+                            f"RR: {rr_value} / Required: {min_rr_required}\n"
+                            f"Adverse Slippage: {immediate_trade_plan.get('execution_block_adverse_slippage')}\n"
+                            f"Max Allowed: {immediate_trade_plan.get('execution_block_max_allowed')}\n"
+                            f"Action: immediate entry skipped; waiting for better entry"
+                        )
+
+                        return current_candle_time
+
                     save_execution_memory_report(
                         selected_signal_data=selected_signal_data,
                         strategy_name=strategy_name,
@@ -11446,7 +11657,19 @@ def process_cycle(last_processed_candle_time):
             setup_source_bucket="NORMAL_OR_TRACKED",
         )
 
+        _live_execute_start_ts = time.perf_counter()
+        logger.info(
+            f"[LIVE EXECUTION TIMING] stage=before_execute_trade "
+            f"symbol={SYMBOL} signal={signal} "
+            f"setup_id={trade_plan.get('setup_id') if isinstance(trade_plan, dict) else None} "
+            f"strategy={trade_plan.get('strategy') if isinstance(trade_plan, dict) else None}"
+        )
         execution_result = execute_trade(signal, trade_plan, SYMBOL)
+        logger.info(
+            f"[LIVE EXECUTION TIMING] stage=after_execute_trade "
+            f"elapsed_ms={round((time.perf_counter() - _live_execute_start_ts) * 1000, 2)} "
+            f"symbol={SYMBOL} signal={signal} result={execution_result}"
+        )
 
         if execution_result:
             save_execution_memory_report(

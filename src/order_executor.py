@@ -10,6 +10,9 @@ from config.settings import (
     MAX_SLIPPAGE,
     ENABLE_EXECUTION_FAVORABLE_DRIFT_GUARD,
     MAX_FAVORABLE_EXECUTION_DRIFT,
+    ENABLE_LOW_RR_STRICT_ADVERSE_SLIPPAGE_GUARD,
+    LOW_RR_STRICT_SLIPPAGE_RR_THRESHOLD,
+    LOW_RR_MAX_ADVERSE_SLIPPAGE,
     ENABLE_PRICE_DRIFT_GUARD,
     MAX_ENTRY_PRICE_DRIFT,
     ENABLE_HIGH_SLIPPAGE_RETRACEMENT,
@@ -410,6 +413,36 @@ def calculate_directional_slippage(signal, expected_price, execution_price):
     }
 
 
+def get_trade_plan_rr_for_execution_guard(trade_plan):
+    if not isinstance(trade_plan, dict):
+        return None
+
+    for key in ("rr", "risk_reward", "rr_value", "risk_reward_ratio"):
+        value = trade_plan.get(key)
+        try:
+            if value is not None:
+                rr = float(value)
+                if rr > 0:
+                    return rr
+        except Exception:
+            pass
+
+    try:
+        entry = float(trade_plan.get("entry_price"))
+        sl = float(trade_plan.get("stop_loss"))
+        tp = float(trade_plan.get("take_profit"))
+
+        risk = abs(entry - sl)
+        reward = abs(tp - entry)
+
+        if risk <= 0:
+            return None
+
+        return round(reward / risk, 4)
+    except Exception:
+        return None
+
+
 def is_adverse_slippage_too_high(signal, expected_price, execution_price, max_slippage):
     report = calculate_directional_slippage(
         signal=signal,
@@ -701,6 +734,72 @@ def execute_trade(signal, trade_plan, symbol):
             pre_send_favorable_slippage = 0.0
         if pre_send_absolute_slippage is None:
             pre_send_absolute_slippage = 0.0
+
+        execution_guard_rr = get_trade_plan_rr_for_execution_guard(trade_plan)
+
+        if (
+            ENABLE_LOW_RR_STRICT_ADVERSE_SLIPPAGE_GUARD
+            and not skip_slippage_guard
+            and execution_guard_rr is not None
+            and execution_guard_rr <= LOW_RR_STRICT_SLIPPAGE_RR_THRESHOLD
+            and pre_send_adverse_slippage is not None
+            and pre_send_adverse_slippage > LOW_RR_MAX_ADVERSE_SLIPPAGE
+        ):
+            try:
+                trade_plan["execution_block_reason"] = "LOW_RR_HIGH_ADVERSE_SLIPPAGE"
+                trade_plan["execution_block_action"] = "WAIT_BETTER_ENTRY"
+                trade_plan["execution_block_rr"] = round(execution_guard_rr, 4)
+                trade_plan["execution_block_adverse_slippage"] = round(pre_send_adverse_slippage, 4)
+                trade_plan["execution_block_max_allowed"] = LOW_RR_MAX_ADVERSE_SLIPPAGE
+            except Exception:
+                pass
+
+            remember_blocked_setup(
+                setup_id=trade_plan.get("setup_id"),
+                symbol=symbol,
+                strategy=trade_plan.get("strategy", "UNKNOWN"),
+                signal=signal,
+                reason="LOW_RR_HIGH_ADVERSE_SLIPPAGE",
+                expected_price=expected_price,
+                current_price=round(current_execution_price, 2),
+                slippage=round(pre_send_adverse_slippage, 2),
+                max_allowed=LOW_RR_MAX_ADVERSE_SLIPPAGE,
+            )
+
+            logger.warning(
+                f"[EXECUTION BLOCKED] Low-RR adverse slippage too high | "
+                f"strategy={trade_plan.get('strategy', 'UNKNOWN')} "
+                f"signal={signal} rr={round(execution_guard_rr, 2)} "
+                f"expected={expected_price} current={current_execution_price} "
+                f"adverse={round(pre_send_adverse_slippage, 2)} "
+                f"max_low_rr_adverse={LOW_RR_MAX_ADVERSE_SLIPPAGE}"
+            )
+
+            send_telegram_message(
+                f"⛔ Trade Blocked: Low RR + Adverse Slippage\n"
+                f"Symbol: {symbol}\n"
+                f"Signal: {signal}\n"
+                f"Strategy: {trade_plan.get('strategy', 'UNKNOWN')}\n"
+                f"RR: {round(execution_guard_rr, 2)}\n"
+                f"Low-RR Threshold: {LOW_RR_STRICT_SLIPPAGE_RR_THRESHOLD}\n"
+                f"Expected: {expected_price}\n"
+                f"Current: {round(current_execution_price, 2)}\n"
+                f"Adverse Slippage: {round(pre_send_adverse_slippage, 2)}\n"
+                f"Max Low-RR Adverse Allowed: {LOW_RR_MAX_ADVERSE_SLIPPAGE}\n"
+                f"Action: No trade executed\n"
+                f"Reason: low RR setup cannot tolerate this adverse execution price"
+            )
+
+            _log_execution_timing(
+                "blocked_low_rr_high_adverse_slippage",
+                execution_start_ts,
+                symbol=symbol,
+                signal=signal,
+                rr=round(execution_guard_rr, 2),
+                adverse=round(pre_send_adverse_slippage, 2),
+            )
+
+            return False
         
         if not skip_slippage_guard and slippage_blocked:
             remember_blocked_setup(

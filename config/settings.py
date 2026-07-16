@@ -219,6 +219,13 @@ ENABLE_EXECUTION_FAVORABLE_DRIFT_GUARD = True
 MAX_FAVORABLE_EXECUTION_DRIFT = 1.0
 
 # =========================
+# Low-RR Strict Adverse Slippage Guard
+# =========================
+ENABLE_LOW_RR_STRICT_ADVERSE_SLIPPAGE_GUARD = True
+LOW_RR_STRICT_SLIPPAGE_RR_THRESHOLD = 1.25
+LOW_RR_MAX_ADVERSE_SLIPPAGE = 0.20
+
+# =========================
 # Execution Price Drift Guard
 # =========================
 ENABLE_PRICE_DRIFT_GUARD = True
@@ -1052,6 +1059,7 @@ EXECUTION_BLOCK_MEMORY_REASONS = [
     "HIGH_SLIPPAGE",
     "HIGH_ADVERSE_SLIPPAGE",
     "SETUP_STALE_FAVORABLE_DRIFT",
+    "LOW_RR_HIGH_ADVERSE_SLIPPAGE",
 ]
 
 # =========================
