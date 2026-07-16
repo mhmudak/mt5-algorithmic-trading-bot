@@ -911,6 +911,44 @@ def execute_trade(signal, trade_plan, symbol):
         
         request["price"] = current_execution_price
 
+        effective_deviation_points = deviation_points
+        effective_deviation_price = MAX_SLIPPAGE
+
+        if (
+            ENABLE_LOW_RR_STRICT_ADVERSE_SLIPPAGE_GUARD
+            and execution_guard_rr is not None
+            and execution_guard_rr <= LOW_RR_STRICT_SLIPPAGE_RR_THRESHOLD
+        ):
+            try:
+                point_size = float(symbol_info.point or 0.01)
+            except Exception:
+                point_size = 0.01
+
+            if point_size <= 0:
+                point_size = 0.01
+
+            remaining_adverse_budget = max(
+                0.0,
+                LOW_RR_MAX_ADVERSE_SLIPPAGE - float(pre_send_adverse_slippage or 0.0),
+            )
+
+            effective_deviation_price = min(MAX_SLIPPAGE, remaining_adverse_budget)
+            effective_deviation_points = max(
+                1,
+                int(effective_deviation_price / point_size),
+            )
+
+            request["deviation"] = effective_deviation_points
+
+            logger.info(
+                f"[LOW RR DEVIATION] Adaptive deviation applied | "
+                f"rr={round(execution_guard_rr, 2)} "
+                f"pre_send_adverse={round(pre_send_adverse_slippage, 4)} "
+                f"remaining_budget={round(remaining_adverse_budget, 4)} "
+                f"deviation_points={effective_deviation_points} "
+                f"deviation_price={round(effective_deviation_price, 4)}"
+            )
+
         _log_execution_timing(
             "before_order_send",
             execution_start_ts,
@@ -918,6 +956,8 @@ def execute_trade(signal, trade_plan, symbol):
             signal=signal,
             request_price=round(current_execution_price, 2),
             filling_mode=filling_mode,
+            deviation_points=request.get("deviation"),
+            max_deviation_price=round(effective_deviation_price, 4),
         )
 
         result = mt5.order_send(request)
