@@ -347,6 +347,58 @@ def is_rollover_trading_blocked():
 
     return False, None
 
+def calculate_directional_slippage(signal, expected_price, execution_price):
+    # Directional slippage:
+    # BUY: execution above expected is adverse; below expected is favorable.
+    # SELL: execution below expected is adverse; above expected is favorable.
+    try:
+        expected = float(expected_price)
+        executed = float(execution_price)
+    except Exception:
+        return {
+            "signed": None,
+            "adverse": None,
+            "favorable": None,
+            "absolute": None,
+            "direction": "INVALID",
+        }
+
+    signal = str(signal or '').upper().strip()
+
+    if signal == "BUY":
+        signed = executed - expected
+    elif signal == "SELL":
+        signed = expected - executed
+    else:
+        signed = abs(executed - expected)
+
+    adverse = max(0.0, signed)
+    favorable = max(0.0, -signed)
+    absolute = abs(executed - expected)
+
+    return {
+        "signed": round(signed, 4),
+        "adverse": round(adverse, 4),
+        "favorable": round(favorable, 4),
+        "absolute": round(absolute, 4),
+        "direction": signal,
+    }
+
+
+def is_adverse_slippage_too_high(signal, expected_price, execution_price, max_slippage):
+    report = calculate_directional_slippage(
+        signal=signal,
+        expected_price=expected_price,
+        execution_price=execution_price,
+    )
+
+    adverse = report.get("adverse")
+
+    if adverse is None:
+        return True, report
+
+    return adverse > max_slippage, report
+
 def execute_trade(signal, trade_plan, symbol):
     if EXECUTION_MODE == "SIMULATION":
         print("\n[SIMULATION MODE]")
@@ -538,7 +590,7 @@ def execute_trade(signal, trade_plan, symbol):
         "price": request_price,
         "sl": trade_plan["stop_loss"],
         "tp": trade_plan["take_profit"],
-        "deviation": 10,
+        "deviation": deviation_points,
         "magic": 123456,
         "comment": trade_plan.get("comment", "MhMudBot")[:31],
         "type_time": mt5.ORDER_TIME_GTC,
@@ -566,9 +618,26 @@ def execute_trade(signal, trade_plan, symbol):
         expected_price = float(trade_plan["entry_price"])
         current_execution_price = fresh_tick.ask if signal == "BUY" else fresh_tick.bid
         
-        pre_send_slippage = abs(current_execution_price - expected_price)
+        slippage_blocked, pre_send_slippage_report = is_adverse_slippage_too_high(
+            signal=signal,
+            expected_price=expected_price,
+            execution_price=current_execution_price,
+            max_slippage=MAX_SLIPPAGE,
+        )
+
+        pre_send_adverse_slippage = pre_send_slippage_report.get("adverse")
+        pre_send_favorable_slippage = pre_send_slippage_report.get("favorable")
+        pre_send_absolute_slippage = pre_send_slippage_report.get("absolute")
+        pre_send_signed_slippage = pre_send_slippage_report.get("signed")
+
+        if pre_send_adverse_slippage is None:
+            pre_send_adverse_slippage = MAX_SLIPPAGE + 999.0
+        if pre_send_favorable_slippage is None:
+            pre_send_favorable_slippage = 0.0
+        if pre_send_absolute_slippage is None:
+            pre_send_absolute_slippage = 0.0
         
-        if not skip_slippage_guard and pre_send_slippage > MAX_SLIPPAGE:
+        if not skip_slippage_guard and slippage_blocked:
             remember_blocked_setup(
                 setup_id=trade_plan.get("setup_id"),
                 symbol=symbol,
@@ -577,40 +646,49 @@ def execute_trade(signal, trade_plan, symbol):
                 reason="HIGH_SLIPPAGE",
                 expected_price=expected_price,
                 current_price=round(current_execution_price, 2),
-                slippage=round(pre_send_slippage, 2),
+                slippage=round(pre_send_adverse_slippage, 2),
                 max_allowed=MAX_SLIPPAGE,
             )            
             
             logger.warning(
-                f"[EXECUTION BLOCKED] High pre-send slippage | "
+                f"[EXECUTION BLOCKED] High adverse pre-send slippage | "
                 f"strategy={trade_plan.get('strategy', 'UNKNOWN')} "
                 f"signal={signal} expected={expected_price} "
                 f"current={current_execution_price} "
-                f"slippage={round(pre_send_slippage, 2)} max={MAX_SLIPPAGE}"
+                f"adverse={round(pre_send_adverse_slippage, 2)} "
+                f"favorable={round(pre_send_favorable_slippage, 2)} "
+                f"absolute={round(pre_send_absolute_slippage, 2)} "
+                f"signed={pre_send_signed_slippage} "
+                f"max={MAX_SLIPPAGE}"
             )
         
             send_telegram_message(
-                f"⛔ Trade Blocked: High Slippage\n"
+                f"⛔ Trade Blocked: High Adverse Slippage\n"
                 f"Symbol: {symbol}\n"
                 f"Signal: {signal}\n"
                 f"Strategy: {trade_plan.get('strategy', 'UNKNOWN')}\n"
                 f"Expected: {expected_price}\n"
                 f"Current: {round(current_execution_price, 2)}\n"
-                f"Slippage: {round(pre_send_slippage, 2)}\n"
-                f"Max Allowed: {MAX_SLIPPAGE}\n"
-                f"Action: No trade executed"
+                f"Adverse Slippage: {round(pre_send_adverse_slippage, 2)}\n"
+                f"Favorable Slippage: {round(pre_send_favorable_slippage, 2)}\n"
+                f"Absolute Movement: {round(pre_send_absolute_slippage, 2)}\n"
+                f"Max Allowed Adverse: {MAX_SLIPPAGE}\n"
+                f"Action: No trade executed\n"
                 f"Action: This setup ID will not be executed again during memory window"
             )
         
             return False
         
-        if skip_slippage_guard and pre_send_slippage > MAX_SLIPPAGE:
+        if skip_slippage_guard and slippage_blocked:
             logger.info(
-                f"[EXECUTION] High slippage guard bypassed | "
+                f"[EXECUTION] High adverse slippage guard bypassed | "
                 f"strategy={trade_plan.get('strategy', 'UNKNOWN')} "
                 f"signal={signal} expected={expected_price} "
                 f"current={current_execution_price} "
-                f"slippage={round(pre_send_slippage, 2)} max={MAX_SLIPPAGE}"
+                f"adverse={round(pre_send_adverse_slippage, 2)} "
+                f"favorable={round(pre_send_favorable_slippage, 2)} "
+                f"absolute={round(pre_send_absolute_slippage, 2)} "
+                f"max={MAX_SLIPPAGE}"
             )
         
         request["price"] = current_execution_price
@@ -648,24 +726,38 @@ def execute_trade(signal, trade_plan, symbol):
         return False
 
     executed_price = result.price
-    slippage = abs(executed_price - expected_price)
+    execution_slippage_report = calculate_directional_slippage(
+        signal=signal,
+        expected_price=expected_price,
+        execution_price=executed_price,
+    )
+
+    slippage = execution_slippage_report.get("absolute")
+    adverse_slippage = execution_slippage_report.get("adverse")
+    favorable_slippage = execution_slippage_report.get("favorable")
+    signed_slippage = execution_slippage_report.get("signed")
 
     print(f"[EXECUTION] Expected: {expected_price}")
     print(f"[EXECUTION] Request Price: {request_price}")
     print(f"[EXECUTION] Executed: {executed_price}")
-    print(f"[EXECUTION] Slippage: {slippage}")
+    print(f"[EXECUTION] Absolute Movement: {slippage}")
+    print(f"[EXECUTION] Adverse Slippage: {adverse_slippage}")
+    print(f"[EXECUTION] Favorable Slippage: {favorable_slippage}")
+    print(f"[EXECUTION] Signed Slippage: {signed_slippage}")
     print(f"[EXECUTION] Filling Mode: {successful_filling_mode}")
     print("Order result:", result)
 
-    if slippage > MAX_SLIPPAGE:
-        print("[WARNING] High slippage detected!")
+    if adverse_slippage is not None and adverse_slippage > MAX_SLIPPAGE:
+        print("[WARNING] High adverse slippage detected after execution!")
         send_telegram_message(
-            f"⚠️ High Slippage Detected\n"
+            f"⚠️ High Adverse Slippage Detected After Execution\n"
             f"Symbol: {symbol}\n"
             f"Signal: {signal}\n"
             f"Expected: {expected_price}\n"
             f"Executed: {executed_price}\n"
-            f"Slippage: {round(slippage, 2)}"
+            f"Adverse Slippage: {round(adverse_slippage or 0.0, 2)}\n"
+            f"Favorable Slippage: {round(favorable_slippage or 0.0, 2)}\n"
+            f"Absolute Movement: {round(slippage or 0.0, 2)}"
         )
 
     register_executed_trade(symbol, signal, trade_plan, result)
@@ -679,7 +771,9 @@ def execute_trade(signal, trade_plan, symbol):
         f"SL: {trade_plan['stop_loss']}\n"
         f"TP: {trade_plan['take_profit']}\n"
         f"Lot: {trade_plan['lot']}\n"
-        f"Slippage: {round(slippage, 2)}\n"
+        f"Adverse Slippage: {round(adverse_slippage or 0.0, 2)}\n"
+        f"Favorable Slippage: {round(favorable_slippage or 0.0, 2)}\n"
+        f"Absolute Movement: {round(slippage or 0.0, 2)}\n"
         f"Filling Mode: {successful_filling_mode}"
     )
 
