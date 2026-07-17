@@ -151,6 +151,10 @@ def refresh_statistics(account_dir, intel_dir):
             "phase3_post_baseline",
             [python, str(ROOT / "scripts" / "analyze_phase3_post_baseline.py")],
         ),
+        (
+            "phase3_readiness_gate",
+            [python, str(ROOT / "scripts" / "check_phase3_readiness_gate.py")],
+        ),
     ]
 
     results = []
