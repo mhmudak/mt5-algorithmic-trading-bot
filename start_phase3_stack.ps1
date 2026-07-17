@@ -1,22 +1,7 @@
 $Root = "F:\Desktop Backup\Mahmoud-2026\mt5-bot"
-$Venv = "$Root\.venv\Scripts\Activate.ps1"
 
-function Start-BotWindow {
-    param(
-        [string]$Title,
-        [string]$Command
-    )
+$LiveBotScript = Join-Path $Root "run_live_bot.ps1"
+$AutoStatsScript = Join-Path $Root "run_auto_stats.ps1"
 
-    $FullCommand = @"
-Set-Location -LiteralPath '$Root'
-. '$Venv'
-`$Host.UI.RawUI.WindowTitle = '$Title'
-$Command
-"@
-
-    Start-Process powershell.exe -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $FullCommand
-}
-
-Start-BotWindow -Title "MT5 LIVE BOT" -Command "python -m src.live_bot"
-
-Start-BotWindow -Title "PHASE 3 AUTO STATS" -Command "python .\scripts\auto_refresh_phase3_statistics.py --interval-seconds 900"
+Start-Process powershell.exe -ArgumentList "-NoExit -ExecutionPolicy Bypass -File `"$LiveBotScript`""
+Start-Process powershell.exe -ArgumentList "-NoExit -ExecutionPolicy Bypass -File `"$AutoStatsScript`""
