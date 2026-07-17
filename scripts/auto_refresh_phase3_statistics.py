@@ -163,6 +163,10 @@ def refresh_statistics(account_dir, intel_dir):
             "phase3_mtf_conflicts",
             [python, str(ROOT / "scripts" / "analyze_phase3_mtf_conflicts.py")],
         ),
+        (
+            "phase3_low_rr_slippage_recovery",
+            [python, str(ROOT / "scripts" / "analyze_phase3_low_rr_slippage_recovery.py")],
+        ),
     ]
 
     results = []
