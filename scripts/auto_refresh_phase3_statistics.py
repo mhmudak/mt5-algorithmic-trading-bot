@@ -159,6 +159,10 @@ def refresh_statistics(account_dir, intel_dir):
             "phase3_confirmation_patterns",
             [python, str(ROOT / "scripts" / "analyze_phase3_confirmation_patterns.py")],
         ),
+        (
+            "phase3_mtf_conflicts",
+            [python, str(ROOT / "scripts" / "analyze_phase3_mtf_conflicts.py")],
+        ),
     ]
 
     results = []
