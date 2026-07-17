@@ -147,6 +147,10 @@ def refresh_statistics(account_dir, intel_dir):
             "post_extra_be_tuning_performance",
             [python, str(ROOT / "scripts" / "check_post_extra_be_tuning_performance.py"), "--source-dir", str(account_dir)],
         ),
+        (
+            "phase3_post_baseline",
+            [python, str(ROOT / "scripts" / "analyze_phase3_post_baseline.py")],
+        ),
     ]
 
     results = []
