@@ -180,6 +180,10 @@ def refresh_statistics(account_dir, intel_dir):
             [python, str(ROOT / "scripts" / "analyze_phase3_session_poc_confirmation.py"), "--symbol", "XAUUSD", "--timeframe", "M15", "--bars", "500", "--bin-size", "0.50"],
         ),
         (
+            "phase3_confirmation_coverage_audit",
+            [python, str(ROOT / "scripts" / "audit_phase3_confirmation_coverage.py")],
+        ),
+        (
             "phase3_dashboard_summary",
             [python, str(ROOT / "scripts" / "build_phase3_dashboard_summary.py")],
         ),
