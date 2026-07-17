@@ -175,6 +175,10 @@ def refresh_statistics(account_dir, intel_dir):
             "phase3_liquidity_poc_context",
             [python, str(ROOT / "scripts" / "analyze_phase3_liquidity_poc_context.py"), "--symbol", "XAUUSD", "--timeframe", "M15", "--bars", "500", "--bin-size", "0.50"],
         ),
+        (
+            "phase3_session_poc_confirmation",
+            [python, str(ROOT / "scripts" / "analyze_phase3_session_poc_confirmation.py"), "--symbol", "XAUUSD", "--timeframe", "M15", "--bars", "500", "--bin-size", "0.50"],
+        ),
     ]
 
     results = []
