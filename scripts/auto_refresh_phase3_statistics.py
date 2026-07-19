@@ -266,6 +266,19 @@ def refresh_statistics(account_dir, intel_dir):
     outcomes_count = count_json_records(account_dir / "setup_outcomes.json")
     confirmations_count = count_jsonl_records(account_dir / "confirmation_observations.jsonl")
 
+
+    result_labels = {item.get("label") for item in results if isinstance(item, dict)}
+
+    if "postfix_trade_reconciliation" not in result_labels:
+        forced_command = [
+            python,
+            str(ROOT / "scripts" / "check_postfix_trade_reconciliation.py"),
+            "--source-dir",
+            str(account_dir),
+        ]
+        results.insert(0, run_command("postfix_trade_reconciliation", forced_command))
+
+
     report = {
         "phase": "PHASE_3A_AUTO_STATISTICS",
         "mode": "OBSERVE_ONLY",
