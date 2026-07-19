@@ -25,6 +25,7 @@ REPORTS = {
     "alerts": "phase3_alerts_report.json",
     "orderflow_status": "phase4_orderflow_status_report.json",
     "orderflow_gate": "phase4_orderflow_availability_gate_report.json",
+    "mt5_proxy_context": "phase4_mt5_proxy_context_report.json",
 }
 
 
@@ -89,6 +90,7 @@ def main():
     alerts = loaded.get("alerts", {})
     orderflow_status = loaded.get("orderflow_status", {})
     orderflow_gate = loaded.get("orderflow_gate", {})
+    mt5_proxy_context = loaded.get("mt5_proxy_context", {})
 
     dashboard = {
         "phase": "PHASE_3_DASHBOARD_SUMMARY",
@@ -141,6 +143,22 @@ def main():
             "reason": get_nested(orderflow_gate, "gate", "reason"),
             "recommendation": orderflow_gate.get("recommendation"),
         },
+        "mt5_proxy_context": {
+            "available": get_nested(mt5_proxy_context, "context", "available"),
+            "status": get_nested(mt5_proxy_context, "context", "status"),
+            "is_real_order_flow": get_nested(mt5_proxy_context, "context", "is_real_order_flow"),
+            "data_quality": get_nested(mt5_proxy_context, "context", "data_quality"),
+            "decision_impact": get_nested(mt5_proxy_context, "context", "decision_impact"),
+            "price_vs_value_area": get_nested(mt5_proxy_context, "context", "price_vs_value_area"),
+            "proxy_poc": get_nested(mt5_proxy_context, "context", "profile", "poc"),
+            "proxy_value_area_low": get_nested(mt5_proxy_context, "context", "profile", "value_area_low"),
+            "proxy_value_area_high": get_nested(mt5_proxy_context, "context", "profile", "value_area_high"),
+            "volume_state": get_nested(mt5_proxy_context, "context", "volume_context", "volume_state"),
+            "tick_volume_zscore": get_nested(mt5_proxy_context, "context", "volume_context", "tick_volume_zscore"),
+            "latest_close": get_nested(mt5_proxy_context, "context", "candle_context", "latest_close"),
+            "candle_direction": get_nested(mt5_proxy_context, "context", "candle_context", "candle_direction"),
+            "recommendation": mt5_proxy_context.get("recommendation"),
+        },
         "poc_profile": poc.get("profile"),
         "recommendations": {
             "auto_statistics": auto_stats.get("recommendation"),
@@ -156,6 +174,7 @@ def main():
             "alerts": alerts.get("recommendation"),
             "orderflow_status": orderflow_status.get("recommendation"),
             "orderflow_gate": orderflow_gate.get("recommendation"),
+            "mt5_proxy_context": mt5_proxy_context.get("recommendation"),
         },
         "loaded_reports": {
             name: report.get("available", False)
@@ -216,6 +235,22 @@ def main():
         f"missing_required_metrics = {dashboard['orderflow_gate']['missing_required_metrics']}",
         f"reason = {dashboard['orderflow_gate']['reason']}",
         f"recommendation = {dashboard['orderflow_gate']['recommendation']}",
+        "",
+        "[MT5 PROXY CONTEXT]",
+        f"available = {dashboard['mt5_proxy_context']['available']}",
+        f"status = {dashboard['mt5_proxy_context']['status']}",
+        f"is_real_order_flow = {dashboard['mt5_proxy_context']['is_real_order_flow']}",
+        f"data_quality = {dashboard['mt5_proxy_context']['data_quality']}",
+        f"decision_impact = {dashboard['mt5_proxy_context']['decision_impact']}",
+        f"price_vs_value_area = {dashboard['mt5_proxy_context']['price_vs_value_area']}",
+        f"proxy_poc = {dashboard['mt5_proxy_context']['proxy_poc']}",
+        f"proxy_value_area_low = {dashboard['mt5_proxy_context']['proxy_value_area_low']}",
+        f"proxy_value_area_high = {dashboard['mt5_proxy_context']['proxy_value_area_high']}",
+        f"volume_state = {dashboard['mt5_proxy_context']['volume_state']}",
+        f"tick_volume_zscore = {dashboard['mt5_proxy_context']['tick_volume_zscore']}",
+        f"latest_close = {dashboard['mt5_proxy_context']['latest_close']}",
+        f"candle_direction = {dashboard['mt5_proxy_context']['candle_direction']}",
+        f"recommendation = {dashboard['mt5_proxy_context']['recommendation']}",
         "",
         "[POC PROFILE]",
     ]
