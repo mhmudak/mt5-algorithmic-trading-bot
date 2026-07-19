@@ -32,6 +32,7 @@ def get(data, *keys, default=None):
 
 def add_alert(alerts, severity, code, message, action):
     alerts.append({
+        "alert_type": "RISK",
         "severity": severity,
         "code": code,
         "message": message,
@@ -186,6 +187,8 @@ def main():
 
     report = {
         "phase": "PHASE_3O_AUTOMATED_ALERTS",
+        "alert_family": "RISK_MONITORING",
+        "severity_meaning": "INFO/MEDIUM/HIGH/CRITICAL are system-risk severities, not trade-opportunity grades.",
         "mode": "OBSERVE_ONLY",
         "updated_at": datetime.now().isoformat(timespec="seconds"),
         "status": status,
