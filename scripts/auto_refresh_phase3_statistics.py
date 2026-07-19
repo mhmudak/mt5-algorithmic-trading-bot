@@ -196,6 +196,10 @@ def refresh_statistics(account_dir, intel_dir):
             [python, str(ROOT / "scripts" / "build_phase4_orderflow_status.py")],
         ),
         (
+            "phase4_orderflow_availability_gate",
+            [python, str(ROOT / "scripts" / "check_phase4_orderflow_availability_gate.py")],
+        ),
+        (
             "phase3_alerts",
             [python, str(ROOT / "scripts" / "build_phase3_alerts.py")],
         ),
