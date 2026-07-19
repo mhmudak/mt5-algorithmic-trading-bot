@@ -24,6 +24,7 @@ REPORTS = {
     "decision_candidates": "phase3_decision_candidates_report.json",
     "alerts": "phase3_alerts_report.json",
     "orderflow_status": "phase4_orderflow_status_report.json",
+    "orderflow_gate": "phase4_orderflow_availability_gate_report.json",
 }
 
 
@@ -87,6 +88,7 @@ def main():
     decision_candidates = loaded.get("decision_candidates", {})
     alerts = loaded.get("alerts", {})
     orderflow_status = loaded.get("orderflow_status", {})
+    orderflow_gate = loaded.get("orderflow_gate", {})
 
     dashboard = {
         "phase": "PHASE_3_DASHBOARD_SUMMARY",
@@ -131,6 +133,14 @@ def main():
             "decision_impact": get_nested(orderflow_status, "orderflow_snapshot", "decision_impact"),
             "recommendation": orderflow_status.get("recommendation"),
         },
+        "orderflow_gate": {
+            "gate_status": get_nested(orderflow_gate, "gate", "gate_status"),
+            "can_influence_decision": get_nested(orderflow_gate, "gate", "can_influence_decision"),
+            "decision_impact": get_nested(orderflow_gate, "gate", "decision_impact"),
+            "missing_required_metrics": get_nested(orderflow_gate, "gate", "missing_required_metrics"),
+            "reason": get_nested(orderflow_gate, "gate", "reason"),
+            "recommendation": orderflow_gate.get("recommendation"),
+        },
         "poc_profile": poc.get("profile"),
         "recommendations": {
             "auto_statistics": auto_stats.get("recommendation"),
@@ -145,6 +155,7 @@ def main():
             "decision_candidates": decision_candidates.get("recommendation"),
             "alerts": alerts.get("recommendation"),
             "orderflow_status": orderflow_status.get("recommendation"),
+            "orderflow_gate": orderflow_gate.get("recommendation"),
         },
         "loaded_reports": {
             name: report.get("available", False)
@@ -197,6 +208,14 @@ def main():
         f"data_quality = {dashboard['orderflow_status']['data_quality']}",
         f"decision_impact = {dashboard['orderflow_status']['decision_impact']}",
         f"recommendation = {dashboard['orderflow_status']['recommendation']}",
+        "",
+        "[ORDER FLOW GATE]",
+        f"gate_status = {dashboard['orderflow_gate']['gate_status']}",
+        f"can_influence_decision = {dashboard['orderflow_gate']['can_influence_decision']}",
+        f"decision_impact = {dashboard['orderflow_gate']['decision_impact']}",
+        f"missing_required_metrics = {dashboard['orderflow_gate']['missing_required_metrics']}",
+        f"reason = {dashboard['orderflow_gate']['reason']}",
+        f"recommendation = {dashboard['orderflow_gate']['recommendation']}",
         "",
         "[POC PROFILE]",
     ]

@@ -48,6 +48,7 @@ def main():
     mtf = load_json("phase3_mtf_conflict_report.json")
     low_rr = load_json("phase3_low_rr_slippage_recovery_report.json")
     candidates = load_json("phase3_decision_candidates_report.json")
+    orderflow_gate = load_json("phase4_orderflow_availability_gate_report.json")
 
     alerts = []
 
@@ -64,6 +65,8 @@ def main():
     phase3_live_blocking = get(readiness, "readiness", "phase3_live_blocking", default="UNKNOWN")
     mtf_auto = get(readiness, "readiness", "mtf_conflict_auto_execution", default="UNKNOWN")
     comex_status = get(readiness, "readiness", "comex_order_flow", default="UNKNOWN")
+    orderflow_gate_status = get(orderflow_gate, "gate", "gate_status", default="UNKNOWN")
+    orderflow_can_influence = bool(get(orderflow_gate, "gate", "can_influence_decision", default=False))
 
     if not all_commands_ok:
         add_alert(
@@ -117,6 +120,24 @@ def main():
             "COMEX_ORDER_FLOW_NOT_CONNECTED",
             "Real COMEX/order-flow adapter is not connected.",
             "Keep MT5 POC as proxy context only. Do not use it as decision-grade order flow.",
+        )
+
+    if orderflow_gate_status.startswith("BLOCKED"):
+        add_alert(
+            alerts,
+            "INFO",
+            "ORDER_FLOW_GATE_BLOCKED_SAFE",
+            f"Order-flow availability gate is safely blocked: {orderflow_gate_status}.",
+            "No action required unless you connect a real COMEX/futures provider.",
+        )
+
+    if orderflow_can_influence:
+        add_alert(
+            alerts,
+            "CRITICAL",
+            "ORDER_FLOW_CAN_INFLUENCE_DECISION",
+            "Order-flow gate reports can_influence_decision=True.",
+            "Manual review required before allowing any live trading logic to consume order-flow data.",
         )
 
     if phase3_live_blocking != "NOT_READY":
@@ -178,6 +199,8 @@ def main():
             "mtf_conflict_records": mtf_records,
             "low_rr_slippage_records": low_rr_records,
             "suspicious_missing_confirmations": suspicious_missing,
+            "orderflow_gate_status": orderflow_gate_status,
+            "orderflow_can_influence_decision": orderflow_can_influence,
         },
         "alerts": alerts,
         "decision": "NO_LIVE_BLOCKING_NO_AUTO_EXECUTION",
