@@ -220,6 +220,10 @@ def refresh_statistics(account_dir, intel_dir):
             [python, str(ROOT / "scripts" / "detect_phase4_mt5_proxy_context_changes.py")],
         ),
         (
+            "phase4_mt5_proxy_context_change_memory",
+            [python, str(ROOT / "scripts" / "persist_phase4_mt5_proxy_change_events.py")],
+        ),
+        (
             "phase4_opportunity_alerts",
             [python, str(ROOT / "scripts" / "build_phase4_opportunity_alerts.py")],
         ),
