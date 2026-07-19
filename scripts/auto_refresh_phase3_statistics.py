@@ -289,7 +289,7 @@ def main():
 
         changed = current_state != last_state
 
-        if changed:
+        if changed or args.force:
             print(f"[{now_iso()}] Data changed. Refreshing Phase 3A statistics...")
             refresh_statistics(account_dir, intel_dir)
             state_path.write_text(json.dumps(current_state, indent=2), encoding="utf-8")
