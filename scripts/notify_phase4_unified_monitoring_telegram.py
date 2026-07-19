@@ -214,6 +214,26 @@ def build_message(risk_report, opportunity_report, sendable_risks, sendable_oppo
     return message
 
 
+
+def send_via_existing_project_notifier(message):
+    """
+    Use the project's existing Telegram sender.
+
+    This avoids duplicating Telegram HTTPS logic here and reuses the same
+    path already used by live_bot/order_executor/health_monitor.
+    """
+    from src.notifier import send_telegram_message as project_send_telegram_message
+
+    result = project_send_telegram_message(message)
+
+    return {
+        "chat_id": "PROJECT_DEFAULT_TELEGRAM_CHAT_ID",
+        "ok": result is not False,
+        "response": str(result)[:300],
+        "sender": "src.notifier.send_telegram_message",
+    }
+
+
 def send_telegram_message(token, chat_id, message):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
 
@@ -296,15 +316,15 @@ def main():
                 sendable_opportunities,
             )
 
-            for chat_id in chat_ids:
-                try:
-                    send_results.append(send_telegram_message(token, chat_id, message))
-                except Exception as exc:
-                    send_results.append({
-                        "chat_id": mask_chat_id(chat_id),
-                        "ok": False,
-                        "error": repr(exc),
-                    })
+            try:
+                send_results.append(send_via_existing_project_notifier(message))
+            except Exception as exc:
+                send_results.append({
+                    "chat_id": "PROJECT_DEFAULT_TELEGRAM_CHAT_ID",
+                    "ok": False,
+                    "error": repr(exc),
+                    "sender": "src.notifier.send_telegram_message",
+                })
 
             if send_results and all(item.get("ok") for item in send_results):
                 notification_action = "SENT"
