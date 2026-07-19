@@ -188,6 +188,10 @@ def refresh_statistics(account_dir, intel_dir):
             [python, str(ROOT / "scripts" / "build_phase3_decision_candidates.py")],
         ),
         (
+            "phase4_orderflow_snapshot_history",
+            [python, str(ROOT / "scripts" / "record_phase4_orderflow_snapshot.py"), "--symbol", "XAUUSD"],
+        ),
+        (
             "phase4_orderflow_status",
             [python, str(ROOT / "scripts" / "build_phase4_orderflow_status.py")],
         ),
