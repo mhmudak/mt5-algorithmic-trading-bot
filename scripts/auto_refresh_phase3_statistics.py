@@ -200,6 +200,10 @@ def refresh_statistics(account_dir, intel_dir):
             [python, str(ROOT / "scripts" / "check_phase4_orderflow_availability_gate.py")],
         ),
         (
+            "phase4_orderflow_gate_safety_tests",
+            [python, str(ROOT / "scripts" / "test_phase4_orderflow_gate_safety.py")],
+        ),
+        (
             "phase3_alerts",
             [python, str(ROOT / "scripts" / "build_phase3_alerts.py")],
         ),
