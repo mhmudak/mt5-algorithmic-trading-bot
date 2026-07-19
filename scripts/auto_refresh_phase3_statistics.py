@@ -188,6 +188,10 @@ def refresh_statistics(account_dir, intel_dir):
             [python, str(ROOT / "scripts" / "build_phase3_decision_candidates.py")],
         ),
         (
+            "phase3_alerts",
+            [python, str(ROOT / "scripts" / "build_phase3_alerts.py")],
+        ),
+        (
             "phase3_dashboard_summary",
             [python, str(ROOT / "scripts" / "build_phase3_dashboard_summary.py")],
         ),
