@@ -135,6 +135,81 @@ def fingerprint_payload(risk_report, opportunity_report, sendable_risks, sendabl
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+
+def format_proxy_change_value(value):
+    if value is None:
+        return "None"
+
+    try:
+        number = float(value)
+        return str(round(number, 3))
+    except Exception:
+        return str(value)
+
+
+def format_opportunity_evidence_lines(item):
+    evidence = item.get("evidence") or {}
+
+    if not isinstance(evidence, dict):
+        return []
+
+    lines = []
+
+    current_context = evidence.get("current_context") or {}
+    if isinstance(current_context, dict) and current_context:
+        context_bits = []
+
+        for label, key in [
+            ("POC", "poc"),
+            ("VAL", "value_area_low"),
+            ("VAH", "value_area_high"),
+            ("close", "latest_close"),
+            ("volume", "volume_state"),
+            ("price_vs_value", "price_vs_value_area"),
+        ]:
+            value = current_context.get(key)
+            if value is not None:
+                context_bits.append(f"{label}: {format_proxy_change_value(value)}")
+
+        if context_bits:
+            lines.append("  Current proxy context: " + " | ".join(context_bits))
+
+    change_details = evidence.get("change_details") or []
+
+    if isinstance(change_details, list) and change_details:
+        lines.append("  Change details:")
+
+        for change in change_details[:5]:
+            if not isinstance(change, dict):
+                continue
+
+            code = change.get("code") or "UNKNOWN_CHANGE"
+            change_evidence = change.get("evidence") or {}
+
+            if not isinstance(change_evidence, dict):
+                change_evidence = {}
+
+            previous = change_evidence.get("previous")
+            current = change_evidence.get("current")
+            delta = change_evidence.get("delta")
+
+            if previous is not None or current is not None:
+                detail = (
+                    f"    - {code}: "
+                    f"{format_proxy_change_value(previous)} -> {format_proxy_change_value(current)}"
+                )
+
+                if delta is not None:
+                    detail += f" | delta: {format_proxy_change_value(delta)}"
+
+                lines.append(detail)
+            else:
+                message = change.get("message") or "changed"
+                lines.append(f"    - {code}: {message}")
+
+    return lines
+
+
 def build_message(risk_report, opportunity_report, sendable_risks, sendable_opportunities):
     risk_counts = risk_report.get("fresh_counts", {}) or {}
     opp_counts = opportunity_report.get("fresh_counts", {}) or {}
@@ -190,6 +265,7 @@ def build_message(risk_report, opportunity_report, sendable_risks, sendable_oppo
                 f"  {item.get('message')}",
                 f"  Action: {item.get('action')}",
             ]
+            lines += format_opportunity_evidence_lines(item)
         lines.append("")
     else:
         lines += [

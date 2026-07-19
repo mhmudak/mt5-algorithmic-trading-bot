@@ -131,6 +131,8 @@ def main():
             {
                 "proxy_change_status": proxy_change_status,
                 "proxy_change_count": proxy_change_count,
+                "change_details": mt5_proxy_changes.get("changes", [])[:5],
+                "current_context": mt5_proxy_changes.get("current_context", {}),
             },
         )
 

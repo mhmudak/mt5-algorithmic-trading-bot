@@ -189,6 +189,7 @@ def main():
             "history_count": mt5_proxy_changes.get("history_count"),
             "change_count": mt5_proxy_changes.get("change_count"),
             "current_context": mt5_proxy_changes.get("current_context"),
+            "changes": mt5_proxy_changes.get("changes"),
             "recommendation": mt5_proxy_changes.get("recommendation"),
         },
         "poc_profile": {
@@ -333,6 +334,44 @@ def main():
 
     for key, value in dashboard["loaded_reports"].items():
         lines.append(f"{key} = {value}")
+
+
+    proxy_change_details = get_nested(dashboard, "mt5_proxy_context_changes", "changes", default=[]) or []
+
+    if proxy_change_details:
+        detail_lines = [
+            "[MT5 PROXY CHANGE DETAILS]",
+        ]
+
+        for item in proxy_change_details[:5]:
+            if not isinstance(item, dict):
+                continue
+
+            code = item.get("code")
+            evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+
+            previous = evidence.get("previous")
+            current = evidence.get("current")
+            delta = evidence.get("delta")
+
+            if previous is not None or current is not None:
+                detail = f"{code}: {previous} -> {current}"
+
+                if delta is not None:
+                    detail += f" | delta = {delta}"
+
+                detail_lines.append(detail)
+            else:
+                detail_lines.append(f"{code}: {item.get('message')}")
+
+        detail_lines.append("")
+
+        try:
+            poc_index = lines.index("[POC PROFILE]")
+            lines[poc_index:poc_index] = detail_lines
+        except ValueError:
+            lines.extend([""] + detail_lines)
+
 
     SUMMARY_PATH.write_text("\n".join(lines), encoding="utf-8")
 
