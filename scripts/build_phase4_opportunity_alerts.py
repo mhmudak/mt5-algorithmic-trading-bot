@@ -11,6 +11,16 @@ REPORT_PATH = INTEL_DIR / "phase4_opportunity_alerts_report.json"
 SUMMARY_PATH = INTEL_DIR / "phase4_opportunity_alerts_summary.txt"
 
 
+PROXY_OPPORTUNITY_CHANGE_CODES = {
+    "PROXY_POC_MOVED",
+    "PROXY_VALUE_AREA_LOW_MOVED",
+    "PROXY_VALUE_AREA_HIGH_MOVED",
+    "PRICE_VS_VALUE_AREA_CHANGED",
+    "TICK_VOLUME_STATE_CHANGED",
+}
+
+
+
 def load_json(filename):
     path = INTEL_DIR / filename
     if not path.exists():
@@ -70,6 +80,22 @@ def main():
     proxy_change_status = get(mt5_proxy_changes, "status", default="UNKNOWN")
     proxy_change_count = get(mt5_proxy_changes, "change_count", default=0) or 0
 
+
+    proxy_change_details = mt5_proxy_changes.get("changes", [])
+    if not isinstance(proxy_change_details, list):
+        proxy_change_details = []
+
+    proxy_opportunity_change_details = [
+        item for item in proxy_change_details
+        if isinstance(item, dict) and item.get("code") in PROXY_OPPORTUNITY_CHANGE_CODES
+    ]
+
+    ignored_proxy_change_codes = [
+        item.get("code")
+        for item in proxy_change_details
+        if isinstance(item, dict) and item.get("code") not in PROXY_OPPORTUNITY_CHANGE_CODES
+    ]
+
     if new_trades >= 30 and new_outcomes >= 50 and new_confirmations >= 50:
         add_opportunity(
             opportunities,
@@ -121,7 +147,7 @@ def main():
             },
         )
 
-    if proxy_change_status == "PROXY_CONTEXT_CHANGED" and proxy_change_count > 0:
+    if proxy_change_status == "PROXY_CONTEXT_CHANGED" and proxy_opportunity_change_details:
         add_opportunity(
             opportunities,
             "SHADOW_RESEARCH_CANDIDATE",
@@ -131,7 +157,9 @@ def main():
             {
                 "proxy_change_status": proxy_change_status,
                 "proxy_change_count": proxy_change_count,
-                "change_details": mt5_proxy_changes.get("changes", [])[:5],
+            "proxy_opportunity_change_count": len(proxy_opportunity_change_details),
+                "change_details": proxy_opportunity_change_details[:5],
+                "ignored_change_codes": ignored_proxy_change_codes[:10],
                 "current_context": mt5_proxy_changes.get("current_context", {}),
             },
         )
