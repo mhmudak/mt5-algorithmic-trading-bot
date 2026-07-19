@@ -22,6 +22,7 @@ REPORTS = {
     "session_poc_confirmation": "phase3_session_poc_confirmation_report.json",
     "confirmation_coverage_audit": "phase3_confirmation_coverage_audit_report.json",
     "decision_candidates": "phase3_decision_candidates_report.json",
+    "alerts": "phase3_alerts_report.json",
 }
 
 
@@ -76,6 +77,7 @@ def main():
     conf_patterns = loaded.get("confirmation_patterns", {})
     coverage = loaded.get("confirmation_coverage_audit", {})
     decision_candidates = loaded.get("decision_candidates", {})
+    alerts_report = loaded.get("alerts", {})
 
     dashboard = {
         "phase": "PHASE_3J_DASHBOARD_SUMMARY",
@@ -107,6 +109,7 @@ def main():
             "session_poc_confirmation": session_conf.get("recommendation"),
             "confirmation_coverage_audit": coverage.get("recommendation"),
             "decision_candidates": decision_candidates.get("recommendation"),
+            "alerts": alerts_report.get("recommendation"),
         },
         "poc_profile": poc.get("profile"),
         "mtf_summary": mtf.get("summary"),
@@ -122,6 +125,12 @@ def main():
             "fresh_counts": decision_candidates.get("fresh_counts"),
             "status_counts": decision_candidates.get("status_counts"),
             "recommendation": decision_candidates.get("recommendation"),
+        },
+        "alerts": {
+            "status": alerts_report.get("status"),
+            "highest_severity": alerts_report.get("highest_severity"),
+            "alert_count": alerts_report.get("alert_count"),
+            "recommendation": alerts_report.get("recommendation"),
         },
         "loaded_reports": {
             name: report.get("available", False)
