@@ -190,6 +190,9 @@ def main():
             "change_count": mt5_proxy_changes.get("change_count"),
             "current_context": mt5_proxy_changes.get("current_context"),
             "changes": mt5_proxy_changes.get("changes"),
+            "event_action": mt5_proxy_changes.get("event_action"),
+            "significant_change_event_count": mt5_proxy_changes.get("significant_change_event_count"),
+            "latest_significant_change_event": mt5_proxy_changes.get("latest_significant_change_event"),
             "recommendation": mt5_proxy_changes.get("recommendation"),
         },
         "poc_profile": {
@@ -371,6 +374,50 @@ def main():
             lines[poc_index:poc_index] = detail_lines
         except ValueError:
             lines.extend([""] + detail_lines)
+
+
+
+    latest_proxy_event = get_nested(
+        dashboard,
+        "mt5_proxy_context_changes",
+        "latest_significant_change_event",
+        default=None,
+    )
+
+    if isinstance(latest_proxy_event, dict) and latest_proxy_event:
+        event_lines = [
+            "[MT5 PROXY LATEST SIGNIFICANT CHANGE]",
+            f"recorded_at = {latest_proxy_event.get('recorded_at')}",
+            f"change_count = {latest_proxy_event.get('change_count')}",
+            f"current_poc = {latest_proxy_event.get('current_poc')}",
+            f"current_value_area_low = {latest_proxy_event.get('current_value_area_low')}",
+            f"current_value_area_high = {latest_proxy_event.get('current_value_area_high')}",
+            f"current_latest_close = {latest_proxy_event.get('current_latest_close')}",
+        ]
+
+        for item in latest_proxy_event.get("changes", [])[:5]:
+            if not isinstance(item, dict):
+                continue
+
+            evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+            previous = evidence.get("previous")
+            current = evidence.get("current")
+            delta = evidence.get("delta")
+
+            detail = f"{item.get('code')}: {previous} -> {current}"
+
+            if delta is not None:
+                detail += f" | delta = {delta}"
+
+            event_lines.append(detail)
+
+        event_lines.append("")
+
+        try:
+            poc_index = lines.index("[POC PROFILE]")
+            lines[poc_index:poc_index] = event_lines
+        except ValueError:
+            lines.extend([""] + event_lines)
 
 
     SUMMARY_PATH.write_text("\n".join(lines), encoding="utf-8")
