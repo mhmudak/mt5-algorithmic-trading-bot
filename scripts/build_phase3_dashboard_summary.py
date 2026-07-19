@@ -37,14 +37,21 @@ def load_report(filename):
 
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        data["available"] = True
-        return data
+        if isinstance(data, dict):
+            data["available"] = True
+            return data
     except Exception as exc:
         return {
             "available": False,
             "path": str(path),
             "error": repr(exc),
         }
+
+    return {
+        "available": False,
+        "path": str(path),
+        "error": "Invalid report format",
+    }
 
 
 def get_nested(data, *keys, default=None):
@@ -66,21 +73,21 @@ def main():
         for name, filename in REPORTS.items()
     }
 
-    readiness = loaded.get("readiness_gate", {})
     auto_stats = loaded.get("auto_statistics", {})
     post_baseline = loaded.get("post_baseline", {})
+    readiness = loaded.get("readiness_gate", {})
+    confirmation_patterns = loaded.get("confirmation_patterns", {})
     mtf = loaded.get("mtf_conflicts", {})
     low_rr = loaded.get("low_rr_slippage_recovery", {})
     poc = loaded.get("poc_context", {})
     liquidity_poc = loaded.get("liquidity_poc_context", {})
     session_conf = loaded.get("session_poc_confirmation", {})
-    conf_patterns = loaded.get("confirmation_patterns", {})
     coverage = loaded.get("confirmation_coverage_audit", {})
     decision_candidates = loaded.get("decision_candidates", {})
-    alerts_report = loaded.get("alerts", {})
+    alerts = loaded.get("alerts", {})
 
     dashboard = {
-        "phase": "PHASE_3J_DASHBOARD_SUMMARY",
+        "phase": "PHASE_3_DASHBOARD_SUMMARY",
         "mode": "OBSERVE_ONLY",
         "updated_at": datetime.now().isoformat(timespec="seconds"),
         "decision": "NO_LIVE_BLOCKING_NO_AUTO_EXECUTION",
@@ -98,24 +105,6 @@ def main():
             "new_setup_outcomes_post_baseline": get_nested(post_baseline, "post_baseline_counts", "new_setup_outcomes", default=None),
             "new_confirmations_post_baseline": get_nested(post_baseline, "post_baseline_counts", "new_confirmation_observations", default=None),
         },
-        "recommendations": {
-            "auto_statistics": auto_stats.get("recommendation"),
-            "readiness_gate": readiness.get("recommendation"),
-            "confirmation_patterns": conf_patterns.get("recommendation"),
-            "mtf_conflicts": mtf.get("recommendation"),
-            "low_rr_slippage_recovery": low_rr.get("recommendation"),
-            "poc_context": poc.get("recommendation"),
-            "liquidity_poc_context": liquidity_poc.get("recommendation"),
-            "session_poc_confirmation": session_conf.get("recommendation"),
-            "confirmation_coverage_audit": coverage.get("recommendation"),
-            "decision_candidates": decision_candidates.get("recommendation"),
-            "alerts": alerts_report.get("recommendation"),
-        },
-        "poc_profile": poc.get("profile"),
-        "mtf_summary": mtf.get("summary"),
-        "low_rr_summary": low_rr.get("summary"),
-        "liquidity_poc_summary": liquidity_poc.get("summary"),
-        "session_poc_confirmation_summary": session_conf.get("summary"),
         "confirmation_coverage": {
             "suspicious_missing_count": coverage.get("suspicious_missing_count"),
             "coverage": coverage.get("coverage"),
@@ -127,10 +116,24 @@ def main():
             "recommendation": decision_candidates.get("recommendation"),
         },
         "alerts": {
-            "status": alerts_report.get("status"),
-            "highest_severity": alerts_report.get("highest_severity"),
-            "alert_count": alerts_report.get("alert_count"),
-            "recommendation": alerts_report.get("recommendation"),
+            "status": alerts.get("status"),
+            "highest_severity": alerts.get("highest_severity"),
+            "alert_count": alerts.get("alert_count"),
+            "recommendation": alerts.get("recommendation"),
+        },
+        "poc_profile": poc.get("profile"),
+        "recommendations": {
+            "auto_statistics": auto_stats.get("recommendation"),
+            "readiness_gate": readiness.get("recommendation"),
+            "confirmation_patterns": confirmation_patterns.get("recommendation"),
+            "mtf_conflicts": mtf.get("recommendation"),
+            "low_rr_slippage_recovery": low_rr.get("recommendation"),
+            "poc_context": poc.get("recommendation"),
+            "liquidity_poc_context": liquidity_poc.get("recommendation"),
+            "session_poc_confirmation": session_conf.get("recommendation"),
+            "confirmation_coverage_audit": coverage.get("recommendation"),
+            "decision_candidates": decision_candidates.get("recommendation"),
+            "alerts": alerts.get("recommendation"),
         },
         "loaded_reports": {
             name: report.get("available", False)
@@ -162,17 +165,26 @@ def main():
         "",
         "[CONFIRMATION COVERAGE]",
         f"suspicious_missing_count = {dashboard['confirmation_coverage']['suspicious_missing_count']}",
+        f"coverage = {dashboard['confirmation_coverage']['coverage']}",
         f"recommendation = {dashboard['confirmation_coverage']['recommendation']}",
         "",
         "[DECISION CANDIDATES]",
+        f"fresh_counts = {dashboard['decision_candidates']['fresh_counts']}",
         f"status_counts = {dashboard['decision_candidates']['status_counts']}",
         f"recommendation = {dashboard['decision_candidates']['recommendation']}",
+        "",
+        "[ALERTS]",
+        f"status = {dashboard['alerts']['status']}",
+        f"highest_severity = {dashboard['alerts']['highest_severity']}",
+        f"alert_count = {dashboard['alerts']['alert_count']}",
+        f"recommendation = {dashboard['alerts']['recommendation']}",
         "",
         "[POC PROFILE]",
     ]
 
-    if dashboard["poc_profile"]:
-        profile = dashboard["poc_profile"]
+    profile = dashboard["poc_profile"]
+
+    if isinstance(profile, dict):
         lines += [
             f"poc = {profile.get('poc')}",
             f"value_area_low = {profile.get('value_area_low')}",
