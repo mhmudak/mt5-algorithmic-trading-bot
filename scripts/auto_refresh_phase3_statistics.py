@@ -224,12 +224,8 @@ def refresh_statistics(account_dir, intel_dir):
             [python, str(ROOT / "scripts" / "build_phase4_opportunity_alerts.py")],
         ),
         (
-            "phase4_opportunity_telegram_alerts",
-            [python, str(ROOT / "scripts" / "notify_phase4_opportunities_telegram.py")],
-        ),
-        (
-            "phase3_phase4_telegram_alerts",
-            [python, str(ROOT / "scripts" / "notify_phase3_phase4_alerts_telegram.py")],
+            "phase4_unified_telegram_monitoring",
+            [python, str(ROOT / "scripts" / "notify_phase4_unified_monitoring_telegram.py")],
         ),
         (
             "phase3_dashboard_summary",
