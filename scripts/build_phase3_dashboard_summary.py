@@ -20,6 +20,8 @@ REPORTS = {
     "poc_context": "phase3_poc_context_report.json",
     "liquidity_poc_context": "phase3_liquidity_poc_context_report.json",
     "session_poc_confirmation": "phase3_session_poc_confirmation_report.json",
+    "confirmation_coverage_audit": "phase3_confirmation_coverage_audit_report.json",
+    "decision_candidates": "phase3_decision_candidates_report.json",
 }
 
 
@@ -72,6 +74,8 @@ def main():
     liquidity_poc = loaded.get("liquidity_poc_context", {})
     session_conf = loaded.get("session_poc_confirmation", {})
     conf_patterns = loaded.get("confirmation_patterns", {})
+    coverage = loaded.get("confirmation_coverage_audit", {})
+    decision_candidates = loaded.get("decision_candidates", {})
 
     dashboard = {
         "phase": "PHASE_3J_DASHBOARD_SUMMARY",
@@ -101,12 +105,24 @@ def main():
             "poc_context": poc.get("recommendation"),
             "liquidity_poc_context": liquidity_poc.get("recommendation"),
             "session_poc_confirmation": session_conf.get("recommendation"),
+            "confirmation_coverage_audit": coverage.get("recommendation"),
+            "decision_candidates": decision_candidates.get("recommendation"),
         },
         "poc_profile": poc.get("profile"),
         "mtf_summary": mtf.get("summary"),
         "low_rr_summary": low_rr.get("summary"),
         "liquidity_poc_summary": liquidity_poc.get("summary"),
         "session_poc_confirmation_summary": session_conf.get("summary"),
+        "confirmation_coverage": {
+            "suspicious_missing_count": coverage.get("suspicious_missing_count"),
+            "coverage": coverage.get("coverage"),
+            "recommendation": coverage.get("recommendation"),
+        },
+        "decision_candidates": {
+            "fresh_counts": decision_candidates.get("fresh_counts"),
+            "status_counts": decision_candidates.get("status_counts"),
+            "recommendation": decision_candidates.get("recommendation"),
+        },
         "loaded_reports": {
             name: report.get("available", False)
             for name, report in loaded.items()
@@ -134,6 +150,14 @@ def main():
         lines.append(f"{key} = {value}")
 
     lines += [
+        "",
+        "[CONFIRMATION COVERAGE]",
+        f"suspicious_missing_count = {dashboard['confirmation_coverage']['suspicious_missing_count']}",
+        f"recommendation = {dashboard['confirmation_coverage']['recommendation']}",
+        "",
+        "[DECISION CANDIDATES]",
+        f"status_counts = {dashboard['decision_candidates']['status_counts']}",
+        f"recommendation = {dashboard['decision_candidates']['recommendation']}",
         "",
         "[POC PROFILE]",
     ]
