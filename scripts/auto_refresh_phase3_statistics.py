@@ -268,6 +268,7 @@ def main():
     parser.add_argument("--intel-dir", default=str(DEFAULT_INTEL_DIR))
     parser.add_argument("--interval-seconds", type=int, default=900)
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--force", action="store_true", help="Run all Phase 3 reports even when no watched data changed.")
     args = parser.parse_args()
 
     account_dir = Path(args.account_dir)
