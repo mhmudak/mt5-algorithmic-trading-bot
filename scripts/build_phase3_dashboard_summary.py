@@ -253,21 +253,10 @@ def main():
         f"recommendation = {dashboard['mt5_proxy_context']['recommendation']}",
         "",
         "[POC PROFILE]",
-    ]
-
-    profile = dashboard["poc_profile"]
-
-    if isinstance(profile, dict):
-        lines += [
-            f"poc = {profile.get('poc')}",
-            f"value_area_low = {profile.get('value_area_low')}",
-            f"value_area_high = {profile.get('value_area_high')}",
-            "warning = MT5 tick_volume proxy only, not COMEX order flow",
-        ]
-    else:
-        lines.append("POC profile unavailable")
-
-    lines += [
+        f"poc = {dashboard['poc_profile'].get('poc')}",
+        f"value_area_low = {dashboard['poc_profile'].get('value_area_low')}",
+        f"value_area_high = {dashboard['poc_profile'].get('value_area_high')}",
+        f"warning = {poc.get('warning')}",
         "",
         "[RECOMMENDATIONS]",
     ]
