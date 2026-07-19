@@ -184,6 +184,10 @@ def refresh_statistics(account_dir, intel_dir):
             [python, str(ROOT / "scripts" / "audit_phase3_confirmation_coverage.py")],
         ),
         (
+            "phase3_decision_candidates",
+            [python, str(ROOT / "scripts" / "build_phase3_decision_candidates.py")],
+        ),
+        (
             "phase3_dashboard_summary",
             [python, str(ROOT / "scripts" / "build_phase3_dashboard_summary.py")],
         ),
