@@ -23,6 +23,7 @@ REPORTS = {
     "confirmation_coverage_audit": "phase3_confirmation_coverage_audit_report.json",
     "decision_candidates": "phase3_decision_candidates_report.json",
     "alerts": "phase3_alerts_report.json",
+    "orderflow_status": "phase4_orderflow_status_report.json",
 }
 
 
@@ -85,6 +86,7 @@ def main():
     coverage = loaded.get("confirmation_coverage_audit", {})
     decision_candidates = loaded.get("decision_candidates", {})
     alerts = loaded.get("alerts", {})
+    orderflow_status = loaded.get("orderflow_status", {})
 
     dashboard = {
         "phase": "PHASE_3_DASHBOARD_SUMMARY",
@@ -121,6 +123,14 @@ def main():
             "alert_count": alerts.get("alert_count"),
             "recommendation": alerts.get("recommendation"),
         },
+        "orderflow_status": {
+            "provider": get_nested(orderflow_status, "orderflow_snapshot", "provider"),
+            "available": get_nested(orderflow_status, "orderflow_snapshot", "available"),
+            "status": get_nested(orderflow_status, "orderflow_snapshot", "status"),
+            "data_quality": get_nested(orderflow_status, "orderflow_snapshot", "data_quality"),
+            "decision_impact": get_nested(orderflow_status, "orderflow_snapshot", "decision_impact"),
+            "recommendation": orderflow_status.get("recommendation"),
+        },
         "poc_profile": poc.get("profile"),
         "recommendations": {
             "auto_statistics": auto_stats.get("recommendation"),
@@ -134,6 +144,7 @@ def main():
             "confirmation_coverage_audit": coverage.get("recommendation"),
             "decision_candidates": decision_candidates.get("recommendation"),
             "alerts": alerts.get("recommendation"),
+            "orderflow_status": orderflow_status.get("recommendation"),
         },
         "loaded_reports": {
             name: report.get("available", False)
@@ -178,6 +189,14 @@ def main():
         f"highest_severity = {dashboard['alerts']['highest_severity']}",
         f"alert_count = {dashboard['alerts']['alert_count']}",
         f"recommendation = {dashboard['alerts']['recommendation']}",
+        "",
+        "[ORDER FLOW STATUS]",
+        f"provider = {dashboard['orderflow_status']['provider']}",
+        f"available = {dashboard['orderflow_status']['available']}",
+        f"status = {dashboard['orderflow_status']['status']}",
+        f"data_quality = {dashboard['orderflow_status']['data_quality']}",
+        f"decision_impact = {dashboard['orderflow_status']['decision_impact']}",
+        f"recommendation = {dashboard['orderflow_status']['recommendation']}",
         "",
         "[POC PROFILE]",
     ]
