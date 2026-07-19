@@ -38,6 +38,38 @@ def load_json(filename):
         return {}
 
 
+
+def first_not_none(*values):
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def read_summary_value(filename, key):
+    path = INTEL_DIR / filename
+    if not path.exists():
+        return None
+
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith(f"{key} = "):
+                return line.split(" = ", 1)[1].strip()
+    except Exception:
+        return None
+
+    return None
+
+
+def as_int_or_value(value):
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except Exception:
+        return value
+
+
 def get_nested(data, *keys, default=None):
     cur = data
     for key in keys:
@@ -80,9 +112,24 @@ def main():
             "comex_order_flow": get_nested(readiness, "readiness", "comex_order_flow"),
         },
         "counts": {
-            "trades_total": auto_stats.get("trades"),
-            "setup_outcomes_total": auto_stats.get("setup_outcomes"),
-            "confirmation_observations_total": auto_stats.get("confirmation_observations"),
+            "trades_total": as_int_or_value(first_not_none(
+                auto_stats.get("trades"),
+                get_nested(auto_stats, "counts", "trades"),
+                get_nested(auto_stats, "data_counts", "trades"),
+                read_summary_value("phase3_auto_statistics_summary.txt", "trades"),
+            )),
+            "setup_outcomes_total": as_int_or_value(first_not_none(
+                auto_stats.get("setup_outcomes"),
+                get_nested(auto_stats, "counts", "setup_outcomes"),
+                get_nested(auto_stats, "data_counts", "setup_outcomes"),
+                read_summary_value("phase3_auto_statistics_summary.txt", "setup_outcomes"),
+            )),
+            "confirmation_observations_total": as_int_or_value(first_not_none(
+                auto_stats.get("confirmation_observations"),
+                get_nested(auto_stats, "counts", "confirmation_observations"),
+                get_nested(auto_stats, "data_counts", "confirmation_observations"),
+                read_summary_value("phase3_auto_statistics_summary.txt", "confirmation_observations"),
+            )),
             "new_trades_post_baseline": get_nested(readiness, "post_baseline_counts", "new_trades"),
             "new_setup_outcomes_post_baseline": get_nested(readiness, "post_baseline_counts", "new_setup_outcomes"),
             "new_confirmations_post_baseline": get_nested(readiness, "post_baseline_counts", "new_confirmation_observations"),
@@ -135,8 +182,31 @@ def main():
             "candle_direction": get_nested(mt5_proxy_context, "context", "candle_context", "candle_direction"),
             "recommendation": mt5_proxy_context.get("recommendation"),
         },
-        "poc_profile": poc.get("profile") or {},
-        "poc_warning": poc.get("warning") or "MT5 tick_volume proxy only, not COMEX order flow",
+        "poc_profile": {
+            "poc": first_not_none(
+                get_nested(poc, "profile", "poc"),
+                get_nested(poc, "profile", "proxy_poc"),
+                get_nested(poc, "poc"),
+                get_nested(mt5_proxy_context, "context", "profile", "poc"),
+            ),
+            "value_area_low": first_not_none(
+                get_nested(poc, "profile", "value_area_low"),
+                get_nested(poc, "profile", "proxy_value_area_low"),
+                get_nested(poc, "value_area_low"),
+                get_nested(mt5_proxy_context, "context", "profile", "value_area_low"),
+            ),
+            "value_area_high": first_not_none(
+                get_nested(poc, "profile", "value_area_high"),
+                get_nested(poc, "profile", "proxy_value_area_high"),
+                get_nested(poc, "value_area_high"),
+                get_nested(mt5_proxy_context, "context", "profile", "value_area_high"),
+            ),
+        },
+        "poc_warning": first_not_none(
+            poc.get("warning"),
+            get_nested(mt5_proxy_context, "context", "warning"),
+            "MT5 tick_volume proxy only, not COMEX order flow",
+        ),
         "recommendations": {
             "auto_statistics": auto_stats.get("recommendation"),
             "readiness_gate": readiness.get("recommendation"),
