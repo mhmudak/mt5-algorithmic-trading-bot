@@ -50,6 +50,7 @@ def main():
     session_conf = load_json("phase3_session_poc_confirmation_report.json")
     liquidity_poc = load_json("phase3_liquidity_poc_context_report.json")
     orderflow_gate = load_json("phase4_orderflow_availability_gate_report.json")
+    mt5_proxy_changes = load_json("phase4_mt5_proxy_context_changes_report.json")
 
     opportunities = []
 
@@ -62,6 +63,8 @@ def main():
 
     orderflow_gate_status = get(orderflow_gate, "gate", "gate_status", default="UNKNOWN")
     orderflow_can_influence = bool(get(orderflow_gate, "gate", "can_influence_decision", default=False))
+    proxy_change_status = get(mt5_proxy_changes, "status", default="UNKNOWN")
+    proxy_change_count = get(mt5_proxy_changes, "change_count", default=0) or 0
 
     mtf_records = get(mtf, "post_baseline_counts", "mtf_conflict_records", default=0) or 0
     liquidity_sample = get(liquidity_poc, "post_baseline_counts", "classified_records", default=0) or 0
@@ -119,6 +122,19 @@ def main():
             "Check if specific session/context/confirmation combinations deserve future shadow rules.",
             {
                 "session_poc_confirmation_sample": session_sample,
+            },
+        )
+
+    if proxy_change_status == "PROXY_CONTEXT_CHANGED" and proxy_change_count > 0:
+        add_opportunity(
+            opportunities,
+            "SHADOW_RESEARCH_CANDIDATE",
+            "MT5_PROXY_CONTEXT_CHANGED_RESEARCH_REVIEW",
+            "MT5 proxy context changed meaningfully.",
+            "Review POC/value-area/tick-volume changes manually. This is not a live trade signal.",
+            {
+                "proxy_change_status": proxy_change_status,
+                "proxy_change_count": proxy_change_count,
             },
         )
 

@@ -22,6 +22,7 @@ REPORTS = {
     "orderflow_status": "phase4_orderflow_status_report.json",
     "orderflow_gate": "phase4_orderflow_availability_gate_report.json",
     "mt5_proxy_context": "phase4_mt5_proxy_context_report.json",
+    "mt5_proxy_context_changes": "phase4_mt5_proxy_context_changes_report.json",
 }
 
 JSON_PATH = INTEL_DIR / "phase3_dashboard_summary.json"
@@ -99,6 +100,7 @@ def main():
     orderflow_status = loaded.get("orderflow_status", {})
     orderflow_gate = loaded.get("orderflow_gate", {})
     mt5_proxy_context = loaded.get("mt5_proxy_context", {})
+    mt5_proxy_changes = loaded.get("mt5_proxy_context_changes", {})
 
     dashboard = {
         "phase": "PHASE_3_4_DASHBOARD_SUMMARY",
@@ -182,6 +184,13 @@ def main():
             "candle_direction": get_nested(mt5_proxy_context, "context", "candle_context", "candle_direction"),
             "recommendation": mt5_proxy_context.get("recommendation"),
         },
+        "mt5_proxy_context_changes": {
+            "status": mt5_proxy_changes.get("status"),
+            "history_count": mt5_proxy_changes.get("history_count"),
+            "change_count": mt5_proxy_changes.get("change_count"),
+            "current_context": mt5_proxy_changes.get("current_context"),
+            "recommendation": mt5_proxy_changes.get("recommendation"),
+        },
         "poc_profile": {
             "poc": first_not_none(
                 get_nested(poc, "profile", "poc"),
@@ -222,6 +231,7 @@ def main():
             "orderflow_status": orderflow_status.get("recommendation"),
             "orderflow_gate": orderflow_gate.get("recommendation"),
             "mt5_proxy_context": mt5_proxy_context.get("recommendation"),
+            "mt5_proxy_context_changes": mt5_proxy_changes.get("recommendation"),
         },
         "loaded_reports": {name: bool(data) for name, data in loaded.items()},
     }
@@ -296,10 +306,18 @@ def main():
         f"candle_direction = {dashboard['mt5_proxy_context']['candle_direction']}",
         f"recommendation = {dashboard['mt5_proxy_context']['recommendation']}",
         "",
+        "[MT5 PROXY CHANGE DETECTOR]",
+        f"status = {dashboard['mt5_proxy_context_changes']['status']}",
+        f"history_count = {dashboard['mt5_proxy_context_changes']['history_count']}",
+        f"change_count = {dashboard['mt5_proxy_context_changes']['change_count']}",
+        f"recommendation = {dashboard['mt5_proxy_context_changes']['recommendation']}",
+        "",
         "[POC PROFILE]",
-        f"poc = {dashboard['poc_profile'].get('poc')}",
-        f"value_area_low = {dashboard['poc_profile'].get('value_area_low')}",
-        f"value_area_high = {dashboard['poc_profile'].get('value_area_high')}",
+        f"poc = {dashboard['mt5_proxy_context']['proxy_poc']}",
+        f"value_area_low = {dashboard['mt5_proxy_context']['proxy_value_area_low']}",
+        f"value_area_high = {dashboard['mt5_proxy_context']['proxy_value_area_high']}",
+        "source = MT5_PROXY_CONTEXT",
+        f"decision_impact = {dashboard['mt5_proxy_context']['decision_impact']}",
         f"warning = {dashboard['poc_warning']}",
         "",
         "[RECOMMENDATIONS]",
