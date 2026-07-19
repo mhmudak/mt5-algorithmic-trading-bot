@@ -387,7 +387,7 @@ def main():
     if isinstance(latest_proxy_event, dict) and latest_proxy_event:
         event_lines = [
             "[MT5 PROXY LATEST SIGNIFICANT CHANGE]",
-            f"recorded_at = {latest_proxy_event.get('recorded_at')}",
+            f"event_recorded_at = {latest_proxy_event.get('event_recorded_at')}",
             f"change_count = {latest_proxy_event.get('change_count')}",
             f"current_poc = {latest_proxy_event.get('current_poc')}",
             f"current_value_area_low = {latest_proxy_event.get('current_value_area_low')}",
