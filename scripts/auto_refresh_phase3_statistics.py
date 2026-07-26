@@ -192,6 +192,14 @@ def refresh_statistics(account_dir, intel_dir):
             [python, str(ROOT / "scripts" / "record_phase4_orderflow_snapshot.py"), "--symbol", "XAUUSD"],
         ),
         (
+            "phase5f_rithmic_provider_status",
+            [python, str(ROOT / "scripts" / "build_phase5f_rithmic_provider_status.py")],
+        ),
+        (
+            "phase5g_rithmic_monitoring_bridge",
+            [python, str(ROOT / "scripts" / "build_phase5g_rithmic_monitoring_bridge.py")],
+        ),
+        (
             "phase4_orderflow_status",
             [python, str(ROOT / "scripts" / "build_phase4_orderflow_status.py")],
         ),
