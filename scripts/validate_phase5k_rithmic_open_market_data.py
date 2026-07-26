@@ -155,7 +155,6 @@ def validate_symbol(symbol: str, *, stale_after_seconds: int) -> dict[str, Any]:
         "bridge_snapshot_exists",
         "login_ok",
         "market_data_ok",
-        "trade_count_positive",
         "delta_available",
         "cumulative_delta_available",
         "decision_impact_none",
@@ -163,6 +162,7 @@ def validate_symbol(symbol: str, *, stale_after_seconds: int) -> dict[str, Any]:
     ]
 
     open_market_quality_checks = [
+        "trade_count_positive",
         "has_fresh_trade",
         "has_fresh_bbo",
         "nonzero_bbo_available",
@@ -300,8 +300,8 @@ def main() -> None:
         report["overall_status"] = "CRITICAL_VALIDATION_NOT_READY"
         report["recommendation"] = "Fix missing snapshots/login/market-data basics before using Rithmic for strategy validation."
     elif not report["all_open_market_quality_ok"]:
-        report["overall_status"] = "CONNECTED_BUT_RETEST_WHEN_MARKET_ACTIVE"
-        report["recommendation"] = "Rithmic connection works, but fresh active market data is not validated yet."
+        report["overall_status"] = "CONNECTED_BUT_RETEST_WHEN_MARKET_ACTIVE_OR_LOW_TRADE_FLOW"
+        report["recommendation"] = "Rithmic connection works, but fresh active trade flow is not validated yet."
     elif not report["all_dom_quality_ok"]:
         report["overall_status"] = "TRADE_FLOW_VALIDATED_DOM_NOT_READY"
         report["recommendation"] = "Trade flow is usable for observe-only research, but DOM depth is not validated."
