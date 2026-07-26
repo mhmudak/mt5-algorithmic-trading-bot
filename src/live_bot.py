@@ -326,6 +326,7 @@ from config.settings import (
     REJECTED_CANDIDATE_TELEGRAM_MIN_SCORE,
     REJECTED_CANDIDATE_TELEGRAM_MIN_RR,
     REJECTED_CANDIDATE_TELEGRAM_COOLDOWN_MINUTES,
+    ENABLE_PRO_TRADER_REPLICATION_DEMO,
 )
 
 from src.candidate_rejection_recovery import (
@@ -406,6 +407,7 @@ STRATEGY_SPECIFIC_CONFIRMED = {
     "VWAP_RANGE_MEAN_REVERSION",
     "WAVETREND_MOMENTUM",
     "MICRO_SR_SWEEP_RECLAIM",
+    "PRO_TRADER_REPLICATION",
 }
 
 def send_telegram_message_async(message):
@@ -8258,6 +8260,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_vwap_range_mean_reversion import generate_signal as vwap_range_mean_reversion_signal
     from src.strategies.strategy_wavetrend_momentum import generate_signal as wavetrend_momentum_signal
     from src.strategies.strategy_micro_sr_sweep_reclaim import generate_signal as micro_sr_sweep_reclaim_signal
+    from src.strategies.strategy_pro_trader_replication import generate_signal as pro_trader_replication_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -8585,6 +8588,10 @@ def process_cycle(last_processed_candle_time):
         ]
         logger.info("[STRATEGY TOGGLE] FCR_M1_FVG disabled")
         
+    if ENABLE_PRO_TRADER_REPLICATION_DEMO:
+        strategy_map.insert(0, ("PRO_TRADER_REPLICATION", pro_trader_replication_signal))
+        logger.info("[STRATEGY TOGGLE] PRO_TRADER_REPLICATION demo enabled")
+
     logger.info(
         f"[STRATEGY MAP ACTIVE] "
         f"market_condition={market_condition} "

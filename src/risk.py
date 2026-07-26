@@ -13,6 +13,7 @@ from config.settings import (
     MIN_TP_BUFFER_PRICE,
     MAX_TP_BUFFER_PRICE,
     LIQUIDITY_CANDLE_R_MULTIPLIER,
+    PRO_TRADER_REPLICATION_FIXED_LOT,
 )
 
 
@@ -61,6 +62,7 @@ STRATEGY_SL_REFERENCE_MODELS = {
     "VWAP_RANGE_MEAN_REVERSION",
     "WAVETREND_MOMENTUM",
     "MICRO_SR_SWEEP_RECLAIM",
+    "PRO_TRADER_REPLICATION",
 }
 
 
@@ -334,7 +336,9 @@ def calculate_trade_plan(df, signal, tick, account_balance, signal_data=None):
     if abs(take_profit - entry_price) < min_tp_distance:
         return None
 
-    if POSITION_MODE == "fixed":
+    if strategy == "PRO_TRADER_REPLICATION":
+        lot = PRO_TRADER_REPLICATION_FIXED_LOT
+    elif POSITION_MODE == "fixed":
         lot = FIXED_LOT
     else:
         lot = round((account_balance * RISK_PER_TRADE_PCT) / stop_distance, 2)
