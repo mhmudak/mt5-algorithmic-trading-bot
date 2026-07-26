@@ -66,3 +66,6 @@ old_*.py
 # MT5 / Telegram local sessions
 *.session
 *.session-journal
+vendor_private/
+
+data/order_flow/rithmic/*.jsonl
