@@ -1,10 +1,12 @@
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 INTEL_DIR = ROOT / "data" / "strategy_intelligence" / "Tickmill-Demo_25323531"
+RITHMIC_DIR = ROOT / "data" / "order_flow" / "rithmic"
 
 REPORTS = {
     "auto_statistics": "phase3_auto_statistics_report.json",
@@ -28,6 +30,48 @@ REPORTS = {
 JSON_PATH = INTEL_DIR / "phase3_dashboard_summary.json"
 SUMMARY_PATH = INTEL_DIR / "phase3_dashboard_summary.txt"
 
+
+
+
+def safe_symbol_for_file(symbol):
+    return str(symbol).replace("/", "_").replace("\\", "_").replace(".", "_")
+
+
+def configured_rithmic_symbol():
+    return os.getenv("RITHMIC_SYMBOL", "GCQ6")
+
+
+def load_json_path(path):
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def load_rithmic_bridge():
+    symbol = configured_rithmic_symbol()
+    path = RITHMIC_DIR / f"{safe_symbol_for_file(symbol)}_phase5g_rithmic_monitoring_bridge.json"
+    data = load_json_path(path)
+
+    if not data:
+        return {
+            "loaded": False,
+            "symbol": symbol,
+            "path": str(path),
+            "bridge_status": "RITHMIC_BRIDGE_NOT_BUILT",
+            "decision_impact": "NONE",
+            "can_influence_decision": False,
+            "adapter_metrics": {},
+            "phase4_compatibility": {},
+            "warnings": ["PHASE5G_RITHMIC_BRIDGE_REPORT_NOT_FOUND"],
+            "recommendation": "Build Phase 5G Rithmic monitoring bridge before reviewing Rithmic order-flow status.",
+        }
+
+    data["loaded"] = True
+    data["path"] = str(path)
+    return data
 
 def load_json(filename):
     path = INTEL_DIR / filename
@@ -101,6 +145,9 @@ def main():
     orderflow_gate = loaded.get("orderflow_gate", {})
     mt5_proxy_context = loaded.get("mt5_proxy_context", {})
     mt5_proxy_changes = loaded.get("mt5_proxy_context_changes", {})
+    rithmic_bridge = load_rithmic_bridge()
+    rithmic_metrics = rithmic_bridge.get("adapter_metrics") or {}
+    rithmic_phase4 = rithmic_bridge.get("phase4_compatibility") or {}
 
     dashboard = {
         "phase": "PHASE_3_4_DASHBOARD_SUMMARY",
@@ -168,6 +215,29 @@ def main():
             "reason": get_nested(orderflow_gate, "gate", "reason"),
             "recommendation": orderflow_gate.get("recommendation"),
         },
+        "rithmic_orderflow_bridge": {
+            "loaded": rithmic_bridge.get("loaded"),
+            "symbol": rithmic_bridge.get("symbol"),
+            "exchange": rithmic_bridge.get("exchange"),
+            "system_name": rithmic_bridge.get("system_name"),
+            "is_test_environment": rithmic_bridge.get("is_test_environment"),
+            "bridge_status": rithmic_bridge.get("bridge_status"),
+            "provider_status": rithmic_bridge.get("provider_status"),
+            "decision_impact": rithmic_bridge.get("decision_impact"),
+            "can_influence_decision": rithmic_bridge.get("can_influence_decision"),
+            "safe_for_live_decision": rithmic_bridge.get("safe_for_live_decision"),
+            "adapter_metric_format_ready": rithmic_phase4.get("adapter_metric_format_ready"),
+            "can_replace_no_order_flow_provider": rithmic_phase4.get("can_replace_no_order_flow_provider"),
+            "delta": rithmic_metrics.get("delta"),
+            "cumulative_delta": rithmic_metrics.get("cumulative_delta"),
+            "footprint_imbalance": rithmic_metrics.get("footprint_imbalance"),
+            "dom_available": rithmic_metrics.get("dom_available"),
+            "dom_bid_depth": rithmic_metrics.get("dom_bid_depth"),
+            "dom_ask_depth": rithmic_metrics.get("dom_ask_depth"),
+            "dom_depth_imbalance": rithmic_metrics.get("dom_depth_imbalance"),
+            "warnings": rithmic_bridge.get("warnings"),
+            "recommendation": rithmic_bridge.get("recommendation"),
+        },
         "mt5_proxy_context": {
             "available": get_nested(mt5_proxy_context, "context", "available"),
             "status": get_nested(mt5_proxy_context, "context", "status"),
@@ -234,11 +304,14 @@ def main():
             "alerts": alerts.get("recommendation"),
             "orderflow_status": orderflow_status.get("recommendation"),
             "orderflow_gate": orderflow_gate.get("recommendation"),
+            "rithmic_orderflow_bridge": rithmic_bridge.get("recommendation"),
             "mt5_proxy_context": mt5_proxy_context.get("recommendation"),
             "mt5_proxy_context_changes": mt5_proxy_changes.get("recommendation"),
         },
         "loaded_reports": {name: bool(data) for name, data in loaded.items()},
     }
+
+    dashboard["loaded_reports"]["rithmic_orderflow_bridge"] = bool(rithmic_bridge.get("loaded"))
 
     JSON_PATH.write_text(json.dumps(dashboard, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -293,6 +366,22 @@ def main():
         f"missing_required_metrics = {dashboard['orderflow_gate']['missing_required_metrics']}",
         f"reason = {dashboard['orderflow_gate']['reason']}",
         f"recommendation = {dashboard['orderflow_gate']['recommendation']}",
+        "",
+        "[RITHMIC ORDER-FLOW BRIDGE]",
+        f"loaded = {dashboard['rithmic_orderflow_bridge']['loaded']}",
+        f"symbol = {dashboard['rithmic_orderflow_bridge']['symbol']}",
+        f"bridge_status = {dashboard['rithmic_orderflow_bridge']['bridge_status']}",
+        f"provider_status = {dashboard['rithmic_orderflow_bridge']['provider_status']}",
+        f"decision_impact = {dashboard['rithmic_orderflow_bridge']['decision_impact']}",
+        f"can_influence_decision = {dashboard['rithmic_orderflow_bridge']['can_influence_decision']}",
+        f"adapter_metric_format_ready = {dashboard['rithmic_orderflow_bridge']['adapter_metric_format_ready']}",
+        f"can_replace_no_order_flow_provider = {dashboard['rithmic_orderflow_bridge']['can_replace_no_order_flow_provider']}",
+        f"delta = {dashboard['rithmic_orderflow_bridge']['delta']}",
+        f"cumulative_delta = {dashboard['rithmic_orderflow_bridge']['cumulative_delta']}",
+        f"dom_available = {dashboard['rithmic_orderflow_bridge']['dom_available']}",
+        f"dom_bid_depth = {dashboard['rithmic_orderflow_bridge']['dom_bid_depth']}",
+        f"dom_ask_depth = {dashboard['rithmic_orderflow_bridge']['dom_ask_depth']}",
+        f"recommendation = {dashboard['rithmic_orderflow_bridge']['recommendation']}",
         "",
         "[MT5 PROXY CONTEXT]",
         f"available = {dashboard['mt5_proxy_context']['available']}",

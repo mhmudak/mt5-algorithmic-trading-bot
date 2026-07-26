@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
 
 
 INTEL_DIR = ROOT / "data" / "strategy_intelligence" / "Tickmill-Demo_25323531"
+RITHMIC_DIR = ROOT / "data" / "order_flow" / "rithmic"
 
 RISK_REPORT_PATH = INTEL_DIR / "phase3_alerts_report.json"
 OPPORTUNITY_REPORT_PATH = INTEL_DIR / "phase4_opportunity_alerts_report.json"
@@ -29,6 +30,44 @@ SENDABLE_OPPORTUNITY_GRADES = {
     "PROVIDER_REVIEW_REQUIRED",
 }
 
+
+
+
+def safe_symbol_for_file(symbol):
+    return str(symbol).replace("/", "_").replace("\\", "_").replace(".", "_")
+
+
+def load_rithmic_bridge():
+    symbol = os.getenv("RITHMIC_SYMBOL", "GCQ6")
+    path = RITHMIC_DIR / f"{safe_symbol_for_file(symbol)}_phase5g_rithmic_monitoring_bridge.json"
+
+    if not path.exists():
+        return {
+            "loaded": False,
+            "symbol": symbol,
+            "bridge_status": "RITHMIC_BRIDGE_NOT_BUILT",
+            "decision_impact": "NONE",
+            "can_influence_decision": False,
+            "adapter_metrics": {},
+            "phase4_compatibility": {},
+            "warnings": ["PHASE5G_RITHMIC_BRIDGE_REPORT_NOT_FOUND"],
+        }
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["loaded"] = True
+        return data
+    except Exception as exc:
+        return {
+            "loaded": False,
+            "symbol": symbol,
+            "bridge_status": "RITHMIC_BRIDGE_READ_ERROR",
+            "decision_impact": "NONE",
+            "can_influence_decision": False,
+            "adapter_metrics": {},
+            "phase4_compatibility": {},
+            "warnings": [f"PHASE5G_RITHMIC_BRIDGE_READ_ERROR: {exc}"],
+        }
 
 def load_json(path, default):
     if not path.exists():
@@ -210,9 +249,11 @@ def format_opportunity_evidence_lines(item):
     return lines
 
 
-def build_message(risk_report, opportunity_report, sendable_risks, sendable_opportunities):
+def build_message(risk_report, opportunity_report, sendable_risks, sendable_opportunities, rithmic_bridge=None):
     risk_counts = risk_report.get("fresh_counts", {}) or {}
     opp_counts = opportunity_report.get("fresh_counts", {}) or {}
+    rithmic_bridge = rithmic_bridge or {}
+    rithmic_metrics = rithmic_bridge.get("adapter_metrics") or {}
 
     lines = [
         "📡 MT5 Phase 3/4 Monitoring",
@@ -236,6 +277,11 @@ def build_message(risk_report, opportunity_report, sendable_risks, sendable_oppo
         f"- confirmations: {risk_counts.get('new_confirmation_observations') or opp_counts.get('new_confirmation_observations')}",
         f"- order-flow gate: {risk_counts.get('orderflow_gate_status') or opp_counts.get('orderflow_gate_status')}",
         f"- order-flow can influence decision: {risk_counts.get('orderflow_can_influence_decision') or opp_counts.get('orderflow_can_influence_decision')}",
+        f"- Rithmic bridge: {rithmic_bridge.get('bridge_status')}",
+        f"- Rithmic decision impact: {rithmic_bridge.get('decision_impact')}",
+        f"- Rithmic can influence decision: {rithmic_bridge.get('can_influence_decision')}",
+        f"- Rithmic delta: {rithmic_metrics.get('delta')}",
+        f"- Rithmic DOM available: {rithmic_metrics.get('dom_available')}",
         f"- proxy change status: {opp_counts.get('proxy_change_status')}",
         f"- proxy change count: {opp_counts.get('proxy_change_count')}",
         "",
@@ -337,6 +383,7 @@ def main():
     risk_report = load_json(RISK_REPORT_PATH, {})
     opportunity_report = load_json(OPPORTUNITY_REPORT_PATH, {})
     state = load_json(STATE_PATH, {})
+    rithmic_bridge = load_rithmic_bridge()
 
     risk_alerts = risk_report.get("alerts", [])
     if not isinstance(risk_alerts, list):
@@ -390,6 +437,7 @@ def main():
                 opportunity_report,
                 sendable_risks,
                 sendable_opportunities,
+                rithmic_bridge,
             )
 
             try:
@@ -431,6 +479,16 @@ def main():
         "sendable_opportunity_count": len(sendable_opportunities),
         "telegram_configured": bool(token and chat_ids),
         "send_results": send_results,
+        "rithmic_bridge": {
+            "loaded": rithmic_bridge.get("loaded"),
+            "symbol": rithmic_bridge.get("symbol"),
+            "bridge_status": rithmic_bridge.get("bridge_status"),
+            "decision_impact": rithmic_bridge.get("decision_impact"),
+            "can_influence_decision": rithmic_bridge.get("can_influence_decision"),
+            "delta": (rithmic_bridge.get("adapter_metrics") or {}).get("delta"),
+            "cumulative_delta": (rithmic_bridge.get("adapter_metrics") or {}).get("cumulative_delta"),
+            "dom_available": (rithmic_bridge.get("adapter_metrics") or {}).get("dom_available"),
+        },
         "decision": "NO_LIVE_BLOCKING_NO_AUTO_EXECUTION",
     }
 
@@ -455,6 +513,16 @@ def main():
         "[TELEGRAM]",
         f"telegram_configured = {summary['telegram_configured']}",
         f"send_results = {summary['send_results']}",
+        "",
+        "[RITHMIC BRIDGE]",
+        f"loaded = {summary['rithmic_bridge']['loaded']}",
+        f"symbol = {summary['rithmic_bridge']['symbol']}",
+        f"bridge_status = {summary['rithmic_bridge']['bridge_status']}",
+        f"decision_impact = {summary['rithmic_bridge']['decision_impact']}",
+        f"can_influence_decision = {summary['rithmic_bridge']['can_influence_decision']}",
+        f"delta = {summary['rithmic_bridge']['delta']}",
+        f"cumulative_delta = {summary['rithmic_bridge']['cumulative_delta']}",
+        f"dom_available = {summary['rithmic_bridge']['dom_available']}",
         "",
         "[DECISION]",
         summary["decision"],
