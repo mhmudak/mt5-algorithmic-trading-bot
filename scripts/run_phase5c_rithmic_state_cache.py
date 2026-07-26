@@ -37,6 +37,7 @@ async def main() -> None:
     parser.add_argument("--stale-after-seconds", type=int, default=15)
     parser.add_argument("--tick-size", type=float, default=0.1)
     parser.add_argument("--snapshot-interval-seconds", type=int, default=5)
+    parser.add_argument("--include-order-book", action="store_true")
     parser.add_argument("--output-dir", default="data/order_flow/rithmic")
     args = parser.parse_args()
 
@@ -80,8 +81,9 @@ async def main() -> None:
     print("exchange =", config.exchange)
     print("duration_seconds =", args.duration_seconds)
     print("decision_impact = NONE")
+    print("include_order_book =", args.include_order_book)
 
-    async for event in client.stream(duration_seconds=args.duration_seconds):
+    async for event in client.stream(duration_seconds=args.duration_seconds, include_order_book=args.include_order_book):
         latest_snapshot = cache.update(event)
         now = time.time()
 
@@ -119,6 +121,24 @@ async def main() -> None:
                 event.get("ask_price"),
             )
 
+        elif event_type == "order_book":
+            print(
+                "[ORDER_BOOK]",
+                event.get("symbol"),
+                "update_type=",
+                event.get("update_type_name"),
+                "bid_levels=",
+                event.get("bid_level_count"),
+                "ask_levels=",
+                event.get("ask_level_count"),
+                "bid_depth=",
+                event.get("bid_depth"),
+                "ask_depth=",
+                event.get("ask_depth"),
+                "imbalance=",
+                event.get("depth_imbalance"),
+            )
+
         if latest_snapshot and (
             now - last_snapshot_write >= args.snapshot_interval_seconds
             or event_type in {"login_response", "market_data_response", "last_trade"}
@@ -140,6 +160,7 @@ async def main() -> None:
         print("session_cumulative_delta =", final_snapshot["trade_flow"]["session_cumulative_delta"])
         print("rolling_poc_price =", final_snapshot["volume_profile"]["rolling_poc_price"])
         print("footprint_candle_count =", final_snapshot["footprint"]["candle_count"])
+        print("order_book =", json.dumps(final_snapshot["order_book"], indent=2))
         print("adapter_metrics =", json.dumps(final_snapshot["adapter_compatible_metrics"], indent=2))
         print("latest_json =", latest_json)
         print("latest_txt =", latest_txt)

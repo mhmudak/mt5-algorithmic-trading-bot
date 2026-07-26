@@ -108,6 +108,19 @@ class RithmicRollingStateCache:
         self.last_ask_size: int | None = None
         self.last_bbo_received_at_epoch: float | None = None
 
+        self.order_book_count = 0
+        self.order_book_available = False
+        self.last_order_book_received_at_epoch: float | None = None
+        self.last_order_book_update_type: int | None = None
+        self.last_order_book_update_type_name: str | None = None
+        self.order_book_bid_levels: list[dict[str, Any]] = []
+        self.order_book_ask_levels: list[dict[str, Any]] = []
+        self.dom_bid_depth = 0
+        self.dom_ask_depth = 0
+        self.dom_depth_imbalance: float | None = None
+        self.top_dom_bid_price: float | None = None
+        self.top_dom_ask_price: float | None = None
+
         self.last_trade_price: float | None = None
         self.last_trade_size: int | None = None
         self.last_trade_aggressor: str | None = None
@@ -137,6 +150,9 @@ class RithmicRollingStateCache:
         elif event_type == "best_bid_offer":
             self._update_bbo(event)
 
+        elif event_type == "order_book":
+            self._update_order_book(event)
+
         elif event_type == "last_trade":
             self._update_last_trade(event)
 
@@ -163,6 +179,72 @@ class RithmicRollingStateCache:
 
         if bid > 0 and ask > 0:
             self.nonzero_bbo_count += 1
+
+
+    def _update_order_book(self, event: dict[str, Any]) -> None:
+        self.order_book_count += 1
+        self.last_order_book_received_at_epoch = _event_epoch(event)
+
+        self.last_order_book_update_type = _safe_int(event.get("update_type"))
+        self.last_order_book_update_type_name = str(event.get("update_type_name") or "UNKNOWN")
+
+        bid_levels = list(event.get("bid_levels") or [])
+        ask_levels = list(event.get("ask_levels") or [])
+
+        clean_bid_levels = []
+        for level in bid_levels:
+            price = _safe_float(level.get("price"))
+            size = _safe_int(level.get("size"))
+            orders = _safe_int(level.get("orders"))
+            implicit_size = _safe_int(level.get("implicit_size"))
+
+            if price > 0:
+                clean_bid_levels.append(
+                    {
+                        "level": _safe_int(level.get("level"), len(clean_bid_levels) + 1),
+                        "price": price,
+                        "size": size,
+                        "orders": orders,
+                        "implicit_size": implicit_size,
+                    }
+                )
+
+        clean_ask_levels = []
+        for level in ask_levels:
+            price = _safe_float(level.get("price"))
+            size = _safe_int(level.get("size"))
+            orders = _safe_int(level.get("orders"))
+            implicit_size = _safe_int(level.get("implicit_size"))
+
+            if price > 0:
+                clean_ask_levels.append(
+                    {
+                        "level": _safe_int(level.get("level"), len(clean_ask_levels) + 1),
+                        "price": price,
+                        "size": size,
+                        "orders": orders,
+                        "implicit_size": implicit_size,
+                    }
+                )
+
+        self.order_book_bid_levels = clean_bid_levels
+        self.order_book_ask_levels = clean_ask_levels
+
+        self.dom_bid_depth = _safe_int(event.get("bid_depth"), sum(x["size"] for x in clean_bid_levels))
+        self.dom_ask_depth = _safe_int(event.get("ask_depth"), sum(x["size"] for x in clean_ask_levels))
+
+        total_depth = self.dom_bid_depth + self.dom_ask_depth
+        self.dom_depth_imbalance = round((self.dom_bid_depth - self.dom_ask_depth) / total_depth, 6) if total_depth > 0 else None
+
+        self.top_dom_bid_price = clean_bid_levels[0]["price"] if clean_bid_levels else None
+        self.top_dom_ask_price = clean_ask_levels[0]["price"] if clean_ask_levels else None
+
+        self.order_book_available = bool(
+            clean_bid_levels
+            or clean_ask_levels
+            or self.dom_bid_depth > 0
+            or self.dom_ask_depth > 0
+        )
 
     def _update_last_trade(self, event: dict[str, Any]) -> None:
         price = _safe_float(event.get("trade_price"))
@@ -377,6 +459,10 @@ class RithmicRollingStateCache:
         if self.last_bbo_received_at_epoch:
             last_bbo_age_seconds = max(0.0, round(now_epoch - self.last_bbo_received_at_epoch, 3))
 
+        last_order_book_age_seconds = None
+        if self.last_order_book_received_at_epoch:
+            last_order_book_age_seconds = max(0.0, round(now_epoch - self.last_order_book_received_at_epoch, 3))
+
         has_fresh_trade = (
             last_trade_age_seconds is not None
             and last_trade_age_seconds <= self.stale_after_seconds
@@ -385,6 +471,11 @@ class RithmicRollingStateCache:
         has_fresh_bbo = (
             last_bbo_age_seconds is not None
             and last_bbo_age_seconds <= self.stale_after_seconds
+        )
+
+        has_fresh_order_book = (
+            last_order_book_age_seconds is not None
+            and last_order_book_age_seconds <= self.stale_after_seconds
         )
 
         spread = None
@@ -405,7 +496,13 @@ class RithmicRollingStateCache:
         if self.nonzero_bbo_count == 0:
             warnings.append("NO_NONZERO_BBO_OBSERVED")
 
-        warnings.append("DOM_NOT_SUBSCRIBED_YET_PHASE5D_REQUIRED")
+        if self.order_book_count == 0:
+            warnings.append("ORDER_BOOK_NOT_OBSERVED")
+        elif not self.order_book_available:
+            warnings.append("ORDER_BOOK_NO_BOOK_OR_ZERO_DEPTH")
+        elif not has_fresh_order_book:
+            warnings.append("STALE_ORDER_BOOK_OBSERVATION_ONLY")
+
         warnings.append("DECISION_IMPACT_DISABLED")
 
         if not self.login_ok:
@@ -432,7 +529,7 @@ class RithmicRollingStateCache:
             footprint_imbalance = 0.0
 
         return {
-            "phase": "PHASE_5C_RITHMIC_REALTIME_STATE_CACHE",
+            "phase": "PHASE_5E_RITHMIC_REALTIME_STATE_CACHE_WITH_DOM",
             "source": "RITHMIC_R_PROTOCOL",
             "provider_name": "RITHMIC_PROTOCOL",
             "symbol": self.symbol,
@@ -451,8 +548,10 @@ class RithmicRollingStateCache:
                 "stale_after_seconds": self.stale_after_seconds,
                 "last_trade_age_seconds": last_trade_age_seconds,
                 "last_bbo_age_seconds": last_bbo_age_seconds,
+                "last_order_book_age_seconds": last_order_book_age_seconds,
                 "has_fresh_trade": has_fresh_trade,
                 "has_fresh_bbo": has_fresh_bbo,
+                "has_fresh_order_book": has_fresh_order_book,
             },
             "connection": {
                 "login_ok": self.login_ok,
@@ -465,6 +564,7 @@ class RithmicRollingStateCache:
                 "rolling_trade_count": flow["trade_count"],
                 "bbo_count": self.bbo_count,
                 "nonzero_bbo_count": self.nonzero_bbo_count,
+                "order_book_count": self.order_book_count,
             },
             "latest_trade": {
                 "price": self.last_trade_price,
@@ -478,6 +578,21 @@ class RithmicRollingStateCache:
                 "last_bid_size": self.last_bid_size,
                 "last_ask_size": self.last_ask_size,
                 "last_spread": spread,
+            },
+            "order_book": {
+                "available": self.order_book_available,
+                "last_update_type": self.last_order_book_update_type,
+                "last_update_type_name": self.last_order_book_update_type_name,
+                "last_received_at_epoch": self.last_order_book_received_at_epoch,
+                "bid_level_count": len(self.order_book_bid_levels),
+                "ask_level_count": len(self.order_book_ask_levels),
+                "bid_depth": self.dom_bid_depth,
+                "ask_depth": self.dom_ask_depth,
+                "depth_imbalance": self.dom_depth_imbalance,
+                "top_bid_price": self.top_dom_bid_price,
+                "top_ask_price": self.top_dom_ask_price,
+                "bid_levels": self.order_book_bid_levels[: self.top_levels],
+                "ask_levels": self.order_book_ask_levels[: self.top_levels],
             },
             "trade_flow": {
                 "rolling_buy_volume": flow["buy_volume"],
@@ -506,9 +621,10 @@ class RithmicRollingStateCache:
                 "delta": flow["delta"],
                 "cumulative_delta": self.total_cumulative_delta,
                 "footprint_imbalance": footprint_imbalance,
-                "dom_bid_depth": 0,
-                "dom_ask_depth": 0,
-                "dom_available": False,
+                "dom_bid_depth": self.dom_bid_depth,
+                "dom_ask_depth": self.dom_ask_depth,
+                "dom_depth_imbalance": self.dom_depth_imbalance,
+                "dom_available": self.order_book_available,
             },
             "quality": {
                 "warnings": warnings,
@@ -521,7 +637,7 @@ class RithmicRollingStateCache:
 
 def write_state_text(snapshot: dict[str, Any], output_path: str | Path) -> None:
     lines = [
-        "PHASE 5C RITHMIC REAL-TIME STATE CACHE",
+        "PHASE 5E RITHMIC REAL-TIME STATE CACHE WITH DOM",
         "======================================",
         f"symbol: {snapshot.get('symbol')}",
         f"exchange: {snapshot.get('exchange')}",
@@ -540,6 +656,19 @@ def write_state_text(snapshot: dict[str, Any], output_path: str | Path) -> None:
         f"last_bbo_age_seconds: {snapshot['freshness']['last_bbo_age_seconds']}",
         f"has_fresh_trade: {snapshot['freshness']['has_fresh_trade']}",
         f"has_fresh_bbo: {snapshot['freshness']['has_fresh_bbo']}",
+        f"last_order_book_age_seconds: {snapshot['freshness']['last_order_book_age_seconds']}",
+        f"has_fresh_order_book: {snapshot['freshness']['has_fresh_order_book']}",
+        "",
+        "[ORDER BOOK / DOM]",
+        f"available: {snapshot['order_book']['available']}",
+        f"last_update_type_name: {snapshot['order_book']['last_update_type_name']}",
+        f"bid_level_count: {snapshot['order_book']['bid_level_count']}",
+        f"ask_level_count: {snapshot['order_book']['ask_level_count']}",
+        f"bid_depth: {snapshot['order_book']['bid_depth']}",
+        f"ask_depth: {snapshot['order_book']['ask_depth']}",
+        f"depth_imbalance: {snapshot['order_book']['depth_imbalance']}",
+        f"top_bid_price: {snapshot['order_book']['top_bid_price']}",
+        f"top_ask_price: {snapshot['order_book']['top_ask_price']}",
         "",
         "[LATEST TRADE]",
         f"price: {snapshot['latest_trade']['price']}",
@@ -570,6 +699,7 @@ def write_state_text(snapshot: dict[str, Any], output_path: str | Path) -> None:
         f"footprint_imbalance: {snapshot['adapter_compatible_metrics']['footprint_imbalance']}",
         f"dom_bid_depth: {snapshot['adapter_compatible_metrics']['dom_bid_depth']}",
         f"dom_ask_depth: {snapshot['adapter_compatible_metrics']['dom_ask_depth']}",
+        f"dom_depth_imbalance: {snapshot['adapter_compatible_metrics']['dom_depth_imbalance']}",
         f"dom_available: {snapshot['adapter_compatible_metrics']['dom_available']}",
         "",
         "[WARNINGS]",
