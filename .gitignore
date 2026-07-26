@@ -69,3 +69,4 @@ old_*.py
 vendor_private/
 
 data/order_flow/rithmic/*.jsonl
+data/order_flow/rithmic/*.txt
