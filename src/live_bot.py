@@ -113,6 +113,7 @@ from config.settings import (
     TRADING_MODE,
     ENABLE_RANGE_SWEEP_RECLAIM,
     ENABLE_VWAP_RANGE_MEAN_REVERSION,
+    ENABLE_BALANCED_AUCTION_RANGE,
     ENABLE_FCR_M1_FVG,
     ENABLE_WAVETREND_PIVOT_M5,
     ENABLE_STRUCTURE_LIQUIDITY,
@@ -408,6 +409,7 @@ STRATEGY_SPECIFIC_CONFIRMED = {
     "WAVETREND_MOMENTUM",
     "MICRO_SR_SWEEP_RECLAIM",
     "PRO_TRADER_REPLICATION",
+    "BALANCED_AUCTION_RANGE",
 }
 
 def send_telegram_message_async(message):
@@ -8258,6 +8260,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_ifvg_retest_confluence import generate_signal as ifvg_retest_confluence_signal
     from src.strategies.strategy_range_sweep_reclaim import generate_signal as range_sweep_reclaim_signal
     from src.strategies.strategy_vwap_range_mean_reversion import generate_signal as vwap_range_mean_reversion_signal
+    from src.strategies.strategy_balanced_auction_range import generate_signal as balanced_auction_range_signal
     from src.strategies.strategy_wavetrend_momentum import generate_signal as wavetrend_momentum_signal
     from src.strategies.strategy_micro_sr_sweep_reclaim import generate_signal as micro_sr_sweep_reclaim_signal
     from src.strategies.strategy_pro_trader_replication import generate_signal as pro_trader_replication_signal
@@ -8378,6 +8381,7 @@ def process_cycle(last_processed_candle_time):
             ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
             ("MICRO_SR_SWEEP_RECLAIM", micro_sr_sweep_reclaim_signal),
             ("VWAP_RANGE_MEAN_REVERSION", vwap_range_mean_reversion_signal),
+            ("BALANCED_AUCTION_RANGE", balanced_auction_range_signal),
             ("VWAP_RECLAIM", vwap_reclaim_signal),
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
             ("FRACTAL_SWEEP", fractal_sweep_signal),
@@ -8467,6 +8471,14 @@ def process_cycle(last_processed_candle_time):
             if name != "VWAP_RANGE_MEAN_REVERSION"
         ]
         logger.info("[STRATEGY TOGGLE] VWAP_RANGE_MEAN_REVERSION disabled")
+
+    if not ENABLE_BALANCED_AUCTION_RANGE:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "BALANCED_AUCTION_RANGE"
+        ]
+        logger.info("[STRATEGY TOGGLE] BALANCED_AUCTION_RANGE disabled")
 
     if not ENABLE_IFVG_RETEST_CONFLUENCE:
         strategy_map = [
