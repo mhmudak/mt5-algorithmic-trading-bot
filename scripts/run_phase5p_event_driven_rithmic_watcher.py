@@ -432,12 +432,243 @@ def summarize_quality_for_message(quality: dict[str, Any]) -> list[str]:
     return lines
 
 
+def as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def clean_direction(value: Any) -> str | None:
+    direction = str(value or "").upper().strip()
+
+    if direction in {"BUY", "LONG"}:
+        return "BUY"
+
+    if direction in {"SELL", "SHORT"}:
+        return "SELL"
+
+    return None
+
+
+def get_primary_setup_direction(events: list[dict[str, Any]]) -> str | None:
+    for event in events:
+        direction = clean_direction(event.get("direction"))
+
+        if direction:
+            return direction
+
+        raw = event.get("raw")
+        if isinstance(raw, dict):
+            for key in ["direction", "side", "signal_side", "trade_direction"]:
+                direction = clean_direction(raw.get(key))
+                if direction:
+                    return direction
+
+    return None
+
+
+def score_alignment_for_direction(direction: str, metrics: dict[str, Any]) -> tuple[int, int, list[str]]:
+    support = 0
+    against = 0
+    evidence: list[str] = []
+
+    delta = as_float(metrics.get("delta"))
+    cumulative_delta = as_float(metrics.get("cumulative_delta"))
+    dom_imbalance = metrics.get("dom_depth_imbalance")
+    dom_imbalance_float = as_float(dom_imbalance) if dom_imbalance is not None else None
+    bid_depth = as_float(metrics.get("dom_bid_depth"))
+    ask_depth = as_float(metrics.get("dom_ask_depth"))
+
+    if direction == "BUY":
+        if delta > 0:
+            support += 1
+            evidence.append(f"delta positive supports BUY: {delta}")
+        elif delta < 0:
+            against += 1
+            evidence.append(f"delta negative is against BUY: {delta}")
+
+        if cumulative_delta > 0:
+            support += 1
+            evidence.append(f"cumulative_delta positive supports BUY: {cumulative_delta}")
+        elif cumulative_delta < 0:
+            against += 1
+            evidence.append(f"cumulative_delta negative is against BUY: {cumulative_delta}")
+
+        if dom_imbalance_float is not None:
+            if dom_imbalance_float > 0.15:
+                support += 1
+                evidence.append(f"DOM bid-heavy supports BUY: {dom_imbalance_float}")
+            elif dom_imbalance_float < -0.15:
+                against += 1
+                evidence.append(f"DOM ask-heavy is against BUY: {dom_imbalance_float}")
+
+        if bid_depth > 0 or ask_depth > 0:
+            if bid_depth > ask_depth:
+                support += 1
+                evidence.append(f"bid_depth > ask_depth supports BUY: {bid_depth} > {ask_depth}")
+            elif ask_depth > bid_depth:
+                against += 1
+                evidence.append(f"ask_depth > bid_depth is against BUY: {ask_depth} > {bid_depth}")
+
+    elif direction == "SELL":
+        if delta < 0:
+            support += 1
+            evidence.append(f"delta negative supports SELL: {delta}")
+        elif delta > 0:
+            against += 1
+            evidence.append(f"delta positive is against SELL: {delta}")
+
+        if cumulative_delta < 0:
+            support += 1
+            evidence.append(f"cumulative_delta negative supports SELL: {cumulative_delta}")
+        elif cumulative_delta > 0:
+            against += 1
+            evidence.append(f"cumulative_delta positive is against SELL: {cumulative_delta}")
+
+        if dom_imbalance_float is not None:
+            if dom_imbalance_float < -0.15:
+                support += 1
+                evidence.append(f"DOM ask-heavy supports SELL: {dom_imbalance_float}")
+            elif dom_imbalance_float > 0.15:
+                against += 1
+                evidence.append(f"DOM bid-heavy is against SELL: {dom_imbalance_float}")
+
+        if bid_depth > 0 or ask_depth > 0:
+            if ask_depth > bid_depth:
+                support += 1
+                evidence.append(f"ask_depth > bid_depth supports SELL: {ask_depth} > {bid_depth}")
+            elif bid_depth > ask_depth:
+                against += 1
+                evidence.append(f"bid_depth > ask_depth is against SELL: {bid_depth} > {ask_depth}")
+
+    return support, against, evidence
+
+
+def compute_rithmic_directional_alignment(
+    events: list[dict[str, Any]],
+    quality: dict[str, Any],
+    *,
+    quality_ok: bool,
+) -> dict[str, Any]:
+    setup_direction = get_primary_setup_direction(events)
+
+    if not setup_direction:
+        return {
+            "setup_direction": None,
+            "alignment": "NOT_AVAILABLE_NO_SETUP_DIRECTION",
+            "supports_setup": False,
+            "against_setup": False,
+            "support_score": 0,
+            "against_score": 0,
+            "evidence": ["No explicit BUY/SELL setup direction found."],
+        }
+
+    if not quality_ok:
+        return {
+            "setup_direction": setup_direction,
+            "alignment": "NOT_AVAILABLE_DATA_QUALITY_BAD",
+            "supports_setup": False,
+            "against_setup": False,
+            "support_score": 0,
+            "against_score": 0,
+            "evidence": ["Rithmic data quality gate did not pass. Do not use Rithmic as confirmation."],
+        }
+
+    validations = quality.get("validations") or []
+    support_score = 0
+    against_score = 0
+    evidence: list[str] = []
+
+    if not isinstance(validations, list) or not validations:
+        return {
+            "setup_direction": setup_direction,
+            "alignment": "NOT_AVAILABLE_NO_RITHMIC_VALIDATIONS",
+            "supports_setup": False,
+            "against_setup": False,
+            "support_score": 0,
+            "against_score": 0,
+            "evidence": ["No Phase 5L validation metrics available."],
+        }
+
+    for item in validations:
+        if not isinstance(item, dict):
+            continue
+
+        symbol = item.get("symbol")
+        metrics = item.get("metrics") or {}
+
+        s, a, ev = score_alignment_for_direction(setup_direction, metrics)
+        support_score += s
+        against_score += a
+
+        for line in ev:
+            evidence.append(f"{symbol}: {line}")
+
+    if support_score >= 2 and support_score > against_score:
+        alignment = f"SUPPORTS_{setup_direction}"
+        supports_setup = True
+        against_setup = False
+    elif against_score >= 2 and against_score > support_score:
+        alignment = f"AGAINST_{setup_direction}"
+        supports_setup = False
+        against_setup = True
+    elif support_score == 0 and against_score == 0:
+        alignment = "NEUTRAL_INSUFFICIENT_RITHMIC_EVIDENCE"
+        supports_setup = False
+        against_setup = False
+    else:
+        alignment = "NEUTRAL_OR_MIXED_RITHMIC_EVIDENCE"
+        supports_setup = False
+        against_setup = False
+
+    return {
+        "setup_direction": setup_direction,
+        "alignment": alignment,
+        "supports_setup": supports_setup,
+        "against_setup": against_setup,
+        "support_score": support_score,
+        "against_score": against_score,
+        "evidence": evidence[:12],
+    }
+
+
+def format_alignment_for_message(alignment: dict[str, Any]) -> list[str]:
+    lines = [
+        f"setup_direction: {alignment.get('setup_direction')}",
+        f"rithmic_alignment: {alignment.get('alignment')}",
+        f"rithmic_supports_setup: {alignment.get('supports_setup')}",
+        f"rithmic_against_setup: {alignment.get('against_setup')}",
+        f"support_score: {alignment.get('support_score')}",
+        f"against_score: {alignment.get('against_score')}",
+    ]
+
+    evidence = alignment.get("evidence") or []
+
+    if evidence:
+        lines.append("evidence:")
+        for line in evidence[:8]:
+            lines.append(f"- {line}")
+
+    return lines
+
+
+
 def format_telegram_message(events: list[dict[str, Any]], quality: dict[str, Any]) -> str:
     quality_ok = quality.get("overall_status") == "RITHMIC_DATA_QUALITY_VALIDATED_OBSERVE_ONLY"
+    alignment = compute_rithmic_directional_alignment(events, quality, quality_ok=quality_ok)
 
     if quality_ok:
         filter_result = "RITHMIC_CONTEXT_AVAILABLE_OBSERVE_ONLY"
-        conclusion = "A real setup/review event was detected and Rithmic quality passed observe-only checks. Manual review only."
+
+        if alignment.get("supports_setup"):
+            conclusion = "A real setup/review event was detected and Rithmic context supports the setup direction. Manual review only."
+        elif alignment.get("against_setup"):
+            conclusion = "A real setup/review event was detected, but Rithmic context is against the setup direction. Manual review only."
+        else:
+            conclusion = "A real setup/review event was detected and Rithmic quality passed, but directional evidence is neutral or mixed. Manual review only."
     else:
         filter_result = "BLOCKED_RITHMIC_DATA_QUALITY_BAD"
         conclusion = "A real setup/review event was detected, but Rithmic data quality is not reliable enough for confirmation."
@@ -450,6 +681,9 @@ def format_telegram_message(events: list[dict[str, Any]], quality: dict[str, Any
         "DECISION IMPACT: NONE",
         "CAN INFLUENCE DECISION: False",
         f"RITHMIC FILTER RESULT: {filter_result}",
+        f"RITHMIC DIRECTIONAL ALIGNMENT: {alignment.get('alignment')}",
+        f"RITHMIC SUPPORTS SETUP: {alignment.get('supports_setup')}",
+        f"RITHMIC AGAINST SETUP: {alignment.get('against_setup')}",
         "",
         "[DETECTED EVENT]",
     ]
@@ -472,6 +706,9 @@ def format_telegram_message(events: list[dict[str, Any]], quality: dict[str, Any
         ]
 
     lines += [
+        "",
+        "[RITHMIC DIRECTIONAL ALIGNMENT]",
+        *format_alignment_for_message(alignment),
         "",
         "[RITHMIC QUALITY]",
         *summarize_quality_for_message(quality),
