@@ -335,6 +335,9 @@ async def collect_symbol(
         if now >= next_snapshot_at and latest_snapshot:
             metrics = snapshot_metrics(latest_snapshot)
 
+            order_book = latest_snapshot.get("order_book") or {}
+            trade_flow = latest_snapshot.get("trade_flow") or {}
+
             record = {
                 "phase": PHASE,
                 "recorded_at": datetime.now().isoformat(timespec="seconds"),
@@ -343,6 +346,14 @@ async def collect_symbol(
                 "elapsed_seconds": round(duration_seconds - max(0, end_time - now), 3),
                 "event_type": event.get("event_type"),
                 "metrics": metrics,
+                "top_bid_levels": list(order_book.get("bid_levels") or [])[:20],
+                "top_ask_levels": list(order_book.get("ask_levels") or [])[:20],
+                "trade_flow": {
+                    "rolling_buy_volume": trade_flow.get("buy_volume"),
+                    "rolling_sell_volume": trade_flow.get("sell_volume"),
+                    "rolling_total_volume": trade_flow.get("total_volume"),
+                    "rolling_delta": trade_flow.get("delta"),
+                },
                 "decision_impact": "NONE",
                 "can_influence_decision": False,
                 "trade_action": "NO_AUTO_TRADE",
