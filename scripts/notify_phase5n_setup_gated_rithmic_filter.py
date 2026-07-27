@@ -278,6 +278,43 @@ def candidate_fingerprint(candidate: dict[str, Any], quality_summary: dict[str, 
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+
+def format_phase5n_manual_decision_guide(
+    quality_summary: dict[str, Any],
+    filter_result: dict[str, Any],
+) -> list[str]:
+    quality_status = str(quality_summary.get("overall_status") or "UNKNOWN")
+    filter_name = str(filter_result.get("filter_result") or "UNKNOWN")
+    alignment_name = str(filter_result.get("setup_alignment") or "NOT_EVALUATED")
+
+    all_hard_ok = bool(quality_summary.get("all_hard_ok"))
+    all_quality_ok = bool(quality_summary.get("all_quality_ok"))
+
+    if filter_name == "RITHMIC_QUALITY_PASSED_CONTEXT_ONLY" or all_quality_ok:
+        manual_bias = "RITHMIC_CONTEXT_AVAILABLE"
+        suggested_action = "Use as manual context only. Still verify setup direction, entry, SL, TP, RR, spread, and news."
+    elif all_hard_ok and not all_quality_ok:
+        manual_bias = "RITHMIC_LOW_QUALITY_OR_LOW_SAMPLE"
+        suggested_action = "Do not use as confirmation. Treat Rithmic as neutral/weak context."
+    else:
+        manual_bias = "RITHMIC_NOT_USABLE"
+        suggested_action = "Ignore Rithmic for this decision. Review the MT5 setup only, or skip."
+
+    return [
+        "",
+        "[MANUAL DECISION GUIDE]",
+        "BOT ACTION: NO AUTO TRADE",
+        "YOUR ACTION: MANUAL DECISION ONLY",
+        "RITHMIC USE: CONTEXT ONLY / NOT A TRADING SIGNAL",
+        f"MANUAL BIAS: {manual_bias}",
+        f"SUGGESTED HUMAN ACTION: {suggested_action}",
+        f"QUALITY STATUS: {quality_status}",
+        f"FILTER RESULT: {filter_name}",
+        f"ALIGNMENT: {alignment_name}",
+        "SAFETY: Rithmic cannot open, block, or approve trades automatically.",
+    ]
+
+
 def format_candidate_message(
     candidate: dict[str, Any],
     quality_summary: dict[str, Any],
@@ -290,6 +327,7 @@ def format_candidate_message(
         "MANUAL ACTION: REVIEW ONLY",
         "RITHMIC DECISION IMPACT: NONE",
         "RITHMIC CAN INFLUENCE DECISION: False",
+        *format_phase5n_manual_decision_guide(quality_summary, filter_result),
         "",
         "[SETUP / CANDIDATE]",
         f"source: {candidate.get('source')}",

@@ -656,6 +656,42 @@ def format_alignment_for_message(alignment: dict[str, Any]) -> list[str]:
 
 
 
+
+def format_manual_decision_guide(alignment: dict[str, Any], quality_ok: bool) -> list[str]:
+    supports = bool(alignment.get("supports_setup"))
+    against = bool(alignment.get("against_setup"))
+    alignment_name = str(alignment.get("alignment") or "UNKNOWN")
+    support_score = alignment.get("support_score")
+    against_score = alignment.get("against_score")
+
+    if not quality_ok:
+        manual_bias = "IGNORE_RITHMIC_FOR_DECISION"
+        suggested_action = "Do not use Rithmic as confirmation. Review the MT5 setup only, or skip."
+    elif against:
+        manual_bias = "RITHMIC_AGAINST_SETUP"
+        suggested_action = "Strong caution. Prefer SKIP unless your independent MT5/context review is very strong."
+    elif supports:
+        manual_bias = "RITHMIC_SUPPORTS_SETUP"
+        suggested_action = "Rithmic supports the direction, but you still decide manually. Check entry, SL, TP, RR, spread, news, and XAUUSD context."
+    else:
+        manual_bias = "RITHMIC_MIXED_OR_LOW_SAMPLE"
+        suggested_action = "Do not rely on Rithmic. Treat as neutral context and decide from the original setup quality."
+
+    return [
+        "",
+        "[MANUAL DECISION GUIDE]",
+        "BOT ACTION: NO AUTO TRADE",
+        "YOUR ACTION: MANUAL DECISION ONLY",
+        "RITHMIC USE: CONTEXT ONLY / NOT A TRADING SIGNAL",
+        f"MANUAL BIAS: {manual_bias}",
+        f"SUGGESTED HUMAN ACTION: {suggested_action}",
+        f"ALIGNMENT: {alignment_name}",
+        f"SUPPORT SCORE: {support_score}",
+        f"AGAINST SCORE: {against_score}",
+        "SAFETY: Rithmic cannot open, block, or approve trades automatically.",
+    ]
+
+
 def format_telegram_message(events: list[dict[str, Any]], quality: dict[str, Any]) -> str:
     quality_ok = quality.get("overall_status") == "RITHMIC_DATA_QUALITY_VALIDATED_OBSERVE_ONLY"
     alignment = compute_rithmic_directional_alignment(events, quality, quality_ok=quality_ok)
@@ -684,6 +720,7 @@ def format_telegram_message(events: list[dict[str, Any]], quality: dict[str, Any
         f"RITHMIC DIRECTIONAL ALIGNMENT: {alignment.get('alignment')}",
         f"RITHMIC SUPPORTS SETUP: {alignment.get('supports_setup')}",
         f"RITHMIC AGAINST SETUP: {alignment.get('against_setup')}",
+        *format_manual_decision_guide(alignment, quality_ok),
         "",
         "[DETECTED EVENT]",
     ]
