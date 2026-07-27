@@ -327,7 +327,8 @@ from config.settings import (
     REJECTED_CANDIDATE_TELEGRAM_MIN_SCORE,
     REJECTED_CANDIDATE_TELEGRAM_MIN_RR,
     REJECTED_CANDIDATE_TELEGRAM_COOLDOWN_MINUTES,
-    ENABLE_PRO_TRADER_REPLICATION_DEMO,
+    ENABLE_PRO_TRADER_REPLICATION,
+    ENABLE_KEY_LEVEL_BREAK_HOLD,
 )
 
 from src.candidate_rejection_recovery import (
@@ -409,6 +410,7 @@ STRATEGY_SPECIFIC_CONFIRMED = {
     "WAVETREND_MOMENTUM",
     "MICRO_SR_SWEEP_RECLAIM",
     "PRO_TRADER_REPLICATION",
+    "KEY_LEVEL_BREAK_HOLD",
     "BALANCED_AUCTION_RANGE",
 }
 
@@ -8264,6 +8266,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_wavetrend_momentum import generate_signal as wavetrend_momentum_signal
     from src.strategies.strategy_micro_sr_sweep_reclaim import generate_signal as micro_sr_sweep_reclaim_signal
     from src.strategies.strategy_pro_trader_replication import generate_signal as pro_trader_replication_signal
+    from src.strategies.strategy_key_level_break_hold import generate_signal as key_level_break_hold_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -8339,6 +8342,7 @@ def process_cycle(last_processed_candle_time):
             ("HTF_FIB_CONFLUENCE", htf_fib_confluence_signal),
             ("LVN_FVG_RECLAIM", lvn_fvg_reclaim_signal),
             ("MTF_OB_ENTRY", mtf_ob_entry_signal),
+            ("KEY_LEVEL_BREAK_HOLD", key_level_break_hold_signal),
             ("FCR_M1_FVG", fcr_m1_fvg_signal),
             ("FVG", fvg_signal),
             ("TRIANGLE_PENNANT", triangle_pennant_signal),
@@ -8600,9 +8604,17 @@ def process_cycle(last_processed_candle_time):
         ]
         logger.info("[STRATEGY TOGGLE] FCR_M1_FVG disabled")
         
-    if ENABLE_PRO_TRADER_REPLICATION_DEMO:
+    if not ENABLE_KEY_LEVEL_BREAK_HOLD:
+        strategy_map = [
+            (name, fn)
+            for name, fn in strategy_map
+            if name != "KEY_LEVEL_BREAK_HOLD"
+        ]
+        logger.info("[STRATEGY TOGGLE] KEY_LEVEL_BREAK_HOLD disabled")
+
+    if ENABLE_PRO_TRADER_REPLICATION:
         strategy_map.insert(0, ("PRO_TRADER_REPLICATION", pro_trader_replication_signal))
-        logger.info("[STRATEGY TOGGLE] PRO_TRADER_REPLICATION demo enabled")
+        logger.info("[STRATEGY TOGGLE] PRO_TRADER_REPLICATION enabled")
 
     logger.info(
         f"[STRATEGY MAP ACTIVE] "

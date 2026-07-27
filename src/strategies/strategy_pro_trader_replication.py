@@ -8,7 +8,7 @@ import MetaTrader5 as mt5
 from config.settings import (
     ATR_MIN,
     ATR_MAX,
-    ENABLE_PRO_TRADER_REPLICATION_DEMO,
+    ENABLE_PRO_TRADER_REPLICATION,
     PRO_TRADER_REPLICATION_MIN_SCORE,
     PRO_TRADER_REPLICATION_DEFAULT_RR,
     PRO_TRADER_REPLICATION_MIN_STOP_DISTANCE_PRICE,
@@ -211,7 +211,7 @@ def _build_signal(
 
 
 def generate_signal(df):
-    if not ENABLE_PRO_TRADER_REPLICATION_DEMO:
+    if not ENABLE_PRO_TRADER_REPLICATION:
         return None
 
     if len(df) < LEVEL_LOOKBACK_BARS + SWEEP_LOOKBACK_BARS + 5:
