@@ -161,24 +161,105 @@ class RithmicRollingStateCache:
 
     def _update_bbo(self, event: dict[str, Any]) -> None:
         self.bbo_count += 1
+        self.last_bbo_received_at_epoch = _event_epoch(event)
 
         bid = _safe_float(event.get("bid_price"))
         ask = _safe_float(event.get("ask_price"))
         bid_size = _safe_int(event.get("bid_size"))
         ask_size = _safe_int(event.get("ask_size"))
 
-        self.last_bbo_received_at_epoch = _event_epoch(event)
-
+        # Rithmic can send partial BBO updates.
+        # Do not overwrite a valid bid/ask with 0.0 from a one-sided update.
         if bid > 0:
             self.last_bid = bid
+            self.last_bid_size = bid_size
+
         if ask > 0:
             self.last_ask = ask
+            self.last_ask_size = ask_size
 
-        self.last_bid_size = bid_size
-        self.last_ask_size = ask_size
-
-        if bid > 0 and ask > 0:
+        if self.last_bid and self.last_ask and self.last_bid > 0 and self.last_ask > 0:
             self.nonzero_bbo_count += 1
+
+    def _clean_order_book_levels(self, levels: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        clean_levels = []
+
+        for level in levels:
+            price = _safe_float(level.get("price"))
+            size = _safe_int(level.get("size"))
+            orders = _safe_int(level.get("orders"))
+            implicit_size = _safe_int(level.get("implicit_size"))
+
+            if price <= 0:
+                continue
+
+            clean_levels.append(
+                {
+                    "level": _safe_int(level.get("level"), len(clean_levels) + 1),
+                    "price": price,
+                    "size": size,
+                    "orders": orders,
+                    "implicit_size": implicit_size,
+                }
+            )
+
+        return clean_levels
+
+
+    def _merge_order_book_side(
+        self,
+        current_levels: list[dict[str, Any]],
+        update_levels: list[dict[str, Any]],
+        *,
+        side: str,
+    ) -> list[dict[str, Any]]:
+        book_by_price = {}
+
+        for level in current_levels:
+            price = _safe_float(level.get("price"))
+
+            if price > 0:
+                book_by_price[price] = {
+                    "price": price,
+                    "size": _safe_int(level.get("size")),
+                    "orders": _safe_int(level.get("orders")),
+                    "implicit_size": _safe_int(level.get("implicit_size")),
+                }
+
+        for level in update_levels:
+            price = _safe_float(level.get("price"))
+            size = _safe_int(level.get("size"))
+            orders = _safe_int(level.get("orders"))
+            implicit_size = _safe_int(level.get("implicit_size"))
+
+            if price <= 0:
+                continue
+
+            # Rithmic can send zero-size updates to remove a price level.
+            if size <= 0 and implicit_size <= 0:
+                book_by_price.pop(price, None)
+                continue
+
+            book_by_price[price] = {
+                "price": price,
+                "size": size,
+                "orders": orders,
+                "implicit_size": implicit_size,
+            }
+
+        reverse = side == "bid"
+        merged = sorted(book_by_price.values(), key=lambda x: x["price"], reverse=reverse)
+
+        return [
+            {
+                "level": idx + 1,
+                "price": item["price"],
+                "size": item["size"],
+                "orders": item["orders"],
+                "implicit_size": item["implicit_size"],
+            }
+            for idx, item in enumerate(merged)
+        ]
 
 
     def _update_order_book(self, event: dict[str, Any]) -> None:
@@ -188,60 +269,58 @@ class RithmicRollingStateCache:
         self.last_order_book_update_type = _safe_int(event.get("update_type"))
         self.last_order_book_update_type_name = str(event.get("update_type_name") or "UNKNOWN")
 
-        bid_levels = list(event.get("bid_levels") or [])
-        ask_levels = list(event.get("ask_levels") or [])
+        presence_bits = _safe_int(event.get("presence_bits"))
 
-        clean_bid_levels = []
-        for level in bid_levels:
-            price = _safe_float(level.get("price"))
-            size = _safe_int(level.get("size"))
-            orders = _safe_int(level.get("orders"))
-            implicit_size = _safe_int(level.get("implicit_size"))
+        raw_bid_levels = list(event.get("bid_levels") or [])
+        raw_ask_levels = list(event.get("ask_levels") or [])
 
-            if price > 0:
-                clean_bid_levels.append(
-                    {
-                        "level": _safe_int(level.get("level"), len(clean_bid_levels) + 1),
-                        "price": price,
-                        "size": size,
-                        "orders": orders,
-                        "implicit_size": implicit_size,
-                    }
+        clean_bid_levels = self._clean_order_book_levels(raw_bid_levels)
+        clean_ask_levels = self._clean_order_book_levels(raw_ask_levels)
+
+        update_type_name = self.last_order_book_update_type_name.upper()
+
+        if update_type_name in {"CLEAR_ORDER_BOOK", "NO_BOOK"}:
+            self.order_book_bid_levels = []
+            self.order_book_ask_levels = []
+
+        else:
+            has_bid_update = bool(presence_bits & 1) or bool(clean_bid_levels)
+            has_ask_update = bool(presence_bits & 2) or bool(clean_ask_levels)
+
+            # Important:
+            # Rithmic OrderBook messages can be partial/incremental.
+            # Do not replace both sides with every message.
+            # Merge only the side that appears in this message.
+            if has_bid_update:
+                self.order_book_bid_levels = self._merge_order_book_side(
+                    self.order_book_bid_levels,
+                    clean_bid_levels,
+                    side="bid",
                 )
 
-        clean_ask_levels = []
-        for level in ask_levels:
-            price = _safe_float(level.get("price"))
-            size = _safe_int(level.get("size"))
-            orders = _safe_int(level.get("orders"))
-            implicit_size = _safe_int(level.get("implicit_size"))
-
-            if price > 0:
-                clean_ask_levels.append(
-                    {
-                        "level": _safe_int(level.get("level"), len(clean_ask_levels) + 1),
-                        "price": price,
-                        "size": size,
-                        "orders": orders,
-                        "implicit_size": implicit_size,
-                    }
+            if has_ask_update:
+                self.order_book_ask_levels = self._merge_order_book_side(
+                    self.order_book_ask_levels,
+                    clean_ask_levels,
+                    side="ask",
                 )
 
-        self.order_book_bid_levels = clean_bid_levels
-        self.order_book_ask_levels = clean_ask_levels
-
-        self.dom_bid_depth = _safe_int(event.get("bid_depth"), sum(x["size"] for x in clean_bid_levels))
-        self.dom_ask_depth = _safe_int(event.get("ask_depth"), sum(x["size"] for x in clean_ask_levels))
+        self.dom_bid_depth = sum(_safe_int(x.get("size")) for x in self.order_book_bid_levels)
+        self.dom_ask_depth = sum(_safe_int(x.get("size")) for x in self.order_book_ask_levels)
 
         total_depth = self.dom_bid_depth + self.dom_ask_depth
-        self.dom_depth_imbalance = round((self.dom_bid_depth - self.dom_ask_depth) / total_depth, 6) if total_depth > 0 else None
+        self.dom_depth_imbalance = (
+            round((self.dom_bid_depth - self.dom_ask_depth) / total_depth, 6)
+            if total_depth > 0
+            else None
+        )
 
-        self.top_dom_bid_price = clean_bid_levels[0]["price"] if clean_bid_levels else None
-        self.top_dom_ask_price = clean_ask_levels[0]["price"] if clean_ask_levels else None
+        self.top_dom_bid_price = self.order_book_bid_levels[0]["price"] if self.order_book_bid_levels else None
+        self.top_dom_ask_price = self.order_book_ask_levels[0]["price"] if self.order_book_ask_levels else None
 
         self.order_book_available = bool(
-            clean_bid_levels
-            or clean_ask_levels
+            self.order_book_bid_levels
+            or self.order_book_ask_levels
             or self.dom_bid_depth > 0
             or self.dom_ask_depth > 0
         )
