@@ -252,7 +252,7 @@ class RithmicMarketDataClient:
 
         rq.user = self.config.username
         rq.password = self.config.password
-        rq.app_name = "MT5BotPhase5A"
+        rq.app_name = os.getenv("RITHMIC_APP_NAME", "MT5_XAUUSD_RITHMIC_OBSERVE_ONLY")
         rq.app_version = "0.1.0"
         rq.system_name = self.config.system_name
         rq.infra_type = self.pb["request_login_pb2"].RequestLogin.SysInfraType.TICKER_PLANT
