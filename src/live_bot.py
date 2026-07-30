@@ -9033,6 +9033,64 @@ def process_cycle(last_processed_candle_time):
                         tp=rejected_trade_plan.get("take_profit"),
                         reason=rejection_reason,
                     )
+
+                    try:
+                        from src.setup_conflict_memory import (
+                            format_conflict_telegram_message,
+                            record_setup_state_event,
+                        )
+
+                        phase5ah_rejected_conflict_report = record_setup_state_event(
+                            {
+                                "symbol": SYMBOL,
+                                "setup_id": candidate_setup_id,
+                                "strategy": candidate.get("strategy"),
+                                "signal": candidate.get("signal"),
+                                "score": candidate.get("score"),
+                                "min_required_score": (
+                                    candidate.get("min_required_score")
+                                    or candidate.get("required_score")
+                                ),
+                                "entry_model": candidate.get("entry_model"),
+                                "session": session_name,
+                                "market_condition": market_condition,
+                                "entry": rejected_trade_plan.get("entry_price")
+                                or rejected_trade_plan.get("entry"),
+                                "sl": rejected_trade_plan.get("stop_loss")
+                                or rejected_trade_plan.get("sl"),
+                                "tp": rejected_trade_plan.get("take_profit")
+                                or rejected_trade_plan.get("tp"),
+                                "rr": candidate.get("rejected_rr_value")
+                                or candidate.get("rr")
+                                or candidate.get("risk_reward")
+                                or 0,
+                                "state": (
+                                    "REJECTED_SCORE_TOO_LOW"
+                                    if "score_too_low" in str(rejection_reason)
+                                    else "TRACKED_REJECTED_CANDIDATE"
+                                ),
+                                "rejection_reason": rejection_reason,
+                                "reason": rejection_reason,
+                                "created_at_epoch": getattr(tick, "time", None),
+                            }
+                        )
+
+                        if (
+                            phase5ah_rejected_conflict_report
+                            and phase5ah_rejected_conflict_report.get("priority_conflict_review")
+                            and not phase5ah_rejected_conflict_report.get("duplicate_conflict")
+                        ):
+                            send_telegram_message_async(
+                                format_conflict_telegram_message(
+                                    phase5ah_rejected_conflict_report
+                                )
+                            )
+                    except Exception as phase5ah_exc:
+                        logger.warning(
+                            f"[PHASE 5AH] rejected candidate conflict memory failed | "
+                            f"setup_id={candidate_setup_id} strategy={candidate.get('strategy')} "
+                            f"signal={candidate.get('signal')} error={phase5ah_exc}"
+                        )
                 
                 if (
                     ENABLE_CANDIDATE_REJECTION_TELEGRAM_ALERTS
@@ -9364,6 +9422,51 @@ def process_cycle(last_processed_candle_time):
 
             setup_id = build_setup_id(strategy_name, signal, tick.time)
             selected_signal_data["setup_id"] = setup_id
+
+            try:
+                from src.setup_conflict_memory import (
+                    format_conflict_telegram_message,
+                    record_setup_state_event,
+                )
+
+                setup_detected_conflict_report = record_setup_state_event(
+                    {
+                        "symbol": SYMBOL,
+                        "setup_id": setup_id,
+                        "strategy": strategy_name,
+                        "signal": signal,
+                        "score": score,
+                        "entry_model": selected_signal_data.get("entry_model"),
+                        "session": session_name,
+                        "market_condition": market_condition,
+                        "entry": selected_signal_data.get("entry")
+                        or selected_signal_data.get("entry_price"),
+                        "sl": selected_signal_data.get("sl")
+                        or selected_signal_data.get("stop_loss"),
+                        "tp": selected_signal_data.get("tp")
+                        or selected_signal_data.get("take_profit"),
+                        "rr": selected_signal_data.get("rr")
+                        or selected_signal_data.get("risk_reward")
+                        or selected_signal_data.get("rr_value"),
+                        "state": "SETUP_DETECTED",
+                        "reason": reason,
+                        "created_at_epoch": getattr(tick, "time", None),
+                    }
+                )
+
+                if (
+                    setup_detected_conflict_report
+                    and setup_detected_conflict_report.get("priority_conflict_review")
+                    and not setup_detected_conflict_report.get("duplicate_conflict")
+                ):
+                    send_telegram_message_async(
+                        format_conflict_telegram_message(setup_detected_conflict_report)
+                    )
+            except Exception as phase5ah_exc:
+                logger.warning(
+                    f"[PHASE 5AH] setup detected conflict memory failed | "
+                    f"setup_id={setup_id} error={phase5ah_exc}"
+                )
 
             if selected_signal_data.get("smc"):
                 reason += f" | SMC: {','.join(selected_signal_data['smc'])}"
@@ -10928,6 +11031,89 @@ def process_cycle(last_processed_candle_time):
                     f"Signal: {signal}\n\n"
                     f"Reason: {extra_confirm_reason}"
                 )
+
+                try:
+                    from src.setup_conflict_memory import (
+                        format_conflict_telegram_message,
+                        record_setup_state_event,
+                    )
+
+                    setup_id_for_conflict = None
+                    if isinstance(selected_signal_data, dict):
+                        setup_id_for_conflict = selected_signal_data.get("setup_id")
+                    if not setup_id_for_conflict and isinstance(trade_plan, dict):
+                        setup_id_for_conflict = trade_plan.get("setup_id")
+
+                    entry_for_conflict = None
+                    sl_for_conflict = None
+                    tp_for_conflict = None
+                    rr_for_conflict = None
+
+                    if isinstance(trade_plan, dict):
+                        entry_for_conflict = (
+                            trade_plan.get("entry_price")
+                            or trade_plan.get("entry")
+                            or trade_plan.get("planned_entry")
+                        )
+                        sl_for_conflict = (
+                            trade_plan.get("stop_loss")
+                            or trade_plan.get("sl")
+                        )
+                        tp_for_conflict = (
+                            trade_plan.get("take_profit")
+                            or trade_plan.get("tp")
+                        )
+                        rr_for_conflict = (
+                            trade_plan.get("rr")
+                            or trade_plan.get("risk_reward")
+                            or trade_plan.get("rr_value")
+                        )
+
+                    if isinstance(selected_signal_data, dict):
+                        entry_for_conflict = entry_for_conflict or selected_signal_data.get("entry") or selected_signal_data.get("entry_price")
+                        sl_for_conflict = sl_for_conflict or selected_signal_data.get("sl") or selected_signal_data.get("stop_loss")
+                        tp_for_conflict = tp_for_conflict or selected_signal_data.get("tp") or selected_signal_data.get("take_profit")
+                        rr_for_conflict = rr_for_conflict or selected_signal_data.get("rr") or selected_signal_data.get("risk_reward") or selected_signal_data.get("rr_value")
+
+                    extra_conflict_report = record_setup_state_event(
+                        {
+                            "symbol": SYMBOL,
+                            "setup_id": setup_id_for_conflict,
+                            "strategy": strategy_name,
+                            "signal": signal,
+                            "score": score if "score" in locals() else None,
+                            "entry_model": selected_signal_data.get("entry_model") if isinstance(selected_signal_data, dict) else None,
+                            "session": session_name if "session_name" in locals() else None,
+                            "market_condition": market_condition if "market_condition" in locals() else None,
+                            "entry": entry_for_conflict,
+                            "sl": sl_for_conflict,
+                            "tp": tp_for_conflict,
+                            "rr": rr_for_conflict,
+                            "state": (
+                                "ENTRY_SKIPPED_WEAK_CONFIRMATION"
+                                if extra_confirm_reason == "m5_body_too_small"
+                                else "ENTRY_SKIPPED_EXTRA_CONFIRMATION"
+                            ),
+                            "entry_skip_reason": extra_confirm_reason,
+                            "reason": extra_confirm_reason,
+                            "created_at_epoch": getattr(tick, "time", None),
+                        }
+                    )
+
+                    if (
+                        extra_conflict_report
+                        and extra_conflict_report.get("priority_conflict_review")
+                        and not extra_conflict_report.get("duplicate_conflict")
+                    ):
+                        send_telegram_message_async(
+                            format_conflict_telegram_message(extra_conflict_report)
+                        )
+                except Exception as phase5ah_exc:
+                    logger.warning(
+                        f"[PHASE 5AH] extra entry skip conflict memory failed | "
+                        f"strategy={strategy_name} signal={signal} reason={extra_confirm_reason} "
+                        f"error={phase5ah_exc}"
+                    )
 
                 if "best_setup" in locals():
                     best_setup["state"] = "SKIPPED"
