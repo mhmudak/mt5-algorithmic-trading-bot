@@ -26,14 +26,15 @@ def run_case(name, previous_setup, new_setup):
     print(f"pair = {matrix['pair']}")
     print(f"rule = {matrix['rule']}")
     print(f"priority_side = {matrix['priority_side']}")
+    print(f"priority_policy = {matrix.get('priority_policy')}")
     print(json.dumps(report, indent=2))
 
     return report
 
 
 def main() -> None:
-    # Your real case.
-    previous_buy = {
+    # Your real case: older BUY has entry-quality weakness, newer rejected micro sweep has strong RR.
+    previous_buy_weak = {
         "setup_id": "FAI-BUY-1785386706",
         "strategy": "FAILED_FVG_REVERSAL",
         "signal": "BUY",
@@ -47,7 +48,7 @@ def main() -> None:
         "entry_skip_reason": "m5_body_too_small",
     }
 
-    new_sell = {
+    new_sell_micro = {
         "setup_id": "MIC-SELL-8d786c56fb",
         "strategy": "MICRO_SR_SWEEP_RECLAIM",
         "signal": "SELL",
@@ -63,14 +64,14 @@ def main() -> None:
         "rejection_reason": "score_too_low 92/94",
     }
 
-    report_1 = run_case("FAILED_FVG_BUY_vs_MICRO_SWEEP_SELL", previous_buy, new_sell)
+    report_1 = run_case("WEAK_FAILED_FVG_BUY_vs_MICRO_SWEEP_SELL", previous_buy_weak, new_sell_micro)
 
     assert report_1["conflict_detected"] is True
     assert report_1["priority_conflict_review"] is True
     assert report_1["strategy_family_matrix"]["pair"] == "FAILED_FVG_REVERSAL_VS_SWEEP_RECLAIM"
     assert report_1["strategy_family_matrix"]["priority_side"] == "NEW_SETUP"
 
-    # Generic conflict: should detect conflict but not priority-promote yet.
+    # Generic conflict: detect but do not priority-promote.
     previous_break = {
         "setup_id": "KEY-BUY-TEST",
         "strategy": "KEY_LEVEL_BREAK_HOLD",
@@ -100,7 +101,7 @@ def main() -> None:
     assert report_2["conflict_status"] == "DIRECTIONAL_CONFLICT_SAME_ZONE"
     assert report_2["trade_action"] == "WAIT"
 
-    # Prior micro sweep remains important if later opposite setup appears.
+    # Prior micro vs clean new failed-FVG: conflict yes, but no priority because opposing setup is not weak.
     previous_micro = {
         "setup_id": "MIC-SELL-PRIOR",
         "strategy": "MICRO_SR_SWEEP_RECLAIM",
@@ -115,7 +116,7 @@ def main() -> None:
         "rejection_reason": "score_too_low 92/94",
     }
 
-    new_fvg = {
+    clean_new_fvg = {
         "setup_id": "FAI-BUY-LATER",
         "strategy": "FAILED_FVG_REVERSAL",
         "signal": "BUY",
@@ -126,15 +127,26 @@ def main() -> None:
         "state": "SETUP_DETECTED",
     }
 
-    report_3 = run_case("PRIOR_MICRO_SWEEP_SELL_vs_FAILED_FVG_BUY", previous_micro, new_fvg)
+    report_3 = run_case("PRIOR_MICRO_SWEEP_SELL_vs_CLEAN_FAILED_FVG_BUY", previous_micro, clean_new_fvg)
 
     assert report_3["conflict_detected"] is True
-    assert report_3["priority_conflict_review"] is True
-    assert report_3["strategy_family_matrix"]["pair"] == "SWEEP_RECLAIM_VS_FAILED_FVG_REVERSAL"
-    assert report_3["strategy_family_matrix"]["priority_side"] == "PREVIOUS_SETUP"
+    assert report_3["priority_conflict_review"] is False
+    assert report_3["trade_action"] == "WAIT"
+
+    # Prior micro vs weak new failed-FVG: prior micro remains priority-review.
+    weak_new_fvg = dict(clean_new_fvg)
+    weak_new_fvg["setup_id"] = "FAI-BUY-LATER-WEAK"
+    weak_new_fvg["state"] = "ENTRY_SKIPPED_WEAK_CONFIRMATION"
+    weak_new_fvg["entry_skip_reason"] = "m5_body_too_small"
+
+    report_4 = run_case("PRIOR_MICRO_SWEEP_SELL_vs_WEAK_FAILED_FVG_BUY", previous_micro, weak_new_fvg)
+
+    assert report_4["conflict_detected"] is True
+    assert report_4["priority_conflict_review"] is True
+    assert report_4["strategy_family_matrix"]["priority_side"] == "PREVIOUS_SETUP"
 
     print("")
-    print("[PASS] Phase 5AH2 strategy conflict matrix works.")
+    print("[PASS] Phase 5AH2/5AL strict strategy conflict matrix works.")
 
 
 if __name__ == "__main__":

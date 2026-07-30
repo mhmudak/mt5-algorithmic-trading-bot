@@ -319,25 +319,30 @@ def resolve_setup_conflict(
 
     conflict_detected = bool(directional_conflict and same_zone and time_close)
 
+    # Phase 5AL tightening:
+    # A sweep/reclaim conflict is NOT automatically priority just because it has good RR.
+    # Historical backfill showed that broad promotion can be dangerous.
+    # Priority now requires the OPPOSING setup to have entry-quality weakness
+    # such as m5_body_too_small / weak confirmation.
     new_sweep_priority = bool(
         conflict_detected
         and is_high_value_sweep_reclaim(new_setup, min_conflict_rr=min_conflict_rr)
+        and previous_entry_weak
         and (
-            previous_entry_weak
-            or new_score_rejected
+            new_score_rejected
             or new_below_required
-            or previous_family in {"FAILED_FVG_REVERSAL", "BREAK_HOLD", "ORDER_BLOCK"}
+            or new_family == "SWEEP_RECLAIM"
         )
     )
 
     previous_sweep_priority = bool(
         conflict_detected
         and is_high_value_sweep_reclaim(previous_setup, min_conflict_rr=min_conflict_rr)
+        and new_entry_weak
         and (
-            new_entry_weak
-            or previous_score_rejected
+            previous_score_rejected
             or previous_below_required
-            or new_family in {"FAILED_FVG_REVERSAL", "BREAK_HOLD", "ORDER_BLOCK"}
+            or previous_family == "SWEEP_RECLAIM"
         )
     )
 
@@ -397,6 +402,7 @@ def resolve_setup_conflict(
             "default_action": family_rule.get("default_action"),
             "priority_side": priority_side,
             "priority_family": priority_family,
+            "priority_policy": "STRICT_OPPOSING_ENTRY_WEAKNESS_REQUIRED_OBSERVE_ONLY",
         },
         "previous_setup": {
             "setup_id": previous_setup.get("setup_id"),
