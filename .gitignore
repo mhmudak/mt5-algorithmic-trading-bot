@@ -70,3 +70,7 @@ vendor_private/
 
 data/order_flow/rithmic/*.jsonl
 data/order_flow/rithmic/*.txt
+data/strategy_intelligence/phase5ah_setup_conflicts/*.json
+data/strategy_intelligence/phase5ah_setup_conflicts/*.jsonl
+data/strategy_intelligence/phase5ah_setup_conflicts/*.txt
+data/strategy_intelligence/phase5ah_setup_conflicts_test/
