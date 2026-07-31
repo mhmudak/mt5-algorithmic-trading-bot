@@ -331,6 +331,7 @@ from config.settings import (
     ENABLE_KEY_LEVEL_BREAK_HOLD,
     ENABLE_VOLATILITY_COMPRESSION_BREAKOUT,
     ENABLE_PSYCH_ROUND_NUMBER_REJECTION,
+    ENABLE_SESSION_EXHAUSTION_REVERSAL,
 )
 
 from src.candidate_rejection_recovery import (
@@ -416,6 +417,7 @@ STRATEGY_SPECIFIC_CONFIRMED = {
     "BALANCED_AUCTION_RANGE",
     "VOLATILITY_COMPRESSION_BREAKOUT",
     "PSYCH_ROUND_NUMBER_REJECTION",
+    "SESSION_EXHAUSTION_REVERSAL",
 }
 
 def send_telegram_message_async(message):
@@ -8273,6 +8275,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_key_level_break_hold import generate_signal as key_level_break_hold_signal
     from src.strategies.strategy_volatility_compression_breakout import generate_signal as volatility_compression_breakout_signal
     from src.strategies.strategy_psych_round_number_rejection import generate_signal as psych_round_number_rejection_signal
+    from src.strategies.strategy_session_exhaustion_reversal import generate_signal as session_exhaustion_reversal_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -8338,13 +8341,16 @@ def process_cycle(last_processed_candle_time):
             ("SESSION_ORB_RETEST", session_orb_retest_signal),
             ("VOLATILITY_COMPRESSION_BREAKOUT", volatility_compression_breakout_signal),
             ("PSYCH_ROUND_NUMBER_REJECTION", psych_round_number_rejection_signal),
+            ("SESSION_EXHAUSTION_REVERSAL", session_exhaustion_reversal_signal),
             ("WAVETREND_MOMENTUM", wavetrend_momentum_signal),
             ("HTF_TREND_PULLBACK", htf_trend_pullback_signal),
             ("BREAKER_BLOCK", breaker_block_signal),
             ("MICRO_SR_SWEEP_RECLAIM", micro_sr_sweep_reclaim_signal),
             ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
+            ("SESSION_EXHAUSTION_REVERSAL", session_exhaustion_reversal_signal),
             ("PSYCH_ROUND_NUMBER_REJECTION", psych_round_number_rejection_signal),
             ("RELIEF_RALLY", relief_rally_signal),
+            ("SESSION_EXHAUSTION_REVERSAL", session_exhaustion_reversal_signal),
             ("ORDER_BLOCK", order_block_signal),
             ("FVG_CE_MITIGATION", fvg_ce_mitigation_signal),
             ("OB_FVG_COMBO", ob_fvg_combo_signal),
@@ -8395,6 +8401,7 @@ def process_cycle(last_processed_candle_time):
             ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
             ("MICRO_SR_SWEEP_RECLAIM", micro_sr_sweep_reclaim_signal),
             ("VWAP_RANGE_MEAN_REVERSION", vwap_range_mean_reversion_signal),
+            ("SESSION_EXHAUSTION_REVERSAL", session_exhaustion_reversal_signal),
             ("BALANCED_AUCTION_RANGE", balanced_auction_range_signal),
             ("PSYCH_ROUND_NUMBER_REJECTION", psych_round_number_rejection_signal),
             ("VWAP_RECLAIM", vwap_reclaim_signal),
@@ -8510,6 +8517,14 @@ def process_cycle(last_processed_candle_time):
             if name != "PSYCH_ROUND_NUMBER_REJECTION"
         ]
         logger.info("[STRATEGY TOGGLE] PSYCH_ROUND_NUMBER_REJECTION disabled")
+
+    if not ENABLE_SESSION_EXHAUSTION_REVERSAL:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "SESSION_EXHAUSTION_REVERSAL"
+        ]
+        logger.info("[STRATEGY TOGGLE] SESSION_EXHAUSTION_REVERSAL disabled")
 
     if not ENABLE_IFVG_RETEST_CONFLUENCE:
         strategy_map = [
