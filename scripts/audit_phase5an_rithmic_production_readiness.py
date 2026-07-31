@@ -115,20 +115,20 @@ def main() -> None:
     recommended_ws_url = endpoint.websocket_url
 
     required_checks = {
-        "conformance_passed": conformance_passed,
-        "app_prefix_ok": app_prefix_ok,
-        "endpoint_key_known": endpoint_known,
-        "username_present": username_present,
-        "password_present": password_present,
-        "subscription_active": subscription_active,
-        "comex_market_data_enabled": comex_market_data_enabled,
-        "market_depth_enabled": market_depth_enabled,
-        "production_like_url_selected": current_is_production_like,
+        "conformance_passed": bool(conformance_passed),
+        "app_prefix_ok": bool(app_prefix_ok),
+        "endpoint_key_known": bool(endpoint_known),
+        "username_present": bool(username_present),
+        "password_present": bool(password_present),
+        "subscription_active": bool(subscription_active),
+        "comex_market_data_enabled": bool(comex_market_data_enabled),
+        "market_depth_enabled": bool(market_depth_enabled),
+        "production_like_url_selected": bool(current_is_production_like),
         "system_name_not_test": bool(system_name and not current_is_test),
     }
 
-    missing = [key for key, ok in required_checks.items() if not ok]
-    passed = [key for key, ok in required_checks.items() if ok]
+    passed = [key for key, ok in required_checks.items() if bool(ok)]
+    missing = [key for key, ok in required_checks.items() if not bool(ok)]
 
     ready_for_production_connection_test = not missing
 
