@@ -332,6 +332,7 @@ from config.settings import (
     ENABLE_VOLATILITY_COMPRESSION_BREAKOUT,
     ENABLE_PSYCH_ROUND_NUMBER_REJECTION,
     ENABLE_SESSION_EXHAUSTION_REVERSAL,
+    ENABLE_AUTO_STRUCTURAL_LEVEL_SCALP,
 )
 
 from src.candidate_rejection_recovery import (
@@ -418,6 +419,7 @@ STRATEGY_SPECIFIC_CONFIRMED = {
     "VOLATILITY_COMPRESSION_BREAKOUT",
     "PSYCH_ROUND_NUMBER_REJECTION",
     "SESSION_EXHAUSTION_REVERSAL",
+    "AUTO_STRUCTURAL_LEVEL_SCALP",
 }
 
 def send_telegram_message_async(message):
@@ -8333,6 +8335,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_volatility_compression_breakout import generate_signal as volatility_compression_breakout_signal
     from src.strategies.strategy_psych_round_number_rejection import generate_signal as psych_round_number_rejection_signal
     from src.strategies.strategy_session_exhaustion_reversal import generate_signal as session_exhaustion_reversal_signal
+    from src.strategies.strategy_auto_structural_level_scalp import generate_signal as auto_structural_level_scalp_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -8399,6 +8402,7 @@ def process_cycle(last_processed_candle_time):
             ("VOLATILITY_COMPRESSION_BREAKOUT", volatility_compression_breakout_signal),
             ("PSYCH_ROUND_NUMBER_REJECTION", psych_round_number_rejection_signal),
             ("SESSION_EXHAUSTION_REVERSAL", session_exhaustion_reversal_signal),
+            ("AUTO_STRUCTURAL_LEVEL_SCALP", auto_structural_level_scalp_signal),
             ("WAVETREND_MOMENTUM", wavetrend_momentum_signal),
             ("HTF_TREND_PULLBACK", htf_trend_pullback_signal),
             ("BREAKER_BLOCK", breaker_block_signal),
@@ -8582,6 +8586,14 @@ def process_cycle(last_processed_candle_time):
             if name != "SESSION_EXHAUSTION_REVERSAL"
         ]
         logger.info("[STRATEGY TOGGLE] SESSION_EXHAUSTION_REVERSAL disabled")
+
+    if not ENABLE_AUTO_STRUCTURAL_LEVEL_SCALP:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "AUTO_STRUCTURAL_LEVEL_SCALP"
+        ]
+        logger.info("[STRATEGY TOGGLE] AUTO_STRUCTURAL_LEVEL_SCALP disabled")
 
     if not ENABLE_IFVG_RETEST_CONFLUENCE:
         strategy_map = [
