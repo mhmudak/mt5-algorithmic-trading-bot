@@ -53,17 +53,6 @@ def build_bounce_buy_df() -> pd.DataFrame:
         }
     )
 
-    rows.append(
-        {
-            "time": "2026-07-31T17:02:00",
-            "open": 4068.30,
-            "high": 4068.45,
-            "low": 4068.10,
-            "close": 4068.25,
-            "tick_volume": 50,
-        }
-    )
-
     return pd.DataFrame(rows)
 
 
@@ -101,17 +90,6 @@ def build_break_sell_df() -> pd.DataFrame:
             "low": 4069.30,
             "close": 4069.55,
             "tick_volume": 320,
-        }
-    )
-
-    rows.append(
-        {
-            "time": "2026-07-31T17:15:00",
-            "open": 4069.55,
-            "high": 4069.70,
-            "low": 4069.30,
-            "close": 4069.50,
-            "tick_volume": 50,
         }
     )
 

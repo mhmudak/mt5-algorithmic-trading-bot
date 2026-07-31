@@ -385,6 +385,7 @@ def _build_signal(
         "structural_level_sources": level.get("sources"),
         "round_confluence": bool(level.get("round_confluence")),
         "target_model": target_model,
+        "intrabar_mode": True,
         "orderflow_status": "NOT_CONNECTED_MT5_ONLY",
         "funded_suitable": True,
         "demo_execution_suitable": True,
@@ -404,6 +405,7 @@ def generate_signal(df):
     from config.settings import (
         ASLS_ATR_PERIOD,
         ASLS_BOUNCE_ENTRY_OFFSET,
+        ASLS_USE_INTRABAR_CANDLE,
         ASLS_BREAK_BODY_ATR_RATIO,
         ASLS_BREAK_CONFIRM_DISTANCE,
         ASLS_BREAK_CONFIRM_TOLERANCE,
@@ -429,12 +431,17 @@ def generate_signal(df):
     if df is None or len(df) < max(ASLS_LOOKBACK_BARS // 3, ASLS_ATR_PERIOD + 10):
         return None
 
-    closed = df.iloc[:-1].reset_index(drop=True)
+    # For Phase 6G/6H scalp logic, waiting for a closed candle is too late.
+    # If ASLS_USE_INTRABAR_CANDLE=True, the current forming candle is used.
+    if ASLS_USE_INTRABAR_CANDLE:
+        signal_df = df.reset_index(drop=True)
+    else:
+        signal_df = df.iloc[:-1].reset_index(drop=True)
 
-    if len(closed) < ASLS_ATR_PERIOD + 10:
+    if len(signal_df) < ASLS_ATR_PERIOD + 10:
         return None
 
-    rows = [row.to_dict() for _, row in closed.iterrows()]
+    rows = [row.to_dict() for _, row in signal_df.iterrows()]
     entry_bar = rows[-1]
     previous_bar = rows[-2]
     atr = _atr(rows, ASLS_ATR_PERIOD)
