@@ -1,3 +1,4 @@
+import hashlib
 import MetaTrader5 as mt5
 import pandas as pd
 
@@ -6,6 +7,13 @@ from src.indicators import calculate_ema, calculate_atr
 from src.strategy_debug import reject_strategy
 from src.logger import logger
 
+
+
+PHASE6P2_RR_STRATEGY_STANDARDIZATION = True
+PHASE6P2_STRATEGY_NAME = "FCR_M1_FVG"
+PHASE6P2_FALLBACK_PHASE_NAME = "PHASE_6P2_FCR_M1_FVG_STANDARDIZED_COMPLETION"
+PHASE6P2_SETUP_PREFIX = "FCR"
+PHASE6P2_DUPLICATE_POLICY = "setup_id_by_strategy_signal_entry_model_entry_sl_tp"
 
 FCR_TIMEFRAME = mt5.TIMEFRAME_M5
 ENTRY_TIMEFRAME = mt5.TIMEFRAME_M1
@@ -94,7 +102,7 @@ def _detect_bearish_fvg(c1, c3, atr):
     return None
 
 
-def generate_signal(df):
+def _phase6p2_generate_signal_raw(df):
     """
     FCR + M1 FVG precision model.
 
@@ -355,3 +363,112 @@ def generate_signal(df):
         bearish_engulfing=bearish_engulfing,
         bearish_reclaim=bearish_reclaim,
     )
+
+
+def _phase6p2_float(value):
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _phase6p2_entry_reference(df, payload):
+    for key in ("entry_reference", "entry_price", "entry", "price"):
+        value = _phase6p2_float(payload.get(key))
+
+        if value is not None:
+            return value
+
+    try:
+        if df is not None and len(df) >= 2:
+            return float(df.iloc[-2]["close"])
+    except Exception:
+        pass
+
+    try:
+        if df is not None and len(df) >= 1:
+            return float(df.iloc[-1]["close"])
+    except Exception:
+        pass
+
+    return None
+
+
+def _phase6p2_risk_reward(signal, entry_reference, sl_reference, tp_reference):
+    entry_reference = _phase6p2_float(entry_reference)
+    sl_reference = _phase6p2_float(sl_reference)
+    tp_reference = _phase6p2_float(tp_reference)
+
+    if entry_reference is None or sl_reference is None or tp_reference is None:
+        return None
+
+    if signal == "BUY":
+        risk = entry_reference - sl_reference
+        reward = tp_reference - entry_reference
+    else:
+        risk = sl_reference - entry_reference
+        reward = entry_reference - tp_reference
+
+    if risk <= 0:
+        return None
+
+    return round(reward / risk, 2)
+
+
+def _phase6p2_setup_id(payload, entry_reference):
+    signal = payload.get("signal", "NA")
+    entry_model = payload.get("entry_model", payload.get("type", "NA"))
+    sl_reference = payload.get("sl_reference", payload.get("stop_loss", ""))
+    tp_reference = payload.get("tp_reference", payload.get("take_profit", ""))
+
+    raw = (
+        f"{PHASE6P2_STRATEGY_NAME}:{signal}:{entry_model}:"
+        f"{round(float(entry_reference), 2)}:{sl_reference}:{tp_reference}"
+    )
+    digest = hashlib.md5(raw.encode("utf-8")).hexdigest()[:10]
+
+    return f"{PHASE6P2_SETUP_PREFIX}-{signal}-{digest}"
+
+
+def _phase6p2_standardize_signal(payload, df):
+    if not payload:
+        return payload
+
+    signal = payload.get("signal")
+    entry_reference = _phase6p2_entry_reference(df, payload)
+
+    if entry_reference is None:
+        return payload
+
+    existing_rr = _phase6p2_float(payload.get("rr"))
+    existing_risk_reward = _phase6p2_float(payload.get("risk_reward"))
+
+    computed_rr = _phase6p2_risk_reward(
+        signal=signal,
+        entry_reference=entry_reference,
+        sl_reference=payload.get("sl_reference", payload.get("stop_loss")),
+        tp_reference=payload.get("tp_reference", payload.get("take_profit")),
+    )
+
+    final_rr = existing_rr if existing_rr is not None else existing_risk_reward
+    final_rr = final_rr if final_rr is not None else computed_rr
+
+    payload.setdefault("strategy", PHASE6P2_STRATEGY_NAME)
+    payload.setdefault("phase", PHASE6P2_FALLBACK_PHASE_NAME)
+    payload.setdefault("setup_id", _phase6p2_setup_id(payload, entry_reference))
+    payload.setdefault("entry_reference", round(float(entry_reference), 2))
+
+    if final_rr is not None:
+        payload.setdefault("rr", final_rr)
+        payload.setdefault("risk_reward", final_rr)
+
+    payload.setdefault("auto_trade_allowed", True)
+    payload.setdefault("decision_impact", "MAIN_BOT_RUNTIME_CONTROLLED")
+    payload.setdefault("duplicate_policy", PHASE6P2_DUPLICATE_POLICY)
+
+    return payload
+
+
+def generate_signal(df):
+    return _phase6p2_standardize_signal(_phase6p2_generate_signal_raw(df), df)
+
