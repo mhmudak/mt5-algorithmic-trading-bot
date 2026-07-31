@@ -26,6 +26,11 @@ from config.settings import (
     HRCM_ENABLE_HAMMER,
     HRCM_ENABLE_BEARISH_ENGULFING,
     HRCM_ENABLE_BULLISH_ENGULFING,
+    HRCM_ENABLE_EVENING_STAR,
+    HRCM_ENABLE_MORNING_STAR,
+    HRCM_STAR_MIN_FIRST_BODY_RATIO,
+    HRCM_STAR_MAX_MIDDLE_BODY_RATIO,
+    HRCM_STAR_REQUIRE_CLOSE_BEYOND_MIDPOINT,
 )
 
 
@@ -274,6 +279,65 @@ def _detect_bullish_engulfing(parts, prev_parts):
     return current_bullish and previous_bearish and body_large_enough and engulfs_body
 
 
+
+def _detect_evening_star(parts, middle_parts, first_parts):
+    if not HRCM_ENABLE_EVENING_STAR or middle_parts is None or first_parts is None:
+        return False
+
+    first_bullish = first_parts["close"] > first_parts["open"]
+    first_body_strong = first_parts["body_ratio"] >= HRCM_STAR_MIN_FIRST_BODY_RATIO
+
+    middle_small = middle_parts["body_ratio"] <= HRCM_STAR_MAX_MIDDLE_BODY_RATIO
+
+    third_bearish = parts["close"] < parts["open"]
+    third_body_strong = parts["body_ratio"] >= HRCM_ENGULFING_MIN_BODY_RATIO
+
+    first_midpoint = (first_parts["open"] + first_parts["close"]) / 2
+
+    if HRCM_STAR_REQUIRE_CLOSE_BEYOND_MIDPOINT:
+        closes_beyond_midpoint = parts["close"] <= first_midpoint
+    else:
+        closes_beyond_midpoint = parts["close"] < first_parts["close"]
+
+    return (
+        first_bullish
+        and first_body_strong
+        and middle_small
+        and third_bearish
+        and third_body_strong
+        and closes_beyond_midpoint
+    )
+
+
+def _detect_morning_star(parts, middle_parts, first_parts):
+    if not HRCM_ENABLE_MORNING_STAR or middle_parts is None or first_parts is None:
+        return False
+
+    first_bearish = first_parts["close"] < first_parts["open"]
+    first_body_strong = first_parts["body_ratio"] >= HRCM_STAR_MIN_FIRST_BODY_RATIO
+
+    middle_small = middle_parts["body_ratio"] <= HRCM_STAR_MAX_MIDDLE_BODY_RATIO
+
+    third_bullish = parts["close"] > parts["open"]
+    third_body_strong = parts["body_ratio"] >= HRCM_ENGULFING_MIN_BODY_RATIO
+
+    first_midpoint = (first_parts["open"] + first_parts["close"]) / 2
+
+    if HRCM_STAR_REQUIRE_CLOSE_BEYOND_MIDPOINT:
+        closes_beyond_midpoint = parts["close"] >= first_midpoint
+    else:
+        closes_beyond_midpoint = parts["close"] > first_parts["close"]
+
+    return (
+        first_bearish
+        and first_body_strong
+        and middle_small
+        and third_bullish
+        and third_body_strong
+        and closes_beyond_midpoint
+    )
+
+
 def _score(parts, pattern_type, location_ok, extension_ok, mtf_ok):
     score = 88
 
@@ -285,6 +349,9 @@ def _score(parts, pattern_type, location_ok, extension_ok, mtf_ok):
 
     if pattern_type in ["BEARISH_ENGULFING", "BULLISH_ENGULFING"]:
         score += 4
+
+    if pattern_type in ["EVENING_STAR", "MORNING_STAR"]:
+        score += 6
 
     if location_ok:
         score += 3
@@ -369,10 +436,12 @@ def generate_signal(df, htf_df=None):
     htf_df = htf_df.reset_index(drop=True)
     pattern_candle = htf_df.iloc[-1]
     previous_candle = htf_df.iloc[-2]
+    first_pattern_candle = htf_df.iloc[-3]
     htf_before_pattern = htf_df.iloc[:-1]
 
     parts = _candle_parts(pattern_candle)
     prev_parts = _candle_parts(previous_candle)
+    first_parts = _candle_parts(first_pattern_candle)
 
     if parts is None:
         return None
@@ -395,6 +464,12 @@ def generate_signal(df, htf_df=None):
 
     if _detect_bullish_engulfing(parts, prev_parts):
         candidates.append(("BUY", "BULLISH_ENGULFING"))
+
+    if _detect_evening_star(parts, prev_parts, first_parts):
+        candidates.append(("SELL", "EVENING_STAR"))
+
+    if _detect_morning_star(parts, prev_parts, first_parts):
+        candidates.append(("BUY", "MORNING_STAR"))
 
     if not candidates:
         return None
