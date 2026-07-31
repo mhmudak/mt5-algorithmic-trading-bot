@@ -335,6 +335,7 @@ from config.settings import (
     ENABLE_AUTO_STRUCTURAL_LEVEL_SCALP,
     ENABLE_HTF_REJECTION_CANDLE_MTF_ENTRY,
     ENABLE_HTF_INSIDE_BAR_FAKEOUT_MTF_ENTRY,
+    ENABLE_HTF_DOUBLE_TOP_BOTTOM_MTF_ENTRY,
 )
 
 from src.candidate_rejection_recovery import (
@@ -424,6 +425,7 @@ STRATEGY_SPECIFIC_CONFIRMED = {
     "AUTO_STRUCTURAL_LEVEL_SCALP",
     "HTF_REJECTION_CANDLE_MTF_ENTRY",
     "HTF_INSIDE_BAR_FAKEOUT_MTF_ENTRY",
+    "HTF_DOUBLE_TOP_BOTTOM_MTF_ENTRY",
 }
 
 def send_telegram_message_async(message):
@@ -8647,6 +8649,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_auto_structural_level_scalp import generate_signal as auto_structural_level_scalp_signal
     from src.strategies.strategy_htf_rejection_candle_mtf_entry import generate_signal as htf_rejection_candle_mtf_entry_signal
     from src.strategies.strategy_htf_inside_bar_fakeout_mtf_entry import generate_signal as htf_inside_bar_fakeout_mtf_entry_signal
+    from src.strategies.strategy_htf_double_top_bottom_mtf_entry import generate_signal as htf_double_top_bottom_mtf_entry_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -8715,6 +8718,7 @@ def process_cycle(last_processed_candle_time):
             ("SESSION_EXHAUSTION_REVERSAL", session_exhaustion_reversal_signal),
             ("HTF_REJECTION_CANDLE_MTF_ENTRY", htf_rejection_candle_mtf_entry_signal),
             ("HTF_INSIDE_BAR_FAKEOUT_MTF_ENTRY", htf_inside_bar_fakeout_mtf_entry_signal),
+            ("HTF_DOUBLE_TOP_BOTTOM_MTF_ENTRY", htf_double_top_bottom_mtf_entry_signal),
             ("AUTO_STRUCTURAL_LEVEL_SCALP", auto_structural_level_scalp_signal),
             ("WAVETREND_MOMENTUM", wavetrend_momentum_signal),
             ("HTF_TREND_PULLBACK", htf_trend_pullback_signal),
@@ -8724,11 +8728,13 @@ def process_cycle(last_processed_candle_time):
             ("SESSION_EXHAUSTION_REVERSAL", session_exhaustion_reversal_signal),
             ("HTF_REJECTION_CANDLE_MTF_ENTRY", htf_rejection_candle_mtf_entry_signal),
             ("HTF_INSIDE_BAR_FAKEOUT_MTF_ENTRY", htf_inside_bar_fakeout_mtf_entry_signal),
+            ("HTF_DOUBLE_TOP_BOTTOM_MTF_ENTRY", htf_double_top_bottom_mtf_entry_signal),
             ("PSYCH_ROUND_NUMBER_REJECTION", psych_round_number_rejection_signal),
             ("RELIEF_RALLY", relief_rally_signal),
             ("SESSION_EXHAUSTION_REVERSAL", session_exhaustion_reversal_signal),
             ("HTF_REJECTION_CANDLE_MTF_ENTRY", htf_rejection_candle_mtf_entry_signal),
             ("HTF_INSIDE_BAR_FAKEOUT_MTF_ENTRY", htf_inside_bar_fakeout_mtf_entry_signal),
+            ("HTF_DOUBLE_TOP_BOTTOM_MTF_ENTRY", htf_double_top_bottom_mtf_entry_signal),
             ("ORDER_BLOCK", order_block_signal),
             ("FVG_CE_MITIGATION", fvg_ce_mitigation_signal),
             ("OB_FVG_COMBO", ob_fvg_combo_signal),
@@ -8782,6 +8788,7 @@ def process_cycle(last_processed_candle_time):
             ("SESSION_EXHAUSTION_REVERSAL", session_exhaustion_reversal_signal),
             ("HTF_REJECTION_CANDLE_MTF_ENTRY", htf_rejection_candle_mtf_entry_signal),
             ("HTF_INSIDE_BAR_FAKEOUT_MTF_ENTRY", htf_inside_bar_fakeout_mtf_entry_signal),
+            ("HTF_DOUBLE_TOP_BOTTOM_MTF_ENTRY", htf_double_top_bottom_mtf_entry_signal),
             ("BALANCED_AUCTION_RANGE", balanced_auction_range_signal),
             ("PSYCH_ROUND_NUMBER_REJECTION", psych_round_number_rejection_signal),
             ("VWAP_RECLAIM", vwap_reclaim_signal),
@@ -8929,6 +8936,14 @@ def process_cycle(last_processed_candle_time):
             if name != "HTF_INSIDE_BAR_FAKEOUT_MTF_ENTRY"
         ]
         logger.info("[STRATEGY TOGGLE] HTF_INSIDE_BAR_FAKEOUT_MTF_ENTRY disabled")
+
+    if not ENABLE_HTF_DOUBLE_TOP_BOTTOM_MTF_ENTRY:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "HTF_DOUBLE_TOP_BOTTOM_MTF_ENTRY"
+        ]
+        logger.info("[STRATEGY TOGGLE] HTF_DOUBLE_TOP_BOTTOM_MTF_ENTRY disabled")
 
     if not ENABLE_IFVG_RETEST_CONFLUENCE:
         strategy_map = [
