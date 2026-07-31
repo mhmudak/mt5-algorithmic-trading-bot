@@ -1,5 +1,13 @@
+import hashlib
 from config.settings import ATR_MIN, ATR_MAX
 
+
+
+PHASE6O2_OUTPUT_STANDARDIZED = True
+PHASE6O2_STRATEGY_NAME = "FLAG_REFINED"
+PHASE6O2_PHASE_NAME = "PHASE_6O2_EXISTING_FLAG_REFINED_STANDARDIZED"
+PHASE6O2_MIN_SCORE = 94
+PHASE6O2_SETUP_PREFIX = "FLAGR"
 
 FLAG_REFINED_SL_ATR_MULTIPLIER = 0.20
 FLAG_REFINED_MIN_SL_BUFFER = 2.0
@@ -35,7 +43,7 @@ def _score_setup(base_score, pole_body, entry_body, atr, close_aligned):
     return min(score, 99)
 
 
-def generate_signal(df):
+def _generate_signal_raw(df):
     if len(df) < 20:
         return None
 
@@ -209,3 +217,109 @@ def generate_signal(df):
         }
 
     return None
+
+
+def _phase6o2_float(value):
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _phase6o2_entry_reference(df, payload):
+    for key in ("entry_reference", "entry_price", "entry", "price"):
+        value = _phase6o2_float(payload.get(key))
+
+        if value is not None:
+            return value
+
+    try:
+        if df is not None and len(df) >= 2:
+            return float(df.iloc[-2]["close"])
+    except Exception:
+        pass
+
+    try:
+        if df is not None and len(df) >= 1:
+            return float(df.iloc[-1]["close"])
+    except Exception:
+        pass
+
+    return None
+
+
+def _phase6o2_risk_reward(signal, entry_reference, sl_reference, tp_reference):
+    entry_reference = _phase6o2_float(entry_reference)
+    sl_reference = _phase6o2_float(sl_reference)
+    tp_reference = _phase6o2_float(tp_reference)
+
+    if entry_reference is None or sl_reference is None or tp_reference is None:
+        return None
+
+    if signal == "BUY":
+        risk = entry_reference - sl_reference
+        reward = tp_reference - entry_reference
+    else:
+        risk = sl_reference - entry_reference
+        reward = entry_reference - tp_reference
+
+    if risk <= 0:
+        return None
+
+    return round(reward / risk, 2)
+
+
+def _phase6o2_setup_id(payload, entry_reference):
+    signal = payload.get("signal", "NA")
+    entry_model = payload.get("entry_model", "NA")
+    sl_reference = payload.get("sl_reference", "")
+    tp_reference = payload.get("tp_reference", "")
+    pattern_height = payload.get("pattern_height", "")
+
+    raw = (
+        f"{PHASE6O2_STRATEGY_NAME}:{signal}:{entry_model}:"
+        f"{round(float(entry_reference), 2)}:{sl_reference}:{tp_reference}:{pattern_height}"
+    )
+    digest = hashlib.md5(raw.encode("utf-8")).hexdigest()[:10]
+
+    return f"{PHASE6O2_SETUP_PREFIX}-{signal}-{digest}"
+
+
+def _phase6o2_standardize_signal(payload, df):
+    if not payload:
+        return payload
+
+    signal = payload.get("signal")
+    entry_reference = _phase6o2_entry_reference(df, payload)
+
+    if entry_reference is None:
+        return payload
+
+    rr = _phase6o2_risk_reward(
+        signal=signal,
+        entry_reference=entry_reference,
+        sl_reference=payload.get("sl_reference"),
+        tp_reference=payload.get("tp_reference"),
+    )
+
+    payload.setdefault("phase", PHASE6O2_PHASE_NAME)
+    payload.setdefault("strategy", PHASE6O2_STRATEGY_NAME)
+    payload.setdefault("setup_id", _phase6o2_setup_id(payload, entry_reference))
+    payload.setdefault("entry_reference", round(float(entry_reference), 2))
+    payload.setdefault("min_required_score", PHASE6O2_MIN_SCORE)
+
+    if rr is not None:
+        payload.setdefault("rr", rr)
+        payload.setdefault("risk_reward", rr)
+
+    payload.setdefault("auto_trade_allowed", True)
+    payload.setdefault("decision_impact", "MAIN_BOT_RUNTIME_CONTROLLED")
+    payload.setdefault("duplicate_policy", "setup_id_by_entry_model_entry_sl_tp_pattern_height")
+    payload.setdefault("orderflow_status", "NOT_REQUIRED_FOR_EXISTING_CHART_PATTERN")
+
+    return payload
+
+
+def generate_signal(df):
+    return _phase6o2_standardize_signal(_generate_signal_raw(df), df)
+
