@@ -6230,9 +6230,7 @@ def process_wait_better_entry_setups(df, tick, account_info, market_condition, s
             f"Signal: {signal}\n\n"
             f"Entry: {trade_plan['entry_price']}\n"
             f"SL: {trade_plan['stop_loss']}\n"
-            f"TP1 / Execution TP: {trade_plan['take_profit']}\\n"
-            f"Original TP: {trade_plan.get('original_take_profit', trade_plan['take_profit'])}\\n"
-            f"TP Plan: {trade_plan.get('tp_plan_summary', 'standard')}\\n"
+            f"{_format_telegram_tp123_from_trade_plan(signal, trade_plan)}\n"
             f"RR: {rr_value} / Required: {required_rr}"
         )
         
