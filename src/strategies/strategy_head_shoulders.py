@@ -1,3 +1,4 @@
+import hashlib
 from config.settings import ATR_MIN, ATR_MAX
 
 
@@ -12,6 +13,10 @@ RETEST_MIN_REJECTION_WICK_BODY = 1.0
 
 HS_SL_ATR_BUFFER = 0.20
 HS_MIN_SL_BUFFER = 2.0
+
+STRATEGY_NAME = "HEAD_SHOULDERS"
+PHASE_NAME = "PHASE_6N_EXISTING_HEAD_SHOULDERS_STANDARDIZED"
+HS_MIN_SCORE = 94
 
 
 def _sl_buffer(atr):
@@ -37,6 +42,64 @@ def _score_setup(base_score, body, atr, close_aligned, measured_height, retest_e
         score += 3
 
     return min(score, 99)
+
+
+def _risk_reward(signal, entry_reference, sl_reference, tp_reference):
+    try:
+        entry_reference = float(entry_reference)
+        sl_reference = float(sl_reference)
+        tp_reference = float(tp_reference)
+
+        if signal == "BUY":
+            risk = entry_reference - sl_reference
+            reward = tp_reference - entry_reference
+        else:
+            risk = sl_reference - entry_reference
+            reward = entry_reference - tp_reference
+
+        if risk <= 0:
+            return None
+
+        return round(reward / risk, 2)
+
+    except Exception:
+        return None
+
+
+def _setup_id(signal, entry_model, entry_reference, neckline):
+    raw = f"{STRATEGY_NAME}:{signal}:{entry_model}:{round(float(entry_reference), 2)}:{round(float(neckline), 2)}"
+    digest = hashlib.md5(raw.encode("utf-8")).hexdigest()[:10]
+    return f"HS-{signal}-{digest}"
+
+
+def _standardize_signal(payload, entry_reference):
+    if not payload:
+        return payload
+
+    signal = payload.get("signal")
+    entry_model = payload.get("entry_model")
+    neckline = payload.get("neckline")
+    sl_reference = payload.get("sl_reference")
+    tp_reference = payload.get("tp_reference")
+
+    rr = _risk_reward(signal, entry_reference, sl_reference, tp_reference)
+
+    payload.setdefault("phase", PHASE_NAME)
+    payload.setdefault("strategy", STRATEGY_NAME)
+    payload.setdefault("setup_id", _setup_id(signal, entry_model, entry_reference, neckline))
+    payload.setdefault("entry_reference", round(float(entry_reference), 2))
+    payload.setdefault("min_required_score", HS_MIN_SCORE)
+
+    if rr is not None:
+        payload.setdefault("rr", rr)
+        payload.setdefault("risk_reward", rr)
+
+    payload.setdefault("auto_trade_allowed", True)
+    payload.setdefault("decision_impact", "MAIN_BOT_RUNTIME_CONTROLLED")
+    payload.setdefault("duplicate_policy", "setup_id_by_entry_model_entry_neckline")
+    payload.setdefault("orderflow_status", "NOT_REQUIRED_FOR_EXISTING_HEAD_SHOULDERS")
+
+    return payload
 
 
 def _find_peaks_and_troughs(data):
@@ -148,7 +211,7 @@ def generate_signal(df):
                             retest_entry=False,
                         )
 
-                        return {
+                        return _standardize_signal({
                             "signal": "SELL",
                             "score": score,
                             "strategy": "HEAD_SHOULDERS",
@@ -169,7 +232,7 @@ def generate_signal(df):
                                 f"SL above right shoulder {sl_reference} -> "
                                 f"TP measured move {tp_reference} -> price below EMA"
                             ),
-                        }
+                        }, price)
 
                     # -----------------------------------------
                     # Entry Model 2: Neckline retest rejection
@@ -201,7 +264,7 @@ def generate_signal(df):
                             retest_entry=True,
                         )
 
-                        return {
+                        return _standardize_signal({
                             "signal": "SELL",
                             "score": score,
                             "strategy": "HEAD_SHOULDERS",
@@ -222,7 +285,7 @@ def generate_signal(df):
                                 f"SL above right shoulder {sl_reference} -> "
                                 f"TP measured move {tp_reference} -> price below EMA"
                             ),
-                        }
+                        }, price)
 
     # =========================================================
     # Bullish Inverse Head & Shoulders
@@ -285,7 +348,7 @@ def generate_signal(df):
                             retest_entry=False,
                         )
 
-                        return {
+                        return _standardize_signal({
                             "signal": "BUY",
                             "score": score,
                             "strategy": "HEAD_SHOULDERS",
@@ -306,7 +369,7 @@ def generate_signal(df):
                                 f"SL below right shoulder {sl_reference} -> "
                                 f"TP measured move {tp_reference} -> price above EMA"
                             ),
-                        }
+                        }, price)
 
                     # -----------------------------------------
                     # Entry Model 2: Neckline retest rejection
@@ -338,7 +401,7 @@ def generate_signal(df):
                             retest_entry=True,
                         )
 
-                        return {
+                        return _standardize_signal({
                             "signal": "BUY",
                             "score": score,
                             "strategy": "HEAD_SHOULDERS",
@@ -359,6 +422,6 @@ def generate_signal(df):
                                 f"SL below right shoulder {sl_reference} -> "
                                 f"TP measured move {tp_reference} -> price above EMA"
                             ),
-                        }
+                        }, price)
 
     return None
