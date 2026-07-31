@@ -330,6 +330,7 @@ from config.settings import (
     ENABLE_PRO_TRADER_REPLICATION,
     ENABLE_KEY_LEVEL_BREAK_HOLD,
     ENABLE_VOLATILITY_COMPRESSION_BREAKOUT,
+    ENABLE_PSYCH_ROUND_NUMBER_REJECTION,
 )
 
 from src.candidate_rejection_recovery import (
@@ -414,6 +415,7 @@ STRATEGY_SPECIFIC_CONFIRMED = {
     "KEY_LEVEL_BREAK_HOLD",
     "BALANCED_AUCTION_RANGE",
     "VOLATILITY_COMPRESSION_BREAKOUT",
+    "PSYCH_ROUND_NUMBER_REJECTION",
 }
 
 def send_telegram_message_async(message):
@@ -8270,6 +8272,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_pro_trader_replication import generate_signal as pro_trader_replication_signal
     from src.strategies.strategy_key_level_break_hold import generate_signal as key_level_break_hold_signal
     from src.strategies.strategy_volatility_compression_breakout import generate_signal as volatility_compression_breakout_signal
+    from src.strategies.strategy_psych_round_number_rejection import generate_signal as psych_round_number_rejection_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -8334,11 +8337,13 @@ def process_cycle(last_processed_candle_time):
             ("ORB_V00", orb_v00_signal),
             ("SESSION_ORB_RETEST", session_orb_retest_signal),
             ("VOLATILITY_COMPRESSION_BREAKOUT", volatility_compression_breakout_signal),
+            ("PSYCH_ROUND_NUMBER_REJECTION", psych_round_number_rejection_signal),
             ("WAVETREND_MOMENTUM", wavetrend_momentum_signal),
             ("HTF_TREND_PULLBACK", htf_trend_pullback_signal),
             ("BREAKER_BLOCK", breaker_block_signal),
             ("MICRO_SR_SWEEP_RECLAIM", micro_sr_sweep_reclaim_signal),
             ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
+            ("PSYCH_ROUND_NUMBER_REJECTION", psych_round_number_rejection_signal),
             ("RELIEF_RALLY", relief_rally_signal),
             ("ORDER_BLOCK", order_block_signal),
             ("FVG_CE_MITIGATION", fvg_ce_mitigation_signal),
@@ -8347,6 +8352,7 @@ def process_cycle(last_processed_candle_time):
             ("LVN_FVG_RECLAIM", lvn_fvg_reclaim_signal),
             ("MTF_OB_ENTRY", mtf_ob_entry_signal),
             ("KEY_LEVEL_BREAK_HOLD", key_level_break_hold_signal),
+            ("PSYCH_ROUND_NUMBER_REJECTION", psych_round_number_rejection_signal),
             ("FCR_M1_FVG", fcr_m1_fvg_signal),
             ("FVG", fvg_signal),
             ("TRIANGLE_PENNANT", triangle_pennant_signal),
@@ -8390,6 +8396,7 @@ def process_cycle(last_processed_candle_time):
             ("MICRO_SR_SWEEP_RECLAIM", micro_sr_sweep_reclaim_signal),
             ("VWAP_RANGE_MEAN_REVERSION", vwap_range_mean_reversion_signal),
             ("BALANCED_AUCTION_RANGE", balanced_auction_range_signal),
+            ("PSYCH_ROUND_NUMBER_REJECTION", psych_round_number_rejection_signal),
             ("VWAP_RECLAIM", vwap_reclaim_signal),
             ("LIQUIDITY_TRAP", liquidity_trap_signal),
             ("FRACTAL_SWEEP", fractal_sweep_signal),
@@ -8495,6 +8502,14 @@ def process_cycle(last_processed_candle_time):
             if name != "VOLATILITY_COMPRESSION_BREAKOUT"
         ]
         logger.info("[STRATEGY TOGGLE] VOLATILITY_COMPRESSION_BREAKOUT disabled")
+
+    if not ENABLE_PSYCH_ROUND_NUMBER_REJECTION:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "PSYCH_ROUND_NUMBER_REJECTION"
+        ]
+        logger.info("[STRATEGY TOGGLE] PSYCH_ROUND_NUMBER_REJECTION disabled")
 
     if not ENABLE_IFVG_RETEST_CONFLUENCE:
         strategy_map = [

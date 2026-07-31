@@ -20,7 +20,6 @@ def main() -> None:
     strategy_text = strategy.read_text(encoding="utf-8")
 
     assert "ENABLE_VOLATILITY_COMPRESSION_BREAKOUT" in settings_text
-    assert "VOLATILITY_COMPRESSION_BREAKOUT_DEMO_ONLY" in settings_text
     assert "def generate_signal(df):" in strategy_text
     assert "sl_reference" in strategy_text
     assert "tp_reference" in strategy_text

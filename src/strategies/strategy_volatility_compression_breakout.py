@@ -284,7 +284,6 @@ def _score_signal(result: dict[str, Any], min_score: int) -> int:
 def generate_signal(df):
     from config.settings import (
         ENABLE_VOLATILITY_COMPRESSION_BREAKOUT,
-        VOLATILITY_COMPRESSION_BREAKOUT_DEMO_ONLY,
         VCB_ATR_CANDLES,
         VCB_COMPRESSION_CANDLES,
         VCB_MAX_AVG_BODY_ATR_RATIO,
@@ -300,9 +299,6 @@ def generate_signal(df):
     )
 
     if not ENABLE_VOLATILITY_COMPRESSION_BREAKOUT:
-        return None
-
-    if VOLATILITY_COMPRESSION_BREAKOUT_DEMO_ONLY and not _is_demo_account():
         return None
 
     min_required = VCB_ATR_CANDLES + VCB_COMPRESSION_CANDLES + 2
