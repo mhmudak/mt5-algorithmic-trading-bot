@@ -662,13 +662,13 @@ def _execute_tp_ladder_split_orders(signal, trade_plan, symbol):
         return None
 
     send_telegram_message(
-        f"🧩 Split TP Ladder Execution Starting\\n"
-        f"Symbol: {symbol}\\n"
-        f"Signal: {signal}\\n"
-        f"Strategy: {trade_plan.get('strategy', 'UNKNOWN')}\\n"
-        f"Total Lot: {trade_plan.get('lot')}\\n"
-        f"Original TP: {trade_plan.get('original_take_profit', trade_plan.get('take_profit'))}\\n"
-        f"Original RR: {trade_plan.get('original_rr', trade_plan.get('rr'))}\\n\\n"
+        f"🧩 Split TP Ladder Execution Starting\n"
+        f"Symbol: {symbol}\n"
+        f"Signal: {signal}\n"
+        f"Strategy: {trade_plan.get('strategy', 'UNKNOWN')}\n"
+        f"Total Lot: {trade_plan.get('lot')}\n"
+        f"Original TP: {trade_plan.get('original_take_profit', trade_plan.get('take_profit'))}\n"
+        f"Original RR: {trade_plan.get('original_rr', trade_plan.get('rr'))}\n\n"
         f"{_format_tp_ladder_lines(children)}"
     )
 
@@ -682,12 +682,12 @@ def _execute_tp_ladder_split_orders(signal, trade_plan, symbol):
     total_count = len(results)
 
     send_telegram_message(
-        f"🧩 Split TP Ladder Execution Summary\\n"
-        f"Symbol: {symbol}\\n"
-        f"Signal: {signal}\\n"
-        f"Strategy: {trade_plan.get('strategy', 'UNKNOWN')}\\n"
-        f"Executed Orders: {success_count}/{total_count}\\n"
-        f"Total Lot Requested: {trade_plan.get('lot')}\\n\\n"
+        f"✅ Split TP Ladder Execution Summary\n"
+        f"Symbol: {symbol}\n"
+        f"Signal: {signal}\n"
+        f"Strategy: {trade_plan.get('strategy', 'UNKNOWN')}\n"
+        f"Executed Orders: {success_count}/{total_count}\n"
+        f"Total Lot Requested: {trade_plan.get('lot')}\n\n"
         f"{_format_tp_ladder_lines(children)}"
     )
 
