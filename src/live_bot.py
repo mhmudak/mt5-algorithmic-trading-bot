@@ -1902,7 +1902,9 @@ def register_generic_rejected_candidate_recovery_if_eligible(
             f"Candidate Reason: {candidate.get('reason', 'N/A')}\n\n"
             f"Entry: {trade_plan.get('entry_price')}\n"
             f"SL: {trade_plan.get('stop_loss')}\n"
-            f"TP: {trade_plan.get('take_profit')}\n"
+            f"TP1 / Execution TP: {trade_plan.get('take_profit')}\\n"
+            f"Original TP: {trade_plan.get('original_take_profit', trade_plan.get('take_profit'))}\\n"
+            f"TP Plan: {trade_plan.get('tp_plan_summary', 'standard')}\\n"
             f"RR: {rr_value} / Required: {min_rr_required}\n\n"
             f"Action: moved to generic rejected candidate recovery if eligible."
         )
@@ -3834,7 +3836,9 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
                 f"Candidate Reason: {signal_data.get('reason', 'N/A')}\n\n"
                 f"Entry: {trade_plan.get('entry_price')}\n"
                 f"SL: {trade_plan.get('stop_loss')}\n"
-                f"TP: {trade_plan.get('take_profit')}\n"
+                f"TP1 / Execution TP: {trade_plan.get('take_profit')}\\n"
+                f"Original TP: {trade_plan.get('original_take_profit', trade_plan.get('take_profit'))}\\n"
+                f"TP Plan: {trade_plan.get('tp_plan_summary', 'standard')}\\n"
                 f"RR: {rr_value} / Required: {required_rr}\n\n"
                 f"Recovery ID: {recovery_id or 'not_registered'}\n"
                 f"Action: moved to intrabar candidate recovery if eligible."
@@ -3945,7 +3949,9 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
             f"Breakout Distance: {signal_data.get('breakout_distance')}\n"
             f"Entry: {trade_plan.get('entry_price')}\n"
             f"SL: {trade_plan.get('stop_loss')}\n"
-            f"TP: {trade_plan.get('take_profit')}\n"
+            f"TP1 / Execution TP: {trade_plan.get('take_profit')}\\n"
+            f"Original TP: {trade_plan.get('original_take_profit', trade_plan.get('take_profit'))}\\n"
+            f"TP Plan: {trade_plan.get('tp_plan_summary', 'standard')}\\n"
             f"Trigger: {signal_data.get('intrabar_trigger')}\n"
             f"RR: {rr_value} / Required: {required_rr}\n"
             f"Mode: before M15 candle close"
@@ -4644,7 +4650,9 @@ def process_wait_fvg_staged_entry_setups(df, tick, account_info, market_conditio
                 f"Target Entry: {target_entry}\n"
                 f"Execution Entry: {trade_plan['entry_price']}\n"
                 f"SL: {trade_plan['stop_loss']}\n"
-                f"TP: {trade_plan['take_profit']}\n"
+                f"TP1 / Execution TP: {trade_plan['take_profit']}\\n"
+                f"Original TP: {trade_plan.get('original_take_profit', trade_plan['take_profit'])}\\n"
+                f"TP Plan: {trade_plan.get('tp_plan_summary', 'standard')}\\n"
                 f"Lot: {trade_plan['lot']}"
             )
 
@@ -6139,7 +6147,9 @@ def process_wait_better_entry_setups(df, tick, account_info, market_condition, s
             f"Signal: {signal}\n\n"
             f"Entry: {trade_plan['entry_price']}\n"
             f"SL: {trade_plan['stop_loss']}\n"
-            f"TP: {trade_plan['take_profit']}\n"
+            f"TP1 / Execution TP: {trade_plan['take_profit']}\\n"
+            f"Original TP: {trade_plan.get('original_take_profit', trade_plan['take_profit'])}\\n"
+            f"TP Plan: {trade_plan.get('tp_plan_summary', 'standard')}\\n"
             f"RR: {rr_value} / Required: {required_rr}"
         )
         
@@ -6411,7 +6421,9 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
             f"Distance: {breakout_distance}\n"
             f"Entry: {trade_plan['entry_price']}\n"
             f"SL: {trade_plan['stop_loss']}\n"
-            f"TP: {trade_plan['take_profit']}\n"
+            f"TP1 / Execution TP: {trade_plan['take_profit']}\\n"
+            f"Original TP: {trade_plan.get('original_take_profit', trade_plan['take_profit'])}\\n"
+            f"TP Plan: {trade_plan.get('tp_plan_summary', 'standard')}\\n"
             f"RR: {rr_value} / Required: {required_rr}"
         )
 
@@ -6735,7 +6747,9 @@ def process_wait_tick_sniper_setups(df, tick, account_info, market_condition, se
                 f"Setup ID: {setup_id}\n\n"
                 f"Entry: {trade_plan.get('entry_price')}\n"
                 f"SL: {trade_plan.get('stop_loss')}\n"
-                f"TP: {trade_plan.get('take_profit')}\n"
+                f"TP1 / Execution TP: {trade_plan.get('take_profit')}\\n"
+                f"Original TP: {trade_plan.get('original_take_profit', trade_plan.get('take_profit'))}\\n"
+                f"TP Plan: {trade_plan.get('tp_plan_summary', 'standard')}\\n"
                 f"RR: {rr_value} / Required: {required_rr}\n"
                 f"Move: {sniper_move}"
             )
@@ -7096,7 +7110,9 @@ def process_wait_delayed_entry_setups(df, tick, account_info, market_condition, 
             f"Target Entry: {target_entry}\n"
             f"Actual Entry: {trade_plan['entry_price']}\n"
             f"SL: {trade_plan['stop_loss']}\n"
-            f"TP: {trade_plan['take_profit']}\n"
+            f"TP1 / Execution TP: {trade_plan['take_profit']}\\n"
+            f"Original TP: {trade_plan.get('original_take_profit', trade_plan['take_profit'])}\\n"
+            f"TP Plan: {trade_plan.get('tp_plan_summary', 'standard')}\\n"
             f"RR: {rr_value} / Required: {min_rr_required}"
             f"Confirmation: {confirmation_reason}\n"
         )
@@ -7787,6 +7803,36 @@ def process_candidate_rejection_recovery_setups(
             )
             return True
 
+        try:
+            from src.key_level_tp_ladder import apply_key_level_tp_ladder
+
+            trade_plan = apply_key_level_tp_ladder(
+                df=df,
+                signal=signal,
+                trade_plan=trade_plan,
+                signal_data=signal_data,
+                strategy_name=strategy_name,
+                session_name=session_name,
+                market_condition=market_condition,
+            )
+
+            if isinstance(signal_data, dict):
+                signal_data["tp_ladder"] = trade_plan.get("tp_ladder")
+                signal_data["tp_plan_summary"] = trade_plan.get("tp_plan_summary")
+                signal_data["original_take_profit"] = trade_plan.get("original_take_profit")
+                signal_data["tp_reference"] = trade_plan.get("take_profit")
+
+            try:
+                rr_value = calculate_rr_value(trade_plan)
+            except Exception:
+                pass
+
+        except Exception as tp_ladder_exc:
+            logger.warning(
+                f"[PHASE 6E TP LADDER] recovery path failed | "
+                f"strategy={strategy_name} signal={signal} error={tp_ladder_exc}"
+            )
+
         send_telegram_message(
             f"♻️ Candidate Recovery Executing\n"
             f"Symbol: {SYMBOL}\n"
@@ -7796,7 +7842,9 @@ def process_candidate_rejection_recovery_setups(
             f"Setup ID: {setup_id}\n\n"
             f"Entry: {trade_plan['entry_price']}\n"
             f"SL: {trade_plan['stop_loss']}\n"
-            f"TP: {trade_plan['take_profit']}\n"
+            f"TP1 / Execution TP: {trade_plan['take_profit']}\\n"
+            f"Original TP: {trade_plan.get('original_take_profit', trade_plan['take_profit'])}\\n"
+            f"TP Plan: {trade_plan.get('tp_plan_summary', 'standard')}\\n"
             f"RR: {rr_value} / Required: {min_rr}"
         )
 
@@ -10308,6 +10356,30 @@ def process_cycle(last_processed_candle_time):
         trade_plan["market_condition"] = market_condition
         trade_plan["reason"] = reason
         trade_plan["session"] = selected_signal_data.get("session", session_name)
+        try:
+            from src.key_level_tp_ladder import apply_key_level_tp_ladder
+
+            trade_plan = apply_key_level_tp_ladder(
+                df=df,
+                signal=signal,
+                trade_plan=trade_plan,
+                signal_data=selected_signal_data,
+                strategy_name=strategy_name,
+                session_name=session_name,
+                market_condition=market_condition,
+            )
+
+            if isinstance(selected_signal_data, dict):
+                selected_signal_data["tp_ladder"] = trade_plan.get("tp_ladder")
+                selected_signal_data["tp_plan_summary"] = trade_plan.get("tp_plan_summary")
+                selected_signal_data["original_take_profit"] = trade_plan.get("original_take_profit")
+                selected_signal_data["tp_reference"] = trade_plan.get("take_profit")
+
+            reason = trade_plan.get("reason", reason)
+
+        except Exception as tp_ladder_exc:
+            logger.warning(f"[PHASE 6E TP LADDER] main path failed | error={tp_ladder_exc}")
+
         trade_plan["setup_id"] = selected_signal_data.get("setup_id", "N/A")
         
         save_trade_plan_memory_report(
@@ -10474,7 +10546,9 @@ def process_cycle(last_processed_candle_time):
                     f"Strategy: {strategy_name}\n\n"
                     f"Entry: {trade_plan['entry_price']}\n"
                     f"SL: {trade_plan['stop_loss']}\n"
-                    f"TP: {trade_plan['take_profit']}\n"
+                    f"TP1 / Execution TP: {trade_plan['take_profit']}\\n"
+                    f"Original TP: {trade_plan.get('original_take_profit', trade_plan['take_profit'])}\\n"
+                    f"TP Plan: {trade_plan.get('tp_plan_summary', 'standard')}\\n"
                     f"RR: {rr_value}\n"
                     f"Required RR: {min_rr_required}\n"
                     f"Lot: {trade_plan['lot']}"
