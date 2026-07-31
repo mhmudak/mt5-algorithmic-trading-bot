@@ -1565,6 +1565,82 @@ def register_rejected_candidate_setup_outcome(
         },
     )
 
+
+def _telegram_tp123_float(value):
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _telegram_tp123_round(value, digits=2):
+    numeric = _telegram_tp123_float(value)
+    if numeric is None:
+        return value
+    return round(numeric, digits)
+
+
+def _format_telegram_tp123_from_levels(signal, entry, sl, tp):
+    entry_value = _telegram_tp123_float(entry)
+    sl_value = _telegram_tp123_float(sl)
+    tp_value = _telegram_tp123_float(tp)
+
+    if entry_value is None or sl_value is None or tp_value is None:
+        return f"TP: {_telegram_tp123_round(tp)}"
+
+    risk = abs(entry_value - sl_value)
+
+    if risk <= 0:
+        return f"TP: {_telegram_tp123_round(tp_value)}"
+
+    # Visual TP plan only. This does not change execution.
+    tp1 = entry_value + ((tp_value - entry_value) * 0.50)
+    tp2 = entry_value + ((tp_value - entry_value) * 0.75)
+    tp3 = tp_value
+
+    def stage_rr(price):
+        return round(abs(entry_value - price) / risk, 2)
+
+    return "\n".join(
+        [
+            "TP Plan:",
+            f"TP1: {_telegram_tp123_round(tp1)} | RR {stage_rr(tp1)}",
+            f"TP2: {_telegram_tp123_round(tp2)} | RR {stage_rr(tp2)}",
+            f"TP3: {_telegram_tp123_round(tp3)} | RR {stage_rr(tp3)}",
+        ]
+    )
+
+
+def _format_telegram_tp123_from_trade_plan(signal, trade_plan):
+    trade_plan = trade_plan or {}
+
+    ladder = trade_plan.get("tp_ladder")
+
+    if isinstance(ladder, list) and ladder:
+        lines = ["TP Plan:"]
+
+        for index, item in enumerate(ladder, start=1):
+            price = item.get("price") or item.get("take_profit")
+            stage_rr = item.get("rr") or item.get("execution_tp_stage_rr")
+            name = item.get("name")
+            suffix = f" | {name}" if name else ""
+
+            lines.append(
+                f"TP{index}: {_telegram_tp123_round(price)} | RR {stage_rr}{suffix}"
+            )
+
+        return "\n".join(lines)
+
+    return _format_telegram_tp123_from_levels(
+        signal=signal,
+        entry=trade_plan.get("entry_price"),
+        sl=trade_plan.get("stop_loss"),
+        tp=trade_plan.get("take_profit"),
+    )
+
+
 def notify_rejected_candidate_if_relevant(
     *,
     setup_id,
@@ -1636,7 +1712,7 @@ def notify_rejected_candidate_if_relevant(
         f"RR: {rr_value}\n\n"
         f"Entry: {entry}\n"
         f"SL: {sl}\n"
-        f"TP: {tp}\n\n"
+        f"{_format_telegram_tp123_from_levels(signal, entry, sl, tp)}\n\n"
         f"Reason: {reason}\n"
         "Action: tracked only — use statistics before changing execution rules."
     )
@@ -1913,9 +1989,7 @@ def register_generic_rejected_candidate_recovery_if_eligible(
             f"Candidate Reason: {candidate.get('reason', 'N/A')}\n\n"
             f"Entry: {trade_plan.get('entry_price')}\n"
             f"SL: {trade_plan.get('stop_loss')}\n"
-            f"TP1 / Execution TP: {trade_plan.get('take_profit')}\\n"
-            f"Original TP: {trade_plan.get('original_take_profit', trade_plan.get('take_profit'))}\\n"
-            f"TP Plan: {trade_plan.get('tp_plan_summary', 'standard')}\\n"
+            f"{_format_telegram_tp123_from_trade_plan(candidate_signal, trade_plan)}\n"
             f"RR: {rr_value} / Required: {min_rr_required}\n\n"
             f"Action: moved to generic rejected candidate recovery if eligible."
         )
@@ -3847,9 +3921,7 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
                 f"Candidate Reason: {signal_data.get('reason', 'N/A')}\n\n"
                 f"Entry: {trade_plan.get('entry_price')}\n"
                 f"SL: {trade_plan.get('stop_loss')}\n"
-                f"TP1 / Execution TP: {trade_plan.get('take_profit')}\\n"
-                f"Original TP: {trade_plan.get('original_take_profit', trade_plan.get('take_profit'))}\\n"
-                f"TP Plan: {trade_plan.get('tp_plan_summary', 'standard')}\\n"
+                f"{_format_telegram_tp123_from_trade_plan(signal, trade_plan)}\n"
                 f"RR: {rr_value} / Required: {required_rr}\n\n"
                 f"Recovery ID: {recovery_id or 'not_registered'}\n"
                 f"Action: moved to intrabar candidate recovery if eligible."
@@ -9644,7 +9716,7 @@ def process_cycle(last_processed_candle_time):
                         f"Candidate Reason: {validated_candidate.get('reason', 'N/A')}\n\n"
                         f"Entry: {candidate_trade_plan.get('entry_price')}\n"
                         f"SL: {candidate_trade_plan.get('stop_loss')}\n"
-                        f"TP: {candidate_trade_plan.get('take_profit')}\n"
+                        f"{_format_telegram_tp123_from_trade_plan(candidate_signal, candidate_trade_plan)}\n"
                         f"RR: {rr_value} / Required: {min_rr_required}\n\n"
                         f"Action: moved to candidate recovery if eligible."
                     )
