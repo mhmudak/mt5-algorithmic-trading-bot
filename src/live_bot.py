@@ -8047,6 +8047,8 @@ def process_candidate_rejection_recovery_setups(
 
     return False
 
+PHASE6H_INTRABAR_SCALP_MEMORY = {}
+
 def process_cycle(last_processed_candle_time):
     global last_signal, reversal_count
 
@@ -8246,6 +8248,239 @@ def process_cycle(last_processed_candle_time):
             current_candle_time=current_candle_time,
         ):
             return current_candle_time
+
+
+    # =========================
+    # PHASE 6H3 - INTRABAR STRUCTURAL LEVEL SCALP EXECUTION
+    # Runs every loop before the M15 new-candle gate.
+    # =========================
+    if ENABLE_AUTO_STRUCTURAL_LEVEL_SCALP:
+        from config.settings import (
+            ASLS_INTRABAR_DUPLICATE_SECONDS,
+            ASLS_INTRABAR_ENTRY_TOLERANCE,
+            ASLS_MIN_RR,
+        )
+        from src.session_engine import detect_session
+        from src.strategies.strategy_auto_structural_level_scalp import (
+            generate_signal as auto_structural_level_scalp_signal,
+        )
+
+        asls_signal_data = auto_structural_level_scalp_signal(df)
+
+        if isinstance(asls_signal_data, dict) and asls_signal_data.get("signal") in ["BUY", "SELL"]:
+            asls_signal = asls_signal_data.get("signal")
+            asls_strategy = asls_signal_data.get("strategy", "AUTO_STRUCTURAL_LEVEL_SCALP")
+            asls_entry_model = asls_signal_data.get("entry_model", "AUTO_STRUCTURAL_LEVEL_SCALP")
+            asls_entry = round(float(asls_signal_data.get("entry_reference")), 2)
+            asls_sl = round(float(asls_signal_data.get("sl_reference")), 2)
+            asls_tp = round(float(asls_signal_data.get("tp_reference")), 2)
+            asls_level = round(float(asls_signal_data.get("structural_level", asls_entry)), 2)
+
+            asls_setup_id = asls_signal_data.get("setup_id") or (
+                f"ASLS-{asls_signal}-{asls_entry_model}-"
+                f"{asls_level}-{asls_entry}-{current_candle_time}"
+            )
+
+            asls_signal_data["setup_id"] = asls_setup_id
+            asls_signal_data["session"] = detect_session(current_candle_time)
+            asls_signal_data["market_condition"] = "INTRABAR_STRUCTURAL_LEVEL_SCALP"
+            asls_signal_data["intrabar_live_executor"] = True
+
+            current_execution_price = tick.ask if asls_signal == "BUY" else tick.bid
+            entry_distance = abs(float(current_execution_price) - asls_entry)
+
+            if entry_distance > ASLS_INTRABAR_ENTRY_TOLERANCE:
+                logger.info(
+                    f"[PHASE 6H3 ASLS SKIP] price already moved | "
+                    f"signal={asls_signal} setup_id={asls_setup_id} "
+                    f"target_entry={asls_entry} current={round(current_execution_price, 2)} "
+                    f"distance={round(entry_distance, 2)} "
+                    f"max={ASLS_INTRABAR_ENTRY_TOLERANCE}"
+                )
+                return current_candle_time
+
+            memory_key = f"{asls_signal}:{asls_entry_model}:{asls_level}:{asls_entry}"
+
+            last_seen_ts = PHASE6H_INTRABAR_SCALP_MEMORY.get(memory_key)
+            now_ts = time.time()
+
+            if (
+                last_seen_ts is not None
+                and now_ts - last_seen_ts < ASLS_INTRABAR_DUPLICATE_SECONDS
+            ):
+                logger.info(
+                    f"[PHASE 6H3 ASLS DUPLICATE SKIP] "
+                    f"memory_key={memory_key} age={round(now_ts - last_seen_ts, 1)}s"
+                )
+                return current_candle_time
+
+            PHASE6H_INTRABAR_SCALP_MEMORY[memory_key] = now_ts
+
+            asls_trade_plan = calculate_trade_plan(
+                df=df,
+                signal=asls_signal,
+                tick=tick,
+                account_balance=account_info.balance,
+                signal_data=asls_signal_data,
+            )
+
+            if asls_trade_plan is None:
+                logger.info(
+                    f"[PHASE 6H3 ASLS SKIP] trade plan failed | setup_id={asls_setup_id}"
+                )
+                return current_candle_time
+
+            # Force exact strategy-defined scalp levels.
+            # Do not let generic risk.py replace the channel-style entry.
+            asls_trade_plan["entry_price"] = asls_entry
+            asls_trade_plan["stop_loss"] = asls_sl
+            asls_trade_plan["take_profit"] = asls_tp
+            asls_trade_plan["strategy"] = asls_strategy
+            asls_trade_plan["entry_model"] = asls_entry_model
+            asls_trade_plan["setup_id"] = asls_setup_id
+            asls_trade_plan["session"] = asls_signal_data.get("session")
+            asls_trade_plan["market_condition"] = asls_signal_data.get("market_condition")
+            asls_trade_plan["reason"] = asls_signal_data.get("reason", "Phase 6H3 intrabar structural scalp")
+            asls_trade_plan["intrabar_live_executor"] = True
+            asls_trade_plan["structural_level"] = asls_level
+            asls_trade_plan["rr"] = asls_signal_data.get("rr")
+            asls_trade_plan["risk_reward"] = asls_signal_data.get("rr")
+
+            asls_rr = calculate_rr_value(asls_trade_plan)
+
+            asls_allowed, asls_guard_reason = check_trade_guard(asls_signal, tick)
+
+            if not is_rr_valid(asls_trade_plan, min_rr=ASLS_MIN_RR):
+                asls_allowed = False
+                asls_guard_reason = f"Low ASLS RR — calculated {asls_rr}, required {ASLS_MIN_RR}"
+
+            if is_trade_blocked_by_execution_memory(
+                trade_plan=asls_trade_plan,
+                signal_data=asls_signal_data,
+                setup=None,
+                strategy_name=asls_strategy,
+                signal=asls_signal,
+            ):
+                logger.info(
+                    f"[PHASE 6H3 ASLS MEMORY BLOCK] setup_id={asls_setup_id}"
+                )
+                return current_candle_time
+
+            if not asls_allowed:
+                log_setup_event(
+                    setup_id=asls_setup_id,
+                    event="PHASE6H3_ASLS_BLOCKED",
+                    strategy=asls_strategy,
+                    signal=asls_signal,
+                    entry_model=asls_entry_model,
+                    score=asls_signal_data.get("score"),
+                    session=asls_signal_data.get("session"),
+                    market_condition=asls_signal_data.get("market_condition"),
+                    entry=asls_entry,
+                    sl=asls_sl,
+                    tp=asls_tp,
+                    rr=asls_rr,
+                    required_rr=ASLS_MIN_RR,
+                    reason=asls_guard_reason,
+                    extra={
+                        "current_execution_price": round(current_execution_price, 2),
+                        "entry_distance": round(entry_distance, 2),
+                        "intrabar_live_executor": True,
+                    },
+                )
+
+                send_telegram_message(
+                    f"🚫 Phase 6H3 Intrabar Scalp Blocked\n"
+                    f"Symbol: {SYMBOL}\n"
+                    f"Signal: {asls_signal}\n"
+                    f"Strategy: {asls_strategy}\n"
+                    f"Setup ID: {asls_setup_id}\n\n"
+                    f"Level: {asls_level}\n"
+                    f"Entry: {asls_entry}\n"
+                    f"Current: {round(current_execution_price, 2)}\n"
+                    f"SL: {asls_sl}\n"
+                    f"TP: {asls_tp}\n"
+                    f"RR: {asls_rr}\n"
+                    f"Reason: {asls_guard_reason}"
+                )
+
+                return current_candle_time
+
+            log_setup_event(
+                setup_id=asls_setup_id,
+                event="PHASE6H3_ASLS_EXECUTION_ATTEMPT",
+                strategy=asls_strategy,
+                signal=asls_signal,
+                entry_model=asls_entry_model,
+                score=asls_signal_data.get("score"),
+                session=asls_signal_data.get("session"),
+                market_condition=asls_signal_data.get("market_condition"),
+                entry=asls_entry,
+                sl=asls_sl,
+                tp=asls_tp,
+                rr=asls_rr,
+                required_rr=ASLS_MIN_RR,
+                reason="Phase 6H3 intrabar structural scalp execution before M15 close",
+                extra={
+                    "current_execution_price": round(current_execution_price, 2),
+                    "entry_distance": round(entry_distance, 2),
+                    "intrabar_live_executor": True,
+                },
+            )
+
+            send_telegram_message(
+                f"⚡ Phase 6H3 Intrabar Structural Scalp\n"
+                f"Symbol: {SYMBOL}\n"
+                f"Signal: {asls_signal}\n"
+                f"Strategy: {asls_strategy}\n"
+                f"Setup ID: {asls_setup_id}\n\n"
+                f"Entry Model: {asls_entry_model}\n"
+                f"Level: {asls_level}\n"
+                f"Entry: {asls_entry}\n"
+                f"Current: {round(current_execution_price, 2)}\n"
+                f"SL: {asls_sl}\n"
+                f"TP: {asls_tp}\n"
+                f"RR: {asls_rr}\n\n"
+                f"Action: attempting execution before M15 close"
+            )
+
+            execution_result = execute_trade(asls_signal, asls_trade_plan, SYMBOL)
+
+            if execution_result:
+                log_setup_event(
+                    setup_id=asls_setup_id,
+                    event="PHASE6H3_ASLS_EXECUTED",
+                    strategy=asls_strategy,
+                    signal=asls_signal,
+                    entry_model=asls_entry_model,
+                    score=asls_signal_data.get("score"),
+                    session=asls_signal_data.get("session"),
+                    market_condition=asls_signal_data.get("market_condition"),
+                    entry=asls_entry,
+                    sl=asls_sl,
+                    tp=asls_tp,
+                    rr=asls_rr,
+                    reason="Phase 6H3 intrabar structural scalp executed",
+                )
+            else:
+                log_setup_event(
+                    setup_id=asls_setup_id,
+                    event="PHASE6H3_ASLS_EXECUTION_FAILED",
+                    strategy=asls_strategy,
+                    signal=asls_signal,
+                    entry_model=asls_entry_model,
+                    score=asls_signal_data.get("score"),
+                    session=asls_signal_data.get("session"),
+                    market_condition=asls_signal_data.get("market_condition"),
+                    entry=asls_entry,
+                    sl=asls_sl,
+                    tp=asls_tp,
+                    rr=asls_rr,
+                    reason="Phase 6H3 intrabar structural scalp execute_trade returned False",
+                )
+
+            return current_candle_time
+
 
     # =========================
     # NEW CANDLE CHECK
