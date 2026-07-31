@@ -30,6 +30,10 @@ from config.settings import (
     WAVETREND_MOMENTUM_MAX_STOP_DISTANCE,
     ENABLE_ROLLOVER_TRADING_BLOCK,
     ROLLOVER_BLOCK_WINDOWS,
+    ENABLE_TP_LADDER_SPLIT_EXECUTION,
+    TP_LADDER_SPLIT_MAX_PARTS,
+    TP_LADDER_SPLIT_MIN_PARTS,
+    TP_LADDER_SPLIT_COMMENT_PREFIX,
 )
 from src.notifier import send_telegram_message
 from src.trade_tracker import register_executed_trade
@@ -472,6 +476,224 @@ def is_favorable_execution_drift_too_high(signal, expected_price, execution_pric
 
     return favorable > max_favorable_drift, report
 
+
+
+def _volume_decimals(step):
+    try:
+        text = f"{float(step):.10f}".rstrip("0")
+        if "." not in text:
+            return 0
+        return len(text.split(".")[1])
+    except Exception:
+        return 2
+
+
+def _split_lot_by_symbol_rules(total_lot, symbol_info, requested_parts):
+    try:
+        total_lot = float(total_lot)
+        volume_min = float(getattr(symbol_info, "volume_min", 0.01) or 0.01)
+        volume_step = float(getattr(symbol_info, "volume_step", 0.01) or 0.01)
+    except Exception:
+        return []
+
+    if total_lot <= 0 or volume_min <= 0 or volume_step <= 0:
+        return []
+
+    total_units = int(round(total_lot / volume_step))
+    min_units = max(1, int(round(volume_min / volume_step)))
+
+    if requested_parts <= 0:
+        return []
+
+    if total_units < requested_parts * min_units:
+        return []
+
+    base_units = total_units // requested_parts
+    remainder = total_units % requested_parts
+
+    volumes = []
+    decimals = _volume_decimals(volume_step)
+
+    for index in range(requested_parts):
+        units = base_units + (1 if index < remainder else 0)
+
+        if units < min_units:
+            return []
+
+        volumes.append(round(units * volume_step, decimals))
+
+    if round(sum(volumes), decimals) > round(total_lot, decimals):
+        return []
+
+    return volumes
+
+
+def _valid_tp_for_signal(signal, entry, tp):
+    try:
+        entry = float(entry)
+        tp = float(tp)
+    except Exception:
+        return False
+
+    if signal == "BUY":
+        return tp > entry
+
+    if signal == "SELL":
+        return tp < entry
+
+    return False
+
+
+def _build_tp_ladder_split_children(signal, trade_plan, symbol):
+    if not ENABLE_TP_LADDER_SPLIT_EXECUTION:
+        return []
+
+    if not isinstance(trade_plan, dict):
+        return []
+
+    if trade_plan.get("tp_ladder_child_order"):
+        return []
+
+    ladder = trade_plan.get("tp_ladder") or []
+
+    if not isinstance(ladder, list) or len(ladder) < TP_LADDER_SPLIT_MIN_PARTS:
+        return []
+
+    entry = trade_plan.get("entry_price")
+    total_lot = trade_plan.get("lot")
+    symbol_info = mt5.symbol_info(symbol)
+
+    if symbol_info is None:
+        return []
+
+    valid_targets = []
+
+    for item in ladder[:TP_LADDER_SPLIT_MAX_PARTS]:
+        if not isinstance(item, dict):
+            continue
+
+        price = item.get("price")
+
+        if _valid_tp_for_signal(signal, entry, price):
+            valid_targets.append(item)
+
+    if len(valid_targets) < TP_LADDER_SPLIT_MIN_PARTS:
+        return []
+
+    volumes = []
+
+    max_parts = min(TP_LADDER_SPLIT_MAX_PARTS, len(valid_targets))
+
+    for parts in range(max_parts, TP_LADDER_SPLIT_MIN_PARTS - 1, -1):
+        volumes = _split_lot_by_symbol_rules(total_lot, symbol_info, parts)
+
+        if volumes:
+            valid_targets = valid_targets[:parts]
+            break
+
+    if not volumes:
+        return []
+
+    full_rr = None
+
+    for rr_key in ("original_rr", "rr", "risk_reward"):
+        try:
+            value = trade_plan.get(rr_key)
+            if value is not None and float(value) > 0:
+                full_rr = float(value)
+                break
+        except Exception:
+            pass
+
+    children = []
+    base_comment = str(trade_plan.get("comment", TP_LADDER_SPLIT_COMMENT_PREFIX))
+
+    for index, item in enumerate(valid_targets):
+        stage_no = index + 1
+        stage_name = item.get("name", f"TP{stage_no}")
+        tp_price = round(float(item["price"]), 2)
+
+        child = trade_plan.copy()
+        child["lot"] = volumes[index]
+        child["take_profit"] = tp_price
+        child["tp_ladder_child_order"] = True
+        child["tp_stage"] = stage_name
+        child["tp_stage_index"] = stage_no
+        child["tp_total_stages"] = len(valid_targets)
+        child["split_parent_lot"] = total_lot
+        child["split_child_lot"] = volumes[index]
+        child["execution_tp_stage_rr"] = item.get("rr")
+        child["comment"] = f"{base_comment}_TP{stage_no}"[:31]
+
+        if full_rr is not None:
+            child["original_rr"] = full_rr
+            child["rr"] = full_rr
+            child["risk_reward"] = full_rr
+            child["rr_source"] = "ORIGINAL_FULL_TP_RR_FOR_SPLIT_ORDER"
+
+        child["reason"] = (
+            f"{trade_plan.get('reason', '')} | "
+            f"SPLIT_TP_LADDER_STAGE TP{stage_no}/{len(valid_targets)} "
+            f"lot={volumes[index]} tp={tp_price}"
+        )
+
+        children.append(child)
+
+    return children
+
+
+def _format_tp_ladder_lines(children):
+    lines = []
+
+    for child in children:
+        lines.append(
+            f"TP{child.get('tp_stage_index')}: "
+            f"lot {child.get('lot')} -> {child.get('take_profit')} "
+            f"(stage RR {child.get('execution_tp_stage_rr')})"
+        )
+
+    return "\\n".join(lines)
+
+
+def _execute_tp_ladder_split_orders(signal, trade_plan, symbol):
+    children = _build_tp_ladder_split_children(signal, trade_plan, symbol)
+
+    if not children:
+        return None
+
+    send_telegram_message(
+        f"🧩 Split TP Ladder Execution Starting\\n"
+        f"Symbol: {symbol}\\n"
+        f"Signal: {signal}\\n"
+        f"Strategy: {trade_plan.get('strategy', 'UNKNOWN')}\\n"
+        f"Total Lot: {trade_plan.get('lot')}\\n"
+        f"Original TP: {trade_plan.get('original_take_profit', trade_plan.get('take_profit'))}\\n"
+        f"Original RR: {trade_plan.get('original_rr', trade_plan.get('rr'))}\\n\\n"
+        f"{_format_tp_ladder_lines(children)}"
+    )
+
+    results = []
+
+    for child in children:
+        result = execute_trade(signal, child, symbol)
+        results.append(bool(result))
+
+    success_count = sum(1 for item in results if item)
+    total_count = len(results)
+
+    send_telegram_message(
+        f"🧩 Split TP Ladder Execution Summary\\n"
+        f"Symbol: {symbol}\\n"
+        f"Signal: {signal}\\n"
+        f"Strategy: {trade_plan.get('strategy', 'UNKNOWN')}\\n"
+        f"Executed Orders: {success_count}/{total_count}\\n"
+        f"Total Lot Requested: {trade_plan.get('lot')}\\n\\n"
+        f"{_format_tp_ladder_lines(children)}"
+    )
+
+    return success_count > 0
+
+
 def execute_trade(signal, trade_plan, symbol):
     execution_start_ts = perf_counter()
     _log_execution_timing(
@@ -496,6 +718,9 @@ def execute_trade(signal, trade_plan, symbol):
             f"Entry: {trade_plan['entry_price']}\n"
             f"SL: {trade_plan['stop_loss']}\n"
             f"TP: {trade_plan['take_profit']}\n"
+        f"TP Stage: {trade_plan.get('tp_stage', 'standard')}\n"
+        f"Original TP: {trade_plan.get('original_take_profit', trade_plan['take_profit'])}\n"
+
             f"Lot: {trade_plan['lot']}"
         )
         return True
@@ -506,6 +731,12 @@ def execute_trade(signal, trade_plan, symbol):
             f"Reason: Unknown EXECUTION_MODE={EXECUTION_MODE}"
         )
         return False
+
+    if isinstance(trade_plan, dict) and not trade_plan.get("tp_ladder_child_order"):
+        split_result = _execute_tp_ladder_split_orders(signal, trade_plan, symbol)
+
+        if split_result is not None:
+            return split_result
     
     rollover_blocked, rollover_name = is_rollover_trading_blocked()
 
@@ -1064,6 +1295,9 @@ def execute_trade(signal, trade_plan, symbol):
         f"Executed: {executed_price}\n"
         f"SL: {trade_plan['stop_loss']}\n"
         f"TP: {trade_plan['take_profit']}\n"
+        f"TP Stage: {trade_plan.get('tp_stage', 'standard')}\n"
+        f"Original TP: {trade_plan.get('original_take_profit', trade_plan['take_profit'])}\n"
+
         f"Lot: {trade_plan['lot']}\n"
         f"Adverse Slippage: {round(adverse_slippage or 0.0, 2)}\n"
         f"Favorable Slippage: {round(favorable_slippage or 0.0, 2)}\n"

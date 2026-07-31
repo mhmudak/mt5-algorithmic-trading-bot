@@ -445,6 +445,15 @@ def is_rr_valid(trade_plan, min_rr=1.2):
     if not trade_plan:
         return False
 
+    if trade_plan.get("key_level_tp_ladder_applied"):
+        for rr_key in ("original_rr", "rr", "risk_reward"):
+            try:
+                rr_value = float(trade_plan.get(rr_key))
+                if rr_value > 0:
+                    return rr_value >= min_rr
+            except Exception:
+                pass
+
     entry = trade_plan.get("entry_price")
     sl = trade_plan.get("stop_loss")
     tp = trade_plan.get("take_profit")

@@ -422,6 +422,11 @@ def apply_key_level_tp_ladder(
     adjusted["key_level_tp_ladder_applied"] = True
     adjusted["original_take_profit"] = result.get("original_tp")
     adjusted["original_rr"] = result.get("original_rr")
+    adjusted["execution_rr"] = result.get("execution_rr")
+    adjusted["tp1_rr"] = result.get("execution_rr")
+    adjusted["rr"] = result.get("original_rr")
+    adjusted["risk_reward"] = result.get("original_rr")
+    adjusted["rr_source"] = "ORIGINAL_FULL_TP_RR_AFTER_TP_LADDER"
     adjusted["tp_ladder"] = result.get("tp_ladder")
     adjusted["tp_plan_summary"] = result.get("summary")
     adjusted["tp_barrier"] = result.get("barrier")
