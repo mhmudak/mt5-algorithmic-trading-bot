@@ -217,3 +217,164 @@ def evaluate_volatility_compression_breakout(
         "decision_impact": "NONE",
         "reason": "valid_volatility_compression_breakout",
     }
+
+
+
+def _row_to_candle(row: Any) -> dict[str, Any]:
+    return {
+        "time": str(row.get("time") or row.get("timestamp") or row.name or ""),
+        "open": safe_float(row.get("open")),
+        "high": safe_float(row.get("high")),
+        "low": safe_float(row.get("low")),
+        "close": safe_float(row.get("close")),
+        "tick_volume": safe_float(row.get("tick_volume")),
+    }
+
+
+def _is_demo_account() -> bool:
+    try:
+        import MetaTrader5 as mt5
+
+        info = mt5.account_info()
+
+        if info is None:
+            return False
+
+        trade_mode = getattr(info, "trade_mode", None)
+        demo_constant = getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", None)
+
+        if demo_constant is not None and trade_mode == demo_constant:
+            return True
+
+        server = str(getattr(info, "server", "") or "").lower()
+        name = str(getattr(info, "name", "") or "").lower()
+
+        return "demo" in server or "demo" in name
+
+    except Exception:
+        return False
+
+
+def _score_signal(result: dict[str, Any], min_score: int) -> int:
+    score = int(min_score)
+
+    compression_ratio = safe_float(result.get("compression_atr_ratio"))
+    avg_body_ratio = safe_float(result.get("avg_body_atr_ratio"))
+    breakout_body_ratio = safe_float(result.get("breakout_body_atr_ratio"))
+    rr = safe_float(result.get("rr"))
+
+    if compression_ratio and compression_ratio <= 0.35:
+        score += 1
+
+    if compression_ratio and compression_ratio <= 0.25:
+        score += 1
+
+    if avg_body_ratio and avg_body_ratio <= 0.18:
+        score += 1
+
+    if breakout_body_ratio and breakout_body_ratio >= 0.60:
+        score += 1
+
+    if rr and rr >= 2.2:
+        score += 1
+
+    return int(min(score, 98))
+
+
+def generate_signal(df):
+    from config.settings import (
+        ENABLE_VOLATILITY_COMPRESSION_BREAKOUT,
+        VOLATILITY_COMPRESSION_BREAKOUT_DEMO_ONLY,
+        VCB_ATR_CANDLES,
+        VCB_COMPRESSION_CANDLES,
+        VCB_MAX_AVG_BODY_ATR_RATIO,
+        VCB_MAX_BREAKOUT_CHASE_ATR_RATIO,
+        VCB_MAX_COMPRESSION_ATR_RATIO,
+        VCB_MAX_SL_DISTANCE,
+        VCB_MIN_BREAKOUT_BODY_ATR_RATIO,
+        VCB_MIN_CLOSE_BEYOND_RANGE,
+        VCB_MIN_RR,
+        VCB_MIN_SCORE,
+        VCB_SL_BUFFER,
+        VCB_TARGET_RR,
+    )
+
+    if not ENABLE_VOLATILITY_COMPRESSION_BREAKOUT:
+        return None
+
+    if VOLATILITY_COMPRESSION_BREAKOUT_DEMO_ONLY and not _is_demo_account():
+        return None
+
+    min_required = VCB_ATR_CANDLES + VCB_COMPRESSION_CANDLES + 2
+
+    if df is None or len(df) < min_required:
+        return None
+
+    # Use only closed candles, same style as the main strategies.
+    closed = df.iloc[:-1].reset_index(drop=True)
+
+    if len(closed) < min_required:
+        return None
+
+    candles = [_row_to_candle(row) for _, row in closed.iterrows()]
+
+    cfg = VolatilityCompressionBreakoutConfig(
+        compression_candles=VCB_COMPRESSION_CANDLES,
+        atr_candles=VCB_ATR_CANDLES,
+        max_compression_atr_ratio=VCB_MAX_COMPRESSION_ATR_RATIO,
+        max_avg_body_atr_ratio=VCB_MAX_AVG_BODY_ATR_RATIO,
+        min_breakout_body_atr_ratio=VCB_MIN_BREAKOUT_BODY_ATR_RATIO,
+        min_close_beyond_range=VCB_MIN_CLOSE_BEYOND_RANGE,
+        max_breakout_chase_atr_ratio=VCB_MAX_BREAKOUT_CHASE_ATR_RATIO,
+        min_rr=VCB_MIN_RR,
+        target_rr=VCB_TARGET_RR,
+        sl_buffer=VCB_SL_BUFFER,
+        max_sl_distance=VCB_MAX_SL_DISTANCE,
+    )
+
+    result = evaluate_volatility_compression_breakout(candles, config=cfg)
+
+    if not result or not result.get("valid"):
+        return None
+
+    signal = result.get("signal")
+    entry = safe_float(result.get("entry"))
+    sl = safe_float(result.get("sl"))
+    tp = safe_float(result.get("tp"))
+
+    if signal not in {"BUY", "SELL"}:
+        return None
+
+    if entry <= 0 or sl <= 0 or tp <= 0:
+        return None
+
+    if signal == "BUY" and not (sl < entry < tp):
+        return None
+
+    if signal == "SELL" and not (tp < entry < sl):
+        return None
+
+    score = _score_signal(result, VCB_MIN_SCORE)
+
+    result["score"] = score
+    result["strategy"] = STRATEGY_NAME
+    result["entry_model"] = result.get("setup_type") or "COMPRESSION_BREAKOUT"
+    result["setup_source_bucket"] = "VOLATILITY_COMPRESSION_BREAKOUT"
+    result["execution_mode"] = "DEMO_EXECUTION_ONLY"
+    result["sl_reference"] = round(sl, 2)
+    result["tp_reference"] = round(tp, 2)
+    result["entry_reference"] = round(entry, 2)
+    result["pattern_height"] = round(abs(tp - entry), 2)
+    result["target_model"] = "COMPRESSION_BREAKOUT_RR_TARGET"
+    result["orderflow_status"] = "NOT_CONNECTED_MT5_ONLY"
+    result["auto_trade_allowed"] = True
+    result["decision_impact"] = "MAIN_BOT_DEMO_EXECUTION_ALLOWED"
+    result["reason"] = (
+        f"Volatility compression breakout {signal} -> "
+        f"compression={result.get('compression_low')}-{result.get('compression_high')} "
+        f"ATR={result.get('atr')} compression/ATR={result.get('compression_atr_ratio')} "
+        f"breakout_body/ATR={result.get('breakout_body_atr_ratio')} -> "
+        f"SL {round(sl, 2)} -> TP {round(tp, 2)} score={score}"
+    )
+
+    return result

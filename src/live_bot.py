@@ -329,6 +329,7 @@ from config.settings import (
     REJECTED_CANDIDATE_TELEGRAM_COOLDOWN_MINUTES,
     ENABLE_PRO_TRADER_REPLICATION,
     ENABLE_KEY_LEVEL_BREAK_HOLD,
+    ENABLE_VOLATILITY_COMPRESSION_BREAKOUT,
 )
 
 from src.candidate_rejection_recovery import (
@@ -412,6 +413,7 @@ STRATEGY_SPECIFIC_CONFIRMED = {
     "PRO_TRADER_REPLICATION",
     "KEY_LEVEL_BREAK_HOLD",
     "BALANCED_AUCTION_RANGE",
+    "VOLATILITY_COMPRESSION_BREAKOUT",
 }
 
 def send_telegram_message_async(message):
@@ -8267,6 +8269,7 @@ def process_cycle(last_processed_candle_time):
     from src.strategies.strategy_micro_sr_sweep_reclaim import generate_signal as micro_sr_sweep_reclaim_signal
     from src.strategies.strategy_pro_trader_replication import generate_signal as pro_trader_replication_signal
     from src.strategies.strategy_key_level_break_hold import generate_signal as key_level_break_hold_signal
+    from src.strategies.strategy_volatility_compression_breakout import generate_signal as volatility_compression_breakout_signal
 
     disabled_strategies = get_disabled_strategies()
 
@@ -8330,6 +8333,7 @@ def process_cycle(last_processed_candle_time):
             ("ORB", orb_signal),
             ("ORB_V00", orb_v00_signal),
             ("SESSION_ORB_RETEST", session_orb_retest_signal),
+            ("VOLATILITY_COMPRESSION_BREAKOUT", volatility_compression_breakout_signal),
             ("WAVETREND_MOMENTUM", wavetrend_momentum_signal),
             ("HTF_TREND_PULLBACK", htf_trend_pullback_signal),
             ("BREAKER_BLOCK", breaker_block_signal),
@@ -8483,6 +8487,14 @@ def process_cycle(last_processed_candle_time):
             if name != "BALANCED_AUCTION_RANGE"
         ]
         logger.info("[STRATEGY TOGGLE] BALANCED_AUCTION_RANGE disabled")
+
+    if not ENABLE_VOLATILITY_COMPRESSION_BREAKOUT:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "VOLATILITY_COMPRESSION_BREAKOUT"
+        ]
+        logger.info("[STRATEGY TOGGLE] VOLATILITY_COMPRESSION_BREAKOUT disabled")
 
     if not ENABLE_IFVG_RETEST_CONFLUENCE:
         strategy_map = [
