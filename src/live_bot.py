@@ -48,6 +48,10 @@ from src.strategy_advisory import (
 )
 
 from src.market_outlook_advisory_runtime import maybe_send_runtime_outlook_advisory
+from src.market_outlook_execution_annotation import (
+    build_phase6s_execution_annotation,
+    append_phase6s_execution_annotation,
+)
 
 from src.confirmation_engine import (
     run_universal_confirmation,
@@ -319,6 +323,8 @@ from config.settings import (
     INTRABAR_PRICE_EVENT_DEFAULT_TARGET_RR,
     ENABLE_STRATEGY_ADVISORY,
     PHASE6S_RUNTIME_OUTLOOK_ADVISORY_FORCE_SEND,
+    PHASE6S_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION_DIR,
+    ENABLE_PHASE6S_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION,
     PHASE6S_RUNTIME_OUTLOOK_ADVISORY_REPORT_TYPE,
     SEND_PHASE6S_RUNTIME_OUTLOOK_ADVISORY_TELEGRAM,
     ENABLE_PHASE6S_RUNTIME_OUTLOOK_ADVISORY,
@@ -595,6 +601,161 @@ def maybe_notify_phase6s_runtime_outlook_advisory(signal_payload, trade_plan, tr
             "can_modify_risk": False,
         }
 
+
+
+
+def maybe_record_phase6s_runtime_outlook_execution_annotation(
+    advisory_summary,
+    signal_payload,
+    trade_plan,
+    execution_result,
+    trigger_context="after_execute_trade",
+):
+    """
+    Phase 6S8 execution annotation.
+
+    Annotation only:
+    - does not block trades
+    - does not change risk
+    - does not modify entry/SL/TP
+    - only records evidence when explicitly enabled in settings
+    """
+    if not ENABLE_PHASE6S_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION:
+        return {
+            "phase": "PHASE_6S8_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION",
+            "enabled": False,
+            "recorded": False,
+            "reason": "disabled_by_config",
+            "decision_impact": "NONE",
+            "auto_trade_allowed": False,
+            "can_execute": False,
+            "can_block_trade": False,
+            "can_modify_risk": False,
+            "can_modify_entry_sl_tp": False,
+        }
+
+    try:
+        raw_signal = signal_payload if isinstance(signal_payload, dict) else {"signal": signal_payload}
+        plan = trade_plan if isinstance(trade_plan, dict) else {}
+
+        setup_payload = {
+            "symbol": SYMBOL,
+            "setup_id": _phase6s_pick(
+                raw_signal.get("setup_id"),
+                raw_signal.get("id"),
+                raw_signal.get("signal_id"),
+                plan.get("setup_id"),
+                plan.get("candidate_setup_id"),
+                plan.get("source_setup_id"),
+            ),
+            "strategy": _phase6s_pick(
+                raw_signal.get("strategy"),
+                raw_signal.get("strategy_name"),
+                raw_signal.get("setup_source"),
+                raw_signal.get("setup_type"),
+                plan.get("strategy"),
+                plan.get("strategy_name"),
+                plan.get("setup_source"),
+                plan.get("setup_type"),
+            ),
+            "signal": _phase6s_pick(
+                raw_signal.get("signal"),
+                raw_signal.get("direction"),
+                raw_signal.get("side"),
+                plan.get("signal"),
+                plan.get("direction"),
+                plan.get("side"),
+            ),
+            "entry_reference": _phase6s_pick(
+                plan.get("entry_reference"),
+                plan.get("entry"),
+                plan.get("entry_price"),
+                raw_signal.get("entry_reference"),
+                raw_signal.get("entry"),
+                raw_signal.get("entry_price"),
+                raw_signal.get("price"),
+                raw_signal.get("close"),
+            ),
+            "sl_reference": _phase6s_pick(
+                plan.get("sl_reference"),
+                plan.get("sl"),
+                plan.get("stop_loss"),
+                raw_signal.get("sl_reference"),
+                raw_signal.get("sl"),
+                raw_signal.get("stop_loss"),
+            ),
+            "tp_reference": _phase6s_pick(
+                plan.get("tp_reference"),
+                plan.get("tp"),
+                plan.get("take_profit"),
+                plan.get("tp1"),
+                raw_signal.get("tp_reference"),
+                raw_signal.get("tp"),
+                raw_signal.get("take_profit"),
+                raw_signal.get("tp1"),
+            ),
+            "rr": _phase6s_pick(
+                plan.get("rr"),
+                plan.get("risk_reward"),
+                plan.get("original_rr"),
+                raw_signal.get("rr"),
+                raw_signal.get("risk_reward"),
+                raw_signal.get("original_rr"),
+            ),
+        }
+
+        annotation = build_phase6s_execution_annotation(
+            advisory_summary=advisory_summary,
+            setup_payload=setup_payload,
+            execution_result=execution_result,
+            trigger_context=trigger_context,
+        )
+
+        output_path = append_phase6s_execution_annotation(
+            annotation,
+            directory=PHASE6S_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION_DIR,
+        )
+
+        logger.info(
+            "[PHASE 6S8 OUTLOOK EXECUTION ANNOTATION] "
+            f"recorded=True "
+            f"tag={annotation.get('tag')} "
+            f"execution_result={annotation.get('execution_result_bool')} "
+            f"setup_id={annotation.get('setup_id')} "
+            f"strategy={annotation.get('strategy')} "
+            f"path={output_path}"
+        )
+
+        return {
+            "phase": "PHASE_6S8_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION",
+            "enabled": True,
+            "recorded": True,
+            "tag": annotation.get("tag"),
+            "path": str(output_path),
+            "decision_impact": "ANNOTATION_ONLY",
+            "auto_trade_allowed": False,
+            "can_execute": False,
+            "can_block_trade": False,
+            "can_modify_risk": False,
+            "can_modify_entry_sl_tp": False,
+        }
+
+    except Exception as exc:
+        logger.error(f"[PHASE 6S8 OUTLOOK EXECUTION ANNOTATION] Failed: {exc}")
+
+        return {
+            "phase": "PHASE_6S8_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION",
+            "enabled": True,
+            "recorded": False,
+            "reason": "exception",
+            "error": str(exc),
+            "decision_impact": "NONE",
+            "auto_trade_allowed": False,
+            "can_execute": False,
+            "can_block_trade": False,
+            "can_modify_risk": False,
+            "can_modify_entry_sl_tp": False,
+        }
 
 def fetch_market_data():
     rates = mt5.copy_rates_from_pos(SYMBOL, TIMEFRAME, 0, BARS_TO_FETCH)
@@ -4223,13 +4384,21 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
         f"setup_id={trade_plan.get('setup_id') if isinstance(trade_plan, dict) else None} "
         f"strategy={trade_plan.get('strategy') if isinstance(trade_plan, dict) else None}"
     )
-    maybe_notify_phase6s_runtime_outlook_advisory(
+    phase6s_runtime_outlook_advisory_summary = maybe_notify_phase6s_runtime_outlook_advisory(
         signal,
         trade_plan,
         trigger_context="before_execute_trade",
     )
 
     execution_result = execute_trade(signal, trade_plan, SYMBOL)
+
+    maybe_record_phase6s_runtime_outlook_execution_annotation(
+        phase6s_runtime_outlook_advisory_summary,
+        signal,
+        trade_plan,
+        execution_result,
+        trigger_context="after_execute_trade",
+    )
     logger.info(
         f"[LIVE EXECUTION TIMING] stage=after_execute_trade "
         f"elapsed_ms={round((time.perf_counter() - _live_execute_start_ts) * 1000, 2)} "

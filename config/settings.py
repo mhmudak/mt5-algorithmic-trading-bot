@@ -2345,3 +2345,14 @@ SEND_PHASE6S_RUNTIME_OUTLOOK_ADVISORY_TELEGRAM = False
 PHASE6S_RUNTIME_OUTLOOK_ADVISORY_REPORT_TYPE = "scenario_update"
 PHASE6S_RUNTIME_OUTLOOK_ADVISORY_FORCE_SEND = False
 
+# ============================================================
+# Phase 6S Runtime Outlook Execution Annotation
+# ============================================================
+# Safe by default:
+# - Does not block trades
+# - Does not modify risk
+# - Does not modify entry/SL/TP
+# - Only records advisory-vs-execution evidence when explicitly enabled
+ENABLE_PHASE6S_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION = False
+PHASE6S_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION_DIR = "data/reports/market_outlook/execution_annotations"
+
