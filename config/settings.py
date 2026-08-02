@@ -526,6 +526,8 @@ SMC_MIN_FINAL_SCORE = 88
 # Strategy Toggles
 # =========================
 ENABLE_FCR_M1_FVG = True # may turn it off
+ENABLE_FCR_M1_FVG_STARTUP_GUARD = True
+FCR_M1_FVG_SKIP_ON_FIRST_CYCLE_AFTER_STARTUP = True
 
 # =========================
 # Session Engine

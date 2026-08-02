@@ -115,6 +115,8 @@ from config.settings import (
     ENABLE_VWAP_RANGE_MEAN_REVERSION,
     ENABLE_BALANCED_AUCTION_RANGE,
     ENABLE_FCR_M1_FVG,
+    ENABLE_FCR_M1_FVG_STARTUP_GUARD,
+    FCR_M1_FVG_SKIP_ON_FIRST_CYCLE_AFTER_STARTUP,
     ENABLE_WAVETREND_PIVOT_M5,
     ENABLE_STRUCTURE_LIQUIDITY,
     ENABLE_STRUCTURE_LIQUIDITY_CONFIRMATION,
@@ -9055,6 +9057,21 @@ def process_cycle(last_processed_candle_time):
             if name != "FCR_M1_FVG"
         ]
         logger.info("[STRATEGY TOGGLE] FCR_M1_FVG disabled")
+
+    if (
+        ENABLE_FCR_M1_FVG_STARTUP_GUARD
+        and FCR_M1_FVG_SKIP_ON_FIRST_CYCLE_AFTER_STARTUP
+        and last_processed_candle_time is None
+    ):
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "FCR_M1_FVG"
+        ]
+        logger.info(
+            "[PHASE 6R FCR STARTUP GUARD] "
+            "FCR_M1_FVG skipped on first full cycle after startup/restart"
+        )
         
     if not ENABLE_KEY_LEVEL_BREAK_HOLD:
         strategy_map = [
