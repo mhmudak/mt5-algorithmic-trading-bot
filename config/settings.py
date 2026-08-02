@@ -2356,3 +2356,15 @@ PHASE6S_RUNTIME_OUTLOOK_ADVISORY_FORCE_SEND = False
 ENABLE_PHASE6S_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION = False
 PHASE6S_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION_DIR = "data/reports/market_outlook/execution_annotations"
 
+# ============================================================
+# Phase 6S Outlook Outcome Attribution Report
+# ============================================================
+# Reporting only:
+# - Does not block trades
+# - Does not modify risk
+# - Does not modify entry/SL/TP
+# - Does not send orders
+# - Only measures outcome evidence from Phase 6S annotations
+PHASE6S_OUTCOME_ATTRIBUTION_OUTPUT_DIR = "data/reports/market_outlook/outcome_attribution"
+PHASE6S_OUTCOME_ATTRIBUTION_MIN_SAMPLES = 5
+
