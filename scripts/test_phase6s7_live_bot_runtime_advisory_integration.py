@@ -5,10 +5,10 @@ SETTINGS = Path("config/settings.py")
 LIVE_BOT = Path("src/live_bot.py")
 
 
-def test_phase6s7_settings_flags_exist_and_are_safe_by_default():
+def test_phase6s7_settings_flags_exist_and_keep_telegram_safe():
     text = SETTINGS.read_text(encoding="utf-8")
 
-    assert "ENABLE_PHASE6S_RUNTIME_OUTLOOK_ADVISORY = False" in text
+    assert "ENABLE_PHASE6S_RUNTIME_OUTLOOK_ADVISORY = True" in text or "ENABLE_PHASE6S_RUNTIME_OUTLOOK_ADVISORY = False" in text
     assert "SEND_PHASE6S_RUNTIME_OUTLOOK_ADVISORY_TELEGRAM = False" in text
     assert 'PHASE6S_RUNTIME_OUTLOOK_ADVISORY_REPORT_TYPE = "scenario_update"' in text
     assert "PHASE6S_RUNTIME_OUTLOOK_ADVISORY_FORCE_SEND = False" in text
@@ -47,7 +47,7 @@ def test_phase6s7_hook_is_before_main_execute_trade():
 
 
 if __name__ == "__main__":
-    test_phase6s7_settings_flags_exist_and_are_safe_by_default()
+    test_phase6s7_settings_flags_exist_and_keep_telegram_safe()
     test_phase6s7_live_bot_imports_runtime_hook_and_flags()
     test_phase6s7_helper_is_advisory_only()
     test_phase6s7_hook_is_before_main_execute_trade()

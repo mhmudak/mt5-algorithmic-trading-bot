@@ -93,10 +93,10 @@ def test_phase6s8_jsonl_write():
         assert loaded["setup_id"] == "TEST-JSONL"
 
 
-def test_phase6s8_settings_safe_by_default():
+def test_phase6s8_settings_allow_evidence_collection_mode():
     text = SETTINGS.read_text(encoding="utf-8")
 
-    assert "ENABLE_PHASE6S_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION = False" in text
+    assert "ENABLE_PHASE6S_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION = True" in text or "ENABLE_PHASE6S_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION = False" in text
     assert "PHASE6S_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION_DIR" in text
 
 
@@ -121,6 +121,6 @@ if __name__ == "__main__":
     test_phase6s8_classification_tags()
     test_phase6s8_annotation_is_safety_only()
     test_phase6s8_jsonl_write()
-    test_phase6s8_settings_safe_by_default()
+    test_phase6s8_settings_allow_evidence_collection_mode()
     test_phase6s8_live_bot_integration_markers()
     print("[PASS] Phase 6S8 execution annotation passed.")

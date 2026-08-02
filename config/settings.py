@@ -2340,7 +2340,7 @@ DTB_MIN_SCORE = 94
 # - Does not modify risk
 # - Does not allow execution
 # - Only sends/prints advisory context when explicitly enabled
-ENABLE_PHASE6S_RUNTIME_OUTLOOK_ADVISORY = False
+ENABLE_PHASE6S_RUNTIME_OUTLOOK_ADVISORY = True
 SEND_PHASE6S_RUNTIME_OUTLOOK_ADVISORY_TELEGRAM = False
 PHASE6S_RUNTIME_OUTLOOK_ADVISORY_REPORT_TYPE = "scenario_update"
 PHASE6S_RUNTIME_OUTLOOK_ADVISORY_FORCE_SEND = False
@@ -2353,7 +2353,7 @@ PHASE6S_RUNTIME_OUTLOOK_ADVISORY_FORCE_SEND = False
 # - Does not modify risk
 # - Does not modify entry/SL/TP
 # - Only records advisory-vs-execution evidence when explicitly enabled
-ENABLE_PHASE6S_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION = False
+ENABLE_PHASE6S_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION = True
 PHASE6S_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION_DIR = "data/reports/market_outlook/execution_annotations"
 
 # ============================================================
