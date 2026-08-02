@@ -264,10 +264,7 @@ def format_outlook_advisory_telegram(advisory: dict[str, Any]) -> str:
         for item in confirmations:
             lines.append(f"- {item}")
 
-    lines += [
-        "",
-        "Clear Meaning:",
-    ]
+    lines += ["", "Clear Meaning:"]
 
     if risk == "HIGH":
         lines += [
