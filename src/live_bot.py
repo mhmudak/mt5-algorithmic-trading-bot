@@ -47,6 +47,8 @@ from src.strategy_advisory import (
     is_advisory_risky,
 )
 
+from src.market_outlook_advisory_runtime import maybe_send_runtime_outlook_advisory
+
 from src.confirmation_engine import (
     run_universal_confirmation,
     format_confirmation_report,
@@ -316,6 +318,10 @@ from config.settings import (
     INTRABAR_PRICE_EVENT_MAX_TP_DISTANCE_PRICE,
     INTRABAR_PRICE_EVENT_DEFAULT_TARGET_RR,
     ENABLE_STRATEGY_ADVISORY,
+    PHASE6S_RUNTIME_OUTLOOK_ADVISORY_FORCE_SEND,
+    PHASE6S_RUNTIME_OUTLOOK_ADVISORY_REPORT_TYPE,
+    SEND_PHASE6S_RUNTIME_OUTLOOK_ADVISORY_TELEGRAM,
+    ENABLE_PHASE6S_RUNTIME_OUTLOOK_ADVISORY,
     TELEGRAM_NOTIFY_STRATEGY_ADVISORY_CRITICAL,
     STRATEGY_ADVISORY_TELEGRAM_DECISIONS,
     STRATEGY_ADVISORY_TELEGRAM_COOLDOWN_MINUTES,
@@ -437,7 +443,158 @@ def send_telegram_message_async(message):
         except Exception as e:
             logger.error(f"[TELEGRAM ASYNC] Failed: {e}")
 
+
     threading.Thread(target=_worker, daemon=True).start()
+
+
+def _phase6s_pick(*values):
+    for value in values:
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _phase6s_runtime_advisory_notifier(message):
+    send_telegram_message_async(message)
+    return True
+
+
+def maybe_notify_phase6s_runtime_outlook_advisory(signal_payload, trade_plan, trigger_context="pre_execution"):
+    """
+    Phase 6S7 live_bot hook.
+
+    Advisory only:
+    - does not block trades
+    - does not change risk
+    - does not approve execution
+    - only sends Telegram when explicitly enabled in settings
+    """
+    if not ENABLE_PHASE6S_RUNTIME_OUTLOOK_ADVISORY:
+        return {
+            "phase": "PHASE_6S7_LIVE_BOT_RUNTIME_OUTLOOK_ADVISORY",
+            "enabled": False,
+            "reason": "disabled_by_config",
+            "decision_impact": "NONE",
+            "auto_trade_allowed": False,
+            "can_execute": False,
+            "can_block_trade": False,
+            "can_modify_risk": False,
+        }
+
+    try:
+        raw_signal = signal_payload if isinstance(signal_payload, dict) else {"signal": signal_payload}
+        plan = trade_plan if isinstance(trade_plan, dict) else {}
+
+        raw_setup = dict(raw_signal)
+
+        raw_setup.update(
+            {
+                "setup_id": _phase6s_pick(
+                    raw_signal.get("setup_id"),
+                    raw_signal.get("id"),
+                    raw_signal.get("signal_id"),
+                    plan.get("setup_id"),
+                    plan.get("candidate_setup_id"),
+                    plan.get("source_setup_id"),
+                ),
+                "strategy": _phase6s_pick(
+                    raw_signal.get("strategy"),
+                    raw_signal.get("strategy_name"),
+                    raw_signal.get("setup_source"),
+                    raw_signal.get("setup_type"),
+                    plan.get("strategy"),
+                    plan.get("strategy_name"),
+                    plan.get("setup_source"),
+                    plan.get("setup_type"),
+                ),
+                "signal": _phase6s_pick(
+                    raw_signal.get("signal"),
+                    raw_signal.get("direction"),
+                    raw_signal.get("side"),
+                    plan.get("signal"),
+                    plan.get("direction"),
+                    plan.get("side"),
+                ),
+                "entry_reference": _phase6s_pick(
+                    plan.get("entry_reference"),
+                    plan.get("entry"),
+                    plan.get("entry_price"),
+                    raw_signal.get("entry_reference"),
+                    raw_signal.get("entry"),
+                    raw_signal.get("entry_price"),
+                    raw_signal.get("price"),
+                    raw_signal.get("close"),
+                ),
+                "sl_reference": _phase6s_pick(
+                    plan.get("sl_reference"),
+                    plan.get("sl"),
+                    plan.get("stop_loss"),
+                    raw_signal.get("sl_reference"),
+                    raw_signal.get("sl"),
+                    raw_signal.get("stop_loss"),
+                ),
+                "tp_reference": _phase6s_pick(
+                    plan.get("tp_reference"),
+                    plan.get("tp"),
+                    plan.get("take_profit"),
+                    plan.get("tp1"),
+                    raw_signal.get("tp_reference"),
+                    raw_signal.get("tp"),
+                    raw_signal.get("take_profit"),
+                    raw_signal.get("tp1"),
+                ),
+                "rr": _phase6s_pick(
+                    plan.get("rr"),
+                    plan.get("risk_reward"),
+                    plan.get("original_rr"),
+                    raw_signal.get("rr"),
+                    raw_signal.get("risk_reward"),
+                    raw_signal.get("original_rr"),
+                ),
+                "phase6s_trigger_context": trigger_context,
+            }
+        )
+
+        summary = maybe_send_runtime_outlook_advisory(
+            raw_setup=raw_setup,
+            symbol=SYMBOL,
+            report_type=PHASE6S_RUNTIME_OUTLOOKSYMBOL,
+            enabled=True,
+            send_telegram=SEND_PHASE6S_RUNTIME_OUTLOOK_ADVISORY_TELEGRAM,
+            force_send=PHASE6S_RUNTIME_OUTLOOK_ADVISORY_FORCE_SEND,
+            notifier=_phase6s_runtime_advisory_notifier,
+        )
+
+        logger.info(
+            "[PHASE 6S7 OUTLOOK ADVISORY] "
+            f"ready={summary.get('ready')} "
+            f"risk={summary.get('risk_level')} "
+            f"alignment={summary.get('alignment')} "
+            f"should_notify={summary.get('should_notify')} "
+            f"telegram_sent={summary.get('telegram_sent')} "
+            f"decision_impact={summary.get('decision_impact')} "
+            f"can_block_trade={summary.get('can_block_trade')} "
+            f"can_modify_risk={summary.get('can_modify_risk')} "
+            f"context={trigger_context}"
+        )
+
+        return summary
+
+    except Exception as exc:
+        logger.error(f"[PHASE 6S7 OUTLOOK ADVISORY] Failed: {exc}")
+
+        return {
+            "phase": "PHASE_6S7_LIVE_BOT_RUNTIME_OUTLOOK_ADVISORY",
+            "enabled": True,
+            "reason": "exception",
+            "error": str(exc),
+            "decision_impact": "NONE",
+            "auto_trade_allowed": False,
+            "can_execute": False,
+            "can_block_trade": False,
+            "can_modify_risk": False,
+        }
+
 
 def fetch_market_data():
     rates = mt5.copy_rates_from_pos(SYMBOL, TIMEFRAME, 0, BARS_TO_FETCH)
@@ -4066,6 +4223,12 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
         f"setup_id={trade_plan.get('setup_id') if isinstance(trade_plan, dict) else None} "
         f"strategy={trade_plan.get('strategy') if isinstance(trade_plan, dict) else None}"
     )
+    maybe_notify_phase6s_runtime_outlook_advisory(
+        signal,
+        trade_plan,
+        trigger_context="before_execute_trade",
+    )
+
     execution_result = execute_trade(signal, trade_plan, SYMBOL)
     logger.info(
         f"[LIVE EXECUTION TIMING] stage=after_execute_trade "

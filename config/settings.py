@@ -2332,3 +2332,16 @@ DTB_TARGET_RR = 2.20
 DTB_MIN_RR = 1.80
 DTB_MIN_SCORE = 94
 
+# ============================================================
+# Phase 6S Runtime Outlook Advisory
+# ============================================================
+# Safe by default:
+# - Does not block trades
+# - Does not modify risk
+# - Does not allow execution
+# - Only sends/prints advisory context when explicitly enabled
+ENABLE_PHASE6S_RUNTIME_OUTLOOK_ADVISORY = False
+SEND_PHASE6S_RUNTIME_OUTLOOK_ADVISORY_TELEGRAM = False
+PHASE6S_RUNTIME_OUTLOOK_ADVISORY_REPORT_TYPE = "scenario_update"
+PHASE6S_RUNTIME_OUTLOOK_ADVISORY_FORCE_SEND = False
+
