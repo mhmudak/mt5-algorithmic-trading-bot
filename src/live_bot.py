@@ -5359,21 +5359,42 @@ def mtf_conflict_soft_execution_allowed(
 
     strategy_mode = get_mtf_conflict_strategy_mode(strategy)
 
-    if strategy_mode == "TRACK_ONLY":
-        return False, "track_only_strategy"
-
-    if strategy_mode == "RETRACE_FIRST":
-        return False, "retrace_first_required"
-
-    if strategy_mode != "SOFT_EXECUTION":
-        return False, "strategy_not_allowed"
-
     try:
         score = float(candidate.get("score", 0) or 0)
     except Exception:
         score = 0
 
-    if score < MTF_CONFLICT_SOFT_EXECUTION_MIN_SCORE:
+    try:
+        from config import settings as _phase6v2_settings
+
+        promote_track_only = bool(
+            getattr(_phase6v2_settings, "ENABLE_MTF_CONFLICT_TRACK_ONLY_PROMOTION", True)
+        )
+        promote_min_score = float(
+            getattr(_phase6v2_settings, "MTF_CONFLICT_TRACK_ONLY_PROMOTION_MIN_SCORE", 95)
+        )
+    except Exception:
+        promote_track_only = True
+        promote_min_score = 95.0
+
+    promoted_track_only = False
+
+    if strategy_mode == "TRACK_ONLY":
+        if not promote_track_only:
+            return False, "track_only_strategy"
+
+        if score < promote_min_score:
+            return False, f"track_only_promotion_score_too_low {score}/{promote_min_score}"
+
+        promoted_track_only = True
+
+    elif strategy_mode == "RETRACE_FIRST":
+        return False, "retrace_first_required"
+
+    elif strategy_mode != "SOFT_EXECUTION":
+        return False, "strategy_not_allowed"
+
+    if not promoted_track_only and score < MTF_CONFLICT_SOFT_EXECUTION_MIN_SCORE:
         return False, "score_too_low"
 
     if signal not in ["BUY", "SELL"]:
@@ -5797,10 +5818,116 @@ def process_mtf_conflict_candidate(
                 )
 
         if not execution_allowed:
+            wait_registered = False
+
+            try:
+                from config import settings as _phase6v2_settings
+
+                mtf_low_rr_wait_enabled = bool(
+                    getattr(
+                        _phase6v2_settings,
+                        "ENABLE_MTF_CONFLICT_LOW_RR_WAIT_BETTER_ENTRY",
+                        True,
+                    )
+                )
+                mtf_low_rr_wait_expiry = int(
+                    getattr(
+                        _phase6v2_settings,
+                        "MTF_CONFLICT_LOW_RR_WAIT_BETTER_ENTRY_EXPIRY_MINUTES",
+                        15,
+                    )
+                )
+            except Exception:
+                mtf_low_rr_wait_enabled = True
+                mtf_low_rr_wait_expiry = 15
+
+            low_rr_reason = "shadow_rr_too_low" in str(execution_reason or "")
+
+            if (
+                mtf_low_rr_wait_enabled
+                and ENABLE_WAIT_FOR_BETTER_ENTRY
+                and low_rr_reason
+                and shadow_trade_plan is not None
+                and shadow_rr is not None
+                and required_rr is not None
+            ):
+                retry_signal_data = dict(candidate)
+                retry_signal_data["setup_id"] = setup_id
+                retry_signal_data["strategy"] = strategy
+                retry_signal_data["signal"] = signal
+                retry_signal_data["entry_model"] = entry_model
+                retry_signal_data["mtf_bias"] = mtf_bias
+                retry_signal_data["setup_source_bucket"] = "MTF_CONFLICT_TRACKED"
+                retry_signal_data["retry_source"] = "MTF_CONFLICT_LOW_RR"
+
+                retry_trade_plan = dict(shadow_trade_plan)
+                retry_trade_plan["setup_id"] = f"{setup_id}-MTFWAIT"
+                retry_trade_plan["strategy"] = strategy
+                retry_trade_plan["source_strategy"] = strategy
+                retry_trade_plan["setup_source_bucket"] = "MTF_CONFLICT_TRACKED"
+
+                retry_setup = execution_engine.create_wait_better_entry_retry(
+                    signal_data=retry_signal_data,
+                    trade_plan=retry_trade_plan,
+                    min_rr_required=required_rr,
+                    current_rr=shadow_rr,
+                    expiry_minutes=mtf_low_rr_wait_expiry,
+                    source="MTF_CONFLICT_LOW_RR",
+                    reason=f"MTF conflict low RR blocked immediate execution: {execution_reason}",
+                )
+
+                wait_registered = bool(retry_setup)
+
+                if wait_registered:
+                    logger.info(
+                        f"[MTF CONFLICT] Low RR moved to WAIT_BETTER_ENTRY | "
+                        f"setup_id={setup_id} strategy={strategy} signal={signal} "
+                        f"rr={shadow_rr}/{required_rr} expiry={mtf_low_rr_wait_expiry}"
+                    )
+
+                    log_setup_event(
+                        setup_id=setup_id,
+                        event="MTF_CONFLICT_LOW_RR_WAIT_BETTER_ENTRY",
+                        strategy=strategy,
+                        signal=signal,
+                        entry_model=entry_model,
+                        score=candidate_score,
+                        session=session_name,
+                        market_condition=market_condition,
+                        entry=shadow_trade_plan.get("entry_price"),
+                        sl=shadow_trade_plan.get("stop_loss"),
+                        tp=shadow_trade_plan.get("take_profit"),
+                        rr=shadow_rr,
+                        required_rr=required_rr,
+                        reason=f"moved to WAIT_BETTER_ENTRY: {execution_reason}",
+                        extra={
+                            "mtf_bias": mtf_bias,
+                            "execution_mode": execution_mode,
+                            "strategy_mode": strategy_mode,
+                            "retry_source": "MTF_CONFLICT_LOW_RR",
+                        },
+                    )
+
+                    send_telegram_message_async(
+                        "? MTF Conflict Waiting for Better Entry\n"
+                        f"Symbol: {SYMBOL}\n"
+                        f"Setup ID: {setup_id}\n"
+                        f"Strategy: {strategy}\n"
+                        f"Signal: {signal}\n"
+                        f"MTF Bias: {mtf_bias}\n\n"
+                        f"Current RR: {shadow_rr}\n"
+                        f"Required RR: {required_rr}\n"
+                        f"Expiry: {mtf_low_rr_wait_expiry} minutes\n\n"
+                        "Action: waiting for a better entry instead of discarding the tracked setup."
+                    )
+
+                    return False
+
             logger.info(
                 f"[MTF CONFLICT] Tracked only | "
                 f"setup_id={setup_id} strategy={strategy} signal={signal} "
-                f"mode={execution_mode} reason={execution_reason}"
+                f"mode={execution_mode} reason={execution_reason} "
+                f"wait_registered={wait_registered}"
             )
             return False
 
