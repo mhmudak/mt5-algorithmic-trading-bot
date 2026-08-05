@@ -433,13 +433,28 @@ def detect_close_details(position_id: str, trade=None):
             "close_price": 0.0,
         }
 
+    closing_entry_types = {mt5.DEAL_ENTRY_OUT}
+
+    deal_entry_inout = getattr(mt5, "DEAL_ENTRY_INOUT", None)
+    if deal_entry_inout is not None:
+        closing_entry_types.add(deal_entry_inout)
+
+    deal_entry_out_by = getattr(mt5, "DEAL_ENTRY_OUT_BY", None)
+    if deal_entry_out_by is not None:
+        closing_entry_types.add(deal_entry_out_by)
+
     closing_deals = [
         deal for deal in matching_deals
-        if getattr(deal, "entry", None) == mt5.DEAL_ENTRY_OUT
+        if getattr(deal, "entry", None) in closing_entry_types
     ]
 
     if not closing_deals:
-        closing_deals = matching_deals
+        return {
+            "found_close_deal": False,
+            "close_reason": None,
+            "realized_profit": 0.0,
+            "close_price": 0.0,
+        }
 
     latest_deal = max(closing_deals, key=lambda d: getattr(d, "time", 0))
 
