@@ -26,3 +26,13 @@ def get_account_data_dir():
 
 def get_account_file(filename):
     return get_account_data_dir() / filename
+
+
+def get_account_intelligence_dir():
+    path = Path("data") / "strategy_intelligence" / get_account_key()
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def get_account_intelligence_file(filename):
+    return get_account_intelligence_dir() / filename
