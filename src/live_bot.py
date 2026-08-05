@@ -8905,6 +8905,97 @@ def execute_trade(signal, trade_plan, symbol):
             _logger.warning(f"[INTRABAR DIRECTION GUARD] failed open: {exc}")
 
     try:
+        from config import settings as _phase6w4_settings
+        from src.m15_setup_direction_lock import evaluate_intrabar_m15_direction_lock_guard
+
+        intrabar_m15_lock_guard = evaluate_intrabar_m15_direction_lock_guard(
+            signal=signal,
+            trade_plan=trade_plan,
+            lock_state=globals().get("PHASE6W_M15_DIRECTION_LOCK"),
+            enabled=bool(
+                getattr(
+                    _phase6w4_settings,
+                    "ENABLE_INTRABAR_M15_DIRECTION_LOCK_GUARD",
+                    True,
+                )
+            ),
+        )
+
+        if not intrabar_m15_lock_guard.get("allowed", True):
+            active_lock = intrabar_m15_lock_guard.get("active_lock") or {}
+
+            setup_id = plan.get("setup_id")
+            strategy = plan.get("strategy")
+            entry_model = plan.get("entry_model")
+            session = plan.get("session")
+            market_condition = plan.get("market_condition")
+
+            _logger = globals().get("logger")
+            if _logger is not None:
+                _logger.warning(
+                    f"[M15 DIRECTION LOCK] blocked opposite intrabar execution | "
+                    f"intrabar_setup_id={setup_id} intrabar_strategy={strategy} "
+                    f"intrabar_signal={signal} active_lock={active_lock}"
+                )
+
+            try:
+                _log_setup_event = globals().get("log_setup_event")
+                if callable(_log_setup_event):
+                    _log_setup_event(
+                        setup_id=setup_id,
+                        event="INTRABAR_M15_DIRECTION_LOCK_BLOCKED",
+                        strategy=strategy,
+                        signal=signal,
+                        entry_model=entry_model,
+                        score=plan.get("score"),
+                        session=session,
+                        market_condition=market_condition,
+                        entry=plan.get("entry_price"),
+                        sl=plan.get("stop_loss"),
+                        tp=plan.get("take_profit"),
+                        rr=plan.get("rr"),
+                        reason="intrabar blocked because a M15 setup direction lock exists in the opposite direction",
+                        extra={
+                            "active_lock": active_lock,
+                            "guard_reason": intrabar_m15_lock_guard.get("reason"),
+                        },
+                    )
+            except Exception as exc:
+                _logger = globals().get("logger")
+                if _logger is not None:
+                    _logger.warning(f"[M15 DIRECTION LOCK] setup log failed: {exc}")
+
+            try:
+                _send_telegram = (
+                    globals().get("send_telegram_message_async")
+                    or globals().get("send_telegram_message")
+                )
+                if callable(_send_telegram):
+                    _send_telegram(
+                        "Intrabar Blocked by M15 Direction Lock\n"
+                        f"Symbol: {symbol}\n"
+                        f"Intrabar Setup ID: {setup_id}\n"
+                        f"Intrabar Strategy: {strategy}\n"
+                        f"Intrabar Signal: {signal}\n\n"
+                        f"M15 Setup ID: {active_lock.get('setup_id')}\n"
+                        f"M15 Strategy: {active_lock.get('strategy')}\n"
+                        f"M15 Signal: {active_lock.get('signal')}\n"
+                        f"M15 Session: {active_lock.get('session')}\n\n"
+                        "Action: intrabar opposite direction blocked until the M15 direction lock expires."
+                    )
+            except Exception as exc:
+                _logger = globals().get("logger")
+                if _logger is not None:
+                    _logger.warning(f"[M15 DIRECTION LOCK] telegram failed: {exc}")
+
+            return False
+
+    except Exception as exc:
+        _logger = globals().get("logger")
+        if _logger is not None:
+            _logger.warning(f"[M15 DIRECTION LOCK] failed open: {exc}")
+
+    try:
         from config import settings as _phase6w2_settings
         from src.intrabar_subprofile_risk_guard import evaluate_intrabar_subprofile_risk_guard
 
@@ -9001,6 +9092,8 @@ def execute_trade(signal, trade_plan, symbol):
 
     return _raw_execute_trade(signal, trade_plan, symbol)
 
+
+PHASE6W_M15_DIRECTION_LOCK = {}
 
 PHASE6H_INTRABAR_SCALP_MEMORY = {}
 
@@ -11612,6 +11705,62 @@ def process_cycle(last_processed_candle_time):
         trade_plan["market_condition"] = market_condition
         trade_plan["reason"] = reason
         trade_plan["session"] = selected_signal_data.get("session", session_name)
+
+        try:
+            from config import settings as _phase6w4_settings
+            from src.m15_setup_direction_lock import register_m15_direction_lock
+
+            if bool(getattr(_phase6w4_settings, "ENABLE_M15_SETUP_DIRECTION_LOCK", True)):
+                register_m15_direction_lock(
+                    PHASE6W_M15_DIRECTION_LOCK,
+                    signal=signal,
+                    setup_id=trade_plan.get("setup_id"),
+                    strategy=strategy_name,
+                    entry_model=selected_signal_data.get("entry_model"),
+                    session=trade_plan.get("session"),
+                    market_condition=market_condition,
+                    ttl_seconds=int(
+                        getattr(
+                            _phase6w4_settings,
+                            "M15_SETUP_DIRECTION_LOCK_TTL_SECONDS",
+                            900,
+                        )
+                    ),
+                )
+
+                logger.info(
+                    f"[M15 DIRECTION LOCK] registered | "
+                    f"setup_id={trade_plan.get('setup_id')} "
+                    f"strategy={strategy_name} signal={signal} "
+                    f"session={trade_plan.get('session')}"
+                )
+
+                log_setup_event(
+                    setup_id=trade_plan.get("setup_id"),
+                    event="M15_SETUP_DIRECTION_LOCK_REGISTERED",
+                    strategy=strategy_name,
+                    signal=signal,
+                    entry_model=selected_signal_data.get("entry_model"),
+                    score=score,
+                    session=trade_plan.get("session"),
+                    market_condition=market_condition,
+                    entry=trade_plan.get("entry_price"),
+                    sl=trade_plan.get("stop_loss"),
+                    tp=trade_plan.get("take_profit"),
+                    rr=trade_plan.get("rr"),
+                    reason="M15 setup direction lock registered for intrabar conflict protection",
+                    extra={
+                        "lock_ttl_seconds": int(
+                            getattr(
+                                _phase6w4_settings,
+                                "M15_SETUP_DIRECTION_LOCK_TTL_SECONDS",
+                                900,
+                            )
+                        )
+                    },
+                )
+        except Exception as exc:
+            logger.warning(f"[M15 DIRECTION LOCK] registration failed open: {exc}")
         try:
             from src.key_level_tp_ladder import apply_key_level_tp_ladder
 
