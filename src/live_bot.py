@@ -2046,7 +2046,7 @@ def notify_rejected_candidate_if_relevant(
         f"SL: {sl}\n"
         f"{_format_telegram_tp123_from_levels(signal, entry, sl, tp)}\n\n"
         f"Reason: {reason}\n"
-        "Action: tracked only — use statistics before changing execution rules."
+        "Action: tracked for promotion ? execution only if RR and confirmation gate pass; low RR waits for better entry."
     )
 
 def calculate_candidate_selection_rank(
@@ -2323,7 +2323,7 @@ def register_generic_rejected_candidate_recovery_if_eligible(
             f"SL: {trade_plan.get('stop_loss')}\n"
             f"{_format_telegram_tp123_from_trade_plan(candidate_signal, trade_plan)}\n"
             f"RR: {rr_value} / Required: {min_rr_required}\n\n"
-            f"Action: moved to generic rejected candidate recovery if eligible."
+            f"Action: moved to recovery queue ? if RR is valid and confirmation passes it may execute; if RR is low it waits for better entry."
         )
 
     return True
@@ -5814,7 +5814,7 @@ def process_mtf_conflict_candidate(
                     f"TP: {shadow_trade_plan.get('take_profit') if shadow_trade_plan else None}\n"
                     f"RR: {shadow_rr}\n"
                     f"Required RR: {required_rr}\n\n"
-                    "Action: tracked due to MTF conflict — not automatically weak."
+                    "Action: tracked for promotion ? execution only if RR and confirmation gate pass; low RR waits for better entry."
                 )
 
         if not execution_allowed:
@@ -5924,7 +5924,7 @@ def process_mtf_conflict_candidate(
                     return False
 
             logger.info(
-                f"[MTF CONFLICT] Tracked only | "
+                f"[MTF CONFLICT] Tracked promotion not executed | "
                 f"setup_id={setup_id} strategy={strategy} signal={signal} "
                 f"mode={execution_mode} reason={execution_reason} "
                 f"wait_registered={wait_registered}"
