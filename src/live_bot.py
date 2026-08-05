@@ -11,7 +11,7 @@ from src.execution import check_trade_guard
 from src.indicators import calculate_ema, calculate_atr
 from src.logger import logger
 from src.notifier import send_telegram_message
-from src.order_executor import execute_trade
+from src.order_executor import execute_trade as _raw_execute_trade
 from src.position_manager import manage_positions
 from src.risk import calculate_trade_plan
 from src.setup_audit import log_setup_event
@@ -8803,6 +8803,108 @@ def process_candidate_rejection_recovery_setups(
         return True
 
     return False
+
+
+def execute_trade(signal, trade_plan, symbol):
+    try:
+        from config import settings as _phase6w_settings
+        from src.intrabar_opposite_direction_guard import evaluate_intrabar_opposite_direction_guard
+
+        intrabar_opposite_guard = evaluate_intrabar_opposite_direction_guard(
+            signal=signal,
+            trade_plan=trade_plan,
+            execution_engine=globals().get("execution_engine"),
+            enabled=bool(
+                getattr(
+                    _phase6w_settings,
+                    "ENABLE_INTRABAR_OPPOSITE_ACTIVE_SETUP_GUARD",
+                    True,
+                )
+            ),
+            block_sources=getattr(
+                _phase6w_settings,
+                "INTRABAR_OPPOSITE_ACTIVE_SETUP_BLOCK_SOURCES",
+                None,
+            ),
+        )
+
+        if not intrabar_opposite_guard.get("allowed", True):
+            opposing_setup = intrabar_opposite_guard.get("opposing_setup") or {}
+            plan = trade_plan if isinstance(trade_plan, dict) else {}
+
+            setup_id = plan.get("setup_id")
+            strategy = plan.get("strategy")
+            entry_model = plan.get("entry_model")
+            session = plan.get("session")
+            market_condition = plan.get("market_condition")
+
+            _logger = globals().get("logger")
+            if _logger is not None:
+                _logger.warning(
+                    f"[INTRABAR DIRECTION GUARD] blocked opposite intrabar execution | "
+                    f"intrabar_setup_id={setup_id} intrabar_strategy={strategy} "
+                    f"intrabar_signal={signal} opposing_setup={opposing_setup}"
+                )
+
+            try:
+                _log_setup_event = globals().get("log_setup_event")
+                if callable(_log_setup_event):
+                    _log_setup_event(
+                        setup_id=setup_id,
+                        event="INTRABAR_OPPOSITE_ACTIVE_SETUP_BLOCKED",
+                        strategy=strategy,
+                        signal=signal,
+                        entry_model=entry_model,
+                        score=plan.get("score"),
+                        session=session,
+                        market_condition=market_condition,
+                        entry=plan.get("entry_price"),
+                        sl=plan.get("stop_loss"),
+                        tp=plan.get("take_profit"),
+                        rr=plan.get("rr"),
+                        reason="intrabar blocked because an active/pending setup exists in opposite direction",
+                        extra={
+                            "opposing_setup": opposing_setup,
+                            "guard_reason": intrabar_opposite_guard.get("reason"),
+                        },
+                    )
+            except Exception as exc:
+                _logger = globals().get("logger")
+                if _logger is not None:
+                    _logger.warning(f"[INTRABAR DIRECTION GUARD] setup log failed: {exc}")
+
+            try:
+                _send_telegram = (
+                    globals().get("send_telegram_message_async")
+                    or globals().get("send_telegram_message")
+                )
+                if callable(_send_telegram):
+                    _send_telegram(
+                        "Intrabar Opposite Direction Blocked\n"
+                        f"Symbol: {symbol}\n"
+                        f"Intrabar Setup ID: {setup_id}\n"
+                        f"Intrabar Strategy: {strategy}\n"
+                        f"Intrabar Signal: {signal}\n\n"
+                        f"Opposing Setup ID: {opposing_setup.get('setup_id')}\n"
+                        f"Opposing Strategy: {opposing_setup.get('strategy')}\n"
+                        f"Opposing Signal: {opposing_setup.get('signal')}\n"
+                        f"Opposing Source: {opposing_setup.get('source')}\n\n"
+                        "Action: intrabar execution blocked until the active/pending setup is cleared."
+                    )
+            except Exception as exc:
+                _logger = globals().get("logger")
+                if _logger is not None:
+                    _logger.warning(f"[INTRABAR DIRECTION GUARD] telegram failed: {exc}")
+
+            return False
+
+    except Exception as exc:
+        _logger = globals().get("logger")
+        if _logger is not None:
+            _logger.warning(f"[INTRABAR DIRECTION GUARD] failed open: {exc}")
+
+    return _raw_execute_trade(signal, trade_plan, symbol)
+
 
 PHASE6H_INTRABAR_SCALP_MEMORY = {}
 
