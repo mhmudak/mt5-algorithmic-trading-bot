@@ -8448,6 +8448,117 @@ def process_candidate_rejection_recovery_setups(
                 f"strategy={strategy_name} signal={signal} error={tp_ladder_exc}"
             )
 
+
+        try:
+            from config import settings as _phase6v2_settings
+
+            rejected_low_rr_wait_enabled = bool(
+                getattr(
+                    _phase6v2_settings,
+                    "ENABLE_REJECTED_CANDIDATE_LOW_RR_WAIT_BETTER_ENTRY",
+                    True,
+                )
+            )
+            rejected_low_rr_wait_expiry = int(
+                getattr(
+                    _phase6v2_settings,
+                    "REJECTED_CANDIDATE_LOW_RR_WAIT_BETTER_ENTRY_EXPIRY_MINUTES",
+                    15,
+                )
+            )
+        except Exception:
+            rejected_low_rr_wait_enabled = True
+            rejected_low_rr_wait_expiry = 15
+
+        if (
+            rejected_low_rr_wait_enabled
+            and ENABLE_WAIT_FOR_BETTER_ENTRY
+            and reason_type == "LOW_RR"
+            and rr_value is not None
+            and min_rr is not None
+            and float(rr_value) < float(min_rr)
+        ):
+            retry_signal_data = dict(signal_data)
+            retry_signal_data["retry_source"] = "REJECTED_CANDIDATE_LOW_RR"
+            retry_signal_data["setup_source_bucket"] = "REJECTED_CANDIDATE_TRACKED"
+
+            retry_trade_plan = dict(trade_plan)
+            retry_trade_plan["setup_source_bucket"] = "REJECTED_CANDIDATE_TRACKED"
+
+            retry_setup = execution_engine.create_wait_better_entry_retry(
+                signal_data=retry_signal_data,
+                trade_plan=retry_trade_plan,
+                min_rr_required=min_rr,
+                current_rr=rr_value,
+                expiry_minutes=rejected_low_rr_wait_expiry,
+                source="REJECTED_CANDIDATE_LOW_RR",
+                reason="candidate recovery still below required RR",
+            )
+
+            if retry_setup:
+                mark_recovery_candidate_failed(
+                    recovery_id,
+                    "Moved to WAIT_BETTER_ENTRY because recovered RR is still low",
+                )
+
+                save_execution_memory_report(
+                    selected_signal_data=signal_data,
+                    strategy_name=strategy_name,
+                    signal=signal,
+                    score=signal_data.get("score"),
+                    session_name=session_name,
+                    market_condition=market_condition,
+                    reason=f"candidate recovery from {reason_type}",
+                    trade_plan=trade_plan,
+                    decision="CANDIDATE_RECOVERY_LOW_RR_WAIT_BETTER_ENTRY",
+                    decision_reason="recovered candidate RR still below required minimum",
+                    rr_value=rr_value,
+                    required_rr=min_rr,
+                    extra={
+                        "recovery_id": recovery_id,
+                        "source_setup_id": setup_id,
+                        "reason_type": reason_type,
+                        "retry_source": "REJECTED_CANDIDATE_LOW_RR",
+                        "expiry_minutes": rejected_low_rr_wait_expiry,
+                    },
+                )
+
+                log_setup_event(
+                    setup_id=setup_id,
+                    event="CANDIDATE_RECOVERY_LOW_RR_WAIT_BETTER_ENTRY",
+                    strategy=strategy_name,
+                    signal=signal,
+                    entry_model=signal_data.get("entry_model"),
+                    score=signal_data.get("score"),
+                    session=session_name,
+                    market_condition=market_condition,
+                    entry=trade_plan.get("entry_price"),
+                    sl=trade_plan.get("stop_loss"),
+                    tp=trade_plan.get("take_profit"),
+                    rr=rr_value,
+                    required_rr=min_rr,
+                    reason="recovered candidate RR still below required minimum",
+                    extra={
+                        "recovery_id": recovery_id,
+                        "reason_type": reason_type,
+                        "retry_source": "REJECTED_CANDIDATE_LOW_RR",
+                    },
+                )
+
+                send_telegram_message(
+                    f"? Candidate Recovery Waiting for Better Entry\n"
+                    f"Symbol: {SYMBOL}\n"
+                    f"Strategy: {strategy_name}\n"
+                    f"Signal: {signal}\n"
+                    f"Setup ID: {setup_id}\n\n"
+                    f"Current RR: {rr_value}\n"
+                    f"Required RR: {min_rr}\n"
+                    f"Expiry: {rejected_low_rr_wait_expiry} minutes\n\n"
+                    f"Action: waiting for better entry before execution."
+                )
+
+                continue
+
         send_telegram_message(
             f"♻️ Candidate Recovery Executing\n"
             f"Symbol: {SYMBOL}\n"

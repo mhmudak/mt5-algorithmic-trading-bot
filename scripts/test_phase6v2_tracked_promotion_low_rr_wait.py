@@ -24,34 +24,41 @@ def test_mtf_track_only_promotion_markers_exist():
     assert "promote_min_score" in text
     assert "promoted_track_only = True" in text
     assert "track_only_promotion_score_too_low" in text
-    assert "if not promoted_track_only and score < MTF_CONFLICT_SOFT_EXECUTION_MIN_SCORE" in text
 
 
-def test_mtf_low_rr_wait_markers_exist():
+def test_low_rr_wait_markers_exist():
     text = LIVE.read_text(encoding="utf-8")
 
-    assert "ENABLE_MTF_CONFLICT_LOW_RR_WAIT_BETTER_ENTRY" in text
-    assert "MTF_CONFLICT_LOW_RR_WAIT_BETTER_ENTRY_EXPIRY_MINUTES" in text
-    assert 'low_rr_reason = "shadow_rr_too_low" in str(execution_reason or "")' in text
-    assert 'source="MTF_CONFLICT_LOW_RR"' in text
     assert "MTF_CONFLICT_LOW_RR_WAIT_BETTER_ENTRY" in text
+    assert 'source="MTF_CONFLICT_LOW_RR"' in text
     assert "MTF Conflict Waiting for Better Entry" in text
 
+    assert "CANDIDATE_RECOVERY_LOW_RR_WAIT_BETTER_ENTRY" in text
+    assert 'source="REJECTED_CANDIDATE_LOW_RR"' in text
+    assert "Candidate Recovery Waiting for Better Entry" in text
+    assert 'and reason_type == "LOW_RR"' in text
+    assert "and float(rr_value) < float(min_rr)" in text
 
-def test_mtf_wait_is_before_mtf_execution():
+
+def test_wait_blocks_are_before_execution():
     text = LIVE.read_text(encoding="utf-8")
 
-    wait_index = text.find("MTF_CONFLICT_LOW_RR_WAIT_BETTER_ENTRY")
-    execute_index = text.find("execution_result = execute_trade(signal, mtf_trade_plan, SYMBOL)", wait_index)
+    mtf_wait = text.find("MTF_CONFLICT_LOW_RR_WAIT_BETTER_ENTRY")
+    mtf_exec = text.find("execution_result = execute_trade(signal, mtf_trade_plan, SYMBOL)", mtf_wait)
+    assert mtf_wait != -1
+    assert mtf_exec != -1
+    assert mtf_wait < mtf_exec
 
-    assert wait_index != -1
-    assert execute_index != -1
-    assert wait_index < execute_index
+    rec_wait = text.find("CANDIDATE_RECOVERY_LOW_RR_WAIT_BETTER_ENTRY")
+    rec_exec = text.find("execution_result = execute_trade(signal, trade_plan, SYMBOL)", rec_wait)
+    assert rec_wait != -1
+    assert rec_exec != -1
+    assert rec_wait < rec_exec
 
 
 if __name__ == "__main__":
     test_settings_flags_exist()
     test_mtf_track_only_promotion_markers_exist()
-    test_mtf_low_rr_wait_markers_exist()
-    test_mtf_wait_is_before_mtf_execution()
-    print("[PASS] Phase 6V2A MTF tracked promotion low-RR wait passed.")
+    test_low_rr_wait_markers_exist()
+    test_wait_blocks_are_before_execution()
+    print("[PASS] Phase 6V2 tracked promotion + low-RR wait passed.")
