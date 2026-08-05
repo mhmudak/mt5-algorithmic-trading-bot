@@ -8806,6 +8806,8 @@ def process_candidate_rejection_recovery_setups(
 
 
 def execute_trade(signal, trade_plan, symbol):
+    plan = trade_plan if isinstance(trade_plan, dict) else {}
+
     try:
         from config import settings as _phase6w_settings
         from src.intrabar_opposite_direction_guard import evaluate_intrabar_opposite_direction_guard
@@ -8830,7 +8832,6 @@ def execute_trade(signal, trade_plan, symbol):
 
         if not intrabar_opposite_guard.get("allowed", True):
             opposing_setup = intrabar_opposite_guard.get("opposing_setup") or {}
-            plan = trade_plan if isinstance(trade_plan, dict) else {}
 
             setup_id = plan.get("setup_id")
             strategy = plan.get("strategy")
@@ -8902,6 +8903,101 @@ def execute_trade(signal, trade_plan, symbol):
         _logger = globals().get("logger")
         if _logger is not None:
             _logger.warning(f"[INTRABAR DIRECTION GUARD] failed open: {exc}")
+
+    try:
+        from config import settings as _phase6w2_settings
+        from src.intrabar_subprofile_risk_guard import evaluate_intrabar_subprofile_risk_guard
+
+        intrabar_subprofile_guard = evaluate_intrabar_subprofile_risk_guard(
+            signal=signal,
+            trade_plan=trade_plan,
+            enabled=bool(
+                getattr(
+                    _phase6w2_settings,
+                    "ENABLE_INTRABAR_SUBPROFILE_RISK_GUARD",
+                    True,
+                )
+            ),
+            block_rules=getattr(
+                _phase6w2_settings,
+                "INTRABAR_SUBPROFILE_BLOCK_RULES",
+                (),
+            ),
+        )
+
+        if not intrabar_subprofile_guard.get("allowed", True):
+            matched_rule = intrabar_subprofile_guard.get("matched_rule") or {}
+
+            setup_id = plan.get("setup_id")
+            strategy = plan.get("strategy")
+            entry_model = plan.get("entry_model")
+            session = plan.get("session")
+            market_condition = plan.get("market_condition")
+
+            _logger = globals().get("logger")
+            if _logger is not None:
+                _logger.warning(
+                    f"[INTRABAR SUBPROFILE GUARD] blocked weak intrabar sub-profile | "
+                    f"setup_id={setup_id} strategy={strategy} signal={signal} "
+                    f"session={session} market={market_condition} rule={matched_rule}"
+                )
+
+            try:
+                _log_setup_event = globals().get("log_setup_event")
+                if callable(_log_setup_event):
+                    _log_setup_event(
+                        setup_id=setup_id,
+                        event="INTRABAR_SUBPROFILE_RISK_BLOCKED",
+                        strategy=strategy,
+                        signal=signal,
+                        entry_model=entry_model,
+                        score=plan.get("score"),
+                        session=session,
+                        market_condition=market_condition,
+                        entry=plan.get("entry_price"),
+                        sl=plan.get("stop_loss"),
+                        tp=plan.get("take_profit"),
+                        rr=plan.get("rr"),
+                        reason=matched_rule.get("rule_reason")
+                        or "intrabar sub-profile blocked by risk guard",
+                        extra={
+                            "matched_rule": matched_rule,
+                            "guard_reason": intrabar_subprofile_guard.get("reason"),
+                        },
+                    )
+            except Exception as exc:
+                _logger = globals().get("logger")
+                if _logger is not None:
+                    _logger.warning(f"[INTRABAR SUBPROFILE GUARD] setup log failed: {exc}")
+
+            try:
+                _send_telegram = (
+                    globals().get("send_telegram_message_async")
+                    or globals().get("send_telegram_message")
+                )
+                if callable(_send_telegram):
+                    _send_telegram(
+                        "Intrabar Sub-Profile Blocked\n"
+                        f"Symbol: {symbol}\n"
+                        f"Setup ID: {setup_id}\n"
+                        f"Strategy: {strategy}\n"
+                        f"Signal: {signal}\n"
+                        f"Session: {session}\n"
+                        f"Market: {market_condition}\n\n"
+                        f"Reason: {matched_rule.get('rule_reason')}\n\n"
+                        "Action: intrabar execution blocked by repaired statistics guard."
+                    )
+            except Exception as exc:
+                _logger = globals().get("logger")
+                if _logger is not None:
+                    _logger.warning(f"[INTRABAR SUBPROFILE GUARD] telegram failed: {exc}")
+
+            return False
+
+    except Exception as exc:
+        _logger = globals().get("logger")
+        if _logger is not None:
+            _logger.warning(f"[INTRABAR SUBPROFILE GUARD] failed open: {exc}")
 
     return _raw_execute_trade(signal, trade_plan, symbol)
 

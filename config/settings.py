@@ -2523,3 +2523,42 @@ INTRABAR_OPPOSITE_ACTIVE_SETUP_BLOCK_SOURCES = (
     "INTRABAR_STRUCTURAL_LEVEL_SCALP",
 )
 
+# =========================
+# Phase 6W2 Intrabar Sub-Profile Risk Guard
+# =========================
+ENABLE_INTRABAR_SUBPROFILE_RISK_GUARD = True
+
+# Format:
+# (strategy, signal, session, market_condition, reason)
+# Use "*" as wildcard.
+INTRABAR_SUBPROFILE_BLOCK_RULES = (
+    (
+        "AUTO_STRUCTURAL_LEVEL_SCALP",
+        "SELL",
+        "ASIA",
+        "*",
+        "Phase 6W2: ASLS SELL ASIA blocked temporarily after repaired intrabar diagnostics",
+    ),
+    (
+        "AUTO_STRUCTURAL_LEVEL_SCALP",
+        "SELL",
+        "LONDON",
+        "*",
+        "Phase 6W2: ASLS SELL LONDON blocked temporarily after negative realized expectancy",
+    ),
+    (
+        "AUTO_STRUCTURAL_LEVEL_SCALP",
+        "SELL",
+        "LONDON_OPEN",
+        "*",
+        "Phase 6W2: ASLS SELL LONDON_OPEN blocked temporarily after negative realized expectancy",
+    ),
+    (
+        "AUTO_STRUCTURAL_LEVEL_SCALP",
+        "SELL",
+        "NEWYORK_OPEN",
+        "*",
+        "Phase 6W2: ASLS SELL NEWYORK_OPEN blocked temporarily after high loss-rate diagnostics",
+    ),
+)
+
