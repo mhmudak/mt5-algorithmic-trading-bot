@@ -368,6 +368,22 @@ def update_trade_statistics(position, trade, tick):
 
     trade["reached_levels"] = reached_levels
 
+
+def classify_stop_trigger_result(realized_profit, prefix="SL"):
+    try:
+        profit = float(realized_profit or 0.0)
+    except Exception:
+        profit = 0.0
+
+    if profit > 0:
+        return f"{prefix}_IN_PROFIT"
+
+    if profit < 0:
+        return f"{prefix}_LOSS"
+
+    return f"{prefix}_BREAKEVEN"
+
+
 def infer_close_reason_from_trade(trade, close_price, realized_profit):
     if trade is None:
         if realized_profit > 0:
@@ -384,7 +400,7 @@ def infer_close_reason_from_trade(trade, close_price, realized_profit):
     tolerance = 0.50
 
     if stop_loss > 0 and abs(close_price - stop_loss) <= tolerance:
-        return "SL_LIKELY"
+        return classify_stop_trigger_result(realized_profit, prefix="SL_LIKELY")
 
     if take_profit > 0 and abs(close_price - take_profit) <= tolerance:
         return "TP_LIKELY"
@@ -466,7 +482,7 @@ def detect_close_details(position_id: str, trade=None):
     )
 
     if reason == mt5.DEAL_REASON_SL:
-        close_reason = "SL"
+        close_reason = classify_stop_trigger_result(realized_profit, prefix="SL")
     elif reason == mt5.DEAL_REASON_TP:
         close_reason = "TP"
     elif reason == mt5.DEAL_REASON_SO:
@@ -585,7 +601,7 @@ def update_trade_lifecycle(symbol: str):
 
                 logger.info(f"[TRACKER] Trade fully closed {position_id} | reason={close_reason}")
 
-                if close_reason in ["SL", "SL_LIKELY"]:
+                if close_reason in ["SL_LOSS", "SL_LIKELY_LOSS"]:
                     activate_cooldown()
 
                 send_telegram_message(
