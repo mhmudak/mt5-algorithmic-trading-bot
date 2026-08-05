@@ -2378,3 +2378,17 @@ PHASE6S_OUTCOME_ATTRIBUTION_MIN_SAMPLES = 5
 # - Does not modify entry/SL/TP
 PHASE6S_EVIDENCE_HEALTH_OUTPUT_DIR = "data/reports/market_outlook/evidence_health"
 
+# ============================================================
+# Phase 6T Strategy Evidence Dashboard
+# ============================================================
+# Reporting only:
+# - Does not execute trades
+# - Does not block trades
+# - Does not modify risk
+# - Does not modify entry/SL/TP
+# - Only summarizes strategy evidence from attribution reports
+PHASE6T_STRATEGY_EVIDENCE_DASHBOARD_OUTPUT_DIR = "data/reports/strategy_evidence_dashboard"
+PHASE6T_STRATEGY_EVIDENCE_MIN_MATCHED_SAMPLES = 5
+PHASE6T_STRATEGY_EVIDENCE_PROMISING_MIN_WIN_RATE = 55.0
+PHASE6T_STRATEGY_EVIDENCE_WEAK_MAX_WIN_RATE = 40.0
+
