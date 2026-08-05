@@ -8990,6 +8990,67 @@ def execute_trade(signal, trade_plan, symbol):
 
             return False
 
+        try:
+            if (
+                intrabar_m15_lock_guard.get("reason") == "same_direction_as_m15_lock"
+                and bool(
+                    getattr(
+                        _phase6w4_settings,
+                        "ENABLE_INTRABAR_M15_DIRECTION_LOCK_ALIGNMENT_ANNOTATION",
+                        True,
+                    )
+                )
+            ):
+                active_lock = intrabar_m15_lock_guard.get("active_lock") or {}
+
+                setup_id = plan.get("setup_id")
+                strategy = plan.get("strategy")
+                entry_model = plan.get("entry_model")
+                session = plan.get("session")
+                market_condition = plan.get("market_condition")
+
+                plan["m15_direction_lock_status"] = "ALIGNED"
+                plan["m15_direction_lock_setup_id"] = active_lock.get("setup_id")
+                plan["m15_direction_lock_strategy"] = active_lock.get("strategy")
+                plan["m15_direction_lock_signal"] = active_lock.get("signal")
+                plan["m15_direction_lock_session"] = active_lock.get("session")
+
+                _logger = globals().get("logger")
+                if _logger is not None:
+                    _logger.info(
+                        f"[M15 DIRECTION LOCK] intrabar aligned | "
+                        f"intrabar_setup_id={setup_id} intrabar_strategy={strategy} "
+                        f"intrabar_signal={signal} "
+                        f"m15_setup_id={active_lock.get('setup_id')} "
+                        f"m15_signal={active_lock.get('signal')}"
+                    )
+
+                _log_setup_event = globals().get("log_setup_event")
+                if callable(_log_setup_event):
+                    _log_setup_event(
+                        setup_id=setup_id,
+                        event="INTRABAR_M15_DIRECTION_LOCK_ALIGNED",
+                        strategy=strategy,
+                        signal=signal,
+                        entry_model=entry_model,
+                        score=plan.get("score"),
+                        session=session,
+                        market_condition=market_condition,
+                        entry=plan.get("entry_price"),
+                        sl=plan.get("stop_loss"),
+                        tp=plan.get("take_profit"),
+                        rr=plan.get("rr"),
+                        reason="intrabar setup is aligned with active M15 direction lock",
+                        extra={
+                            "active_lock": active_lock,
+                            "alignment_status": "ALIGNED",
+                        },
+                    )
+        except Exception as exc:
+            _logger = globals().get("logger")
+            if _logger is not None:
+                _logger.warning(f"[M15 DIRECTION LOCK] alignment annotation failed open: {exc}")
+
     except Exception as exc:
         _logger = globals().get("logger")
         if _logger is not None:
