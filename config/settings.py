@@ -2526,7 +2526,7 @@ INTRABAR_OPPOSITE_ACTIVE_SETUP_BLOCK_SOURCES = (
 # =========================
 # Phase 6W2 Intrabar Sub-Profile Risk Guard
 # =========================
-ENABLE_INTRABAR_SUBPROFILE_RISK_GUARD = True
+ENABLE_INTRABAR_SUBPROFILE_RISK_GUARD = False
 
 # Format:
 # (strategy, signal, session, market_condition, reason)
@@ -2621,9 +2621,9 @@ INTRABAR_SUBPROFILE_BLOCK_RULES = (
 # =========================
 # Phase 6W3 Dynamic Intrabar Sub-Profile Rules
 # =========================
-ENABLE_DYNAMIC_INTRABAR_SUBPROFILE_RISK_RULES = True
+ENABLE_DYNAMIC_INTRABAR_SUBPROFILE_RISK_RULES = False
 DYNAMIC_INTRABAR_SUBPROFILE_RULES_FILE = "data/strategy_intelligence/{account_key}/intrabar_subprofile_block_rules.json"
-DYNAMIC_INTRABAR_SUBPROFILE_STATIC_FALLBACK = True
+DYNAMIC_INTRABAR_SUBPROFILE_STATIC_FALLBACK = False
 DYNAMIC_INTRABAR_SUBPROFILE_MIN_SAMPLES = 5
 DYNAMIC_INTRABAR_SUBPROFILE_BLOCK_DECISIONS = ("BLOCK_TEMPORARILY",)
 DYNAMIC_INTRABAR_SUBPROFILE_MAX_LOSS_RATE = 0.60

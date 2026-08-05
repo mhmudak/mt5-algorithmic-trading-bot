@@ -81,7 +81,7 @@ def test_low_sample_row_does_not_generate_rule():
     assert rules == []
 
 
-def test_dynamic_file_replaces_static_when_present(monkeypatch=None):
+def test_dynamic_rules_can_be_enabled_temporarily():
     with tempfile.TemporaryDirectory() as tmpdir:
         dynamic_path = Path(tmpdir) / "rules.json"
         dynamic_path.write_text(
@@ -103,11 +103,13 @@ def test_dynamic_file_replaces_static_when_present(monkeypatch=None):
 
         import config.settings as settings
 
-        original_enabled = getattr(settings, "ENABLE_DYNAMIC_INTRABAR_SUBPROFILE_RISK_RULES", None)
+        original_enabled = getattr(settings, "ENABLE_DYNAMIC_INTRABAR_SUBPROFILE_RISK_RULES", False)
         original_path = getattr(settings, "DYNAMIC_INTRABAR_SUBPROFILE_RULES_FILE", None)
+        original_fallback = getattr(settings, "DYNAMIC_INTRABAR_SUBPROFILE_STATIC_FALLBACK", False)
 
         settings.ENABLE_DYNAMIC_INTRABAR_SUBPROFILE_RISK_RULES = True
         settings.DYNAMIC_INTRABAR_SUBPROFILE_RULES_FILE = str(dynamic_path)
+        settings.DYNAMIC_INTRABAR_SUBPROFILE_STATIC_FALLBACK = False
 
         try:
             effective = get_effective_intrabar_subprofile_block_rules(
@@ -133,6 +135,7 @@ def test_dynamic_file_replaces_static_when_present(monkeypatch=None):
                     "market_condition": "INTRABAR_STRUCTURAL_LEVEL_SCALP",
                     "setup_source_bucket": "INTRABAR",
                 },
+                enabled=True,
                 block_rules=[
                     (
                         "AUTO_STRUCTURAL_LEVEL_SCALP",
@@ -152,6 +155,7 @@ def test_dynamic_file_replaces_static_when_present(monkeypatch=None):
                     "market_condition": "INTRABAR_STRUCTURAL_LEVEL_SCALP",
                     "setup_source_bucket": "INTRABAR",
                 },
+                enabled=True,
                 block_rules=[
                     (
                         "AUTO_STRUCTURAL_LEVEL_SCALP",
@@ -167,17 +171,18 @@ def test_dynamic_file_replaces_static_when_present(monkeypatch=None):
             assert allowed["allowed"] is True
 
         finally:
-            if original_enabled is not None:
-                settings.ENABLE_DYNAMIC_INTRABAR_SUBPROFILE_RISK_RULES = original_enabled
+            settings.ENABLE_DYNAMIC_INTRABAR_SUBPROFILE_RISK_RULES = original_enabled
+            settings.DYNAMIC_INTRABAR_SUBPROFILE_STATIC_FALLBACK = original_fallback
             if original_path is not None:
                 settings.DYNAMIC_INTRABAR_SUBPROFILE_RULES_FILE = original_path
 
 
-def test_settings_and_script_markers_exist():
+def test_settings_default_disabled_and_script_markers_exist():
     settings_text = SETTINGS.read_text(encoding="utf-8")
     script_text = SCRIPT.read_text(encoding="utf-8")
 
-    assert "ENABLE_DYNAMIC_INTRABAR_SUBPROFILE_RISK_RULES = True" in settings_text
+    assert "ENABLE_DYNAMIC_INTRABAR_SUBPROFILE_RISK_RULES = False" in settings_text
+    assert "DYNAMIC_INTRABAR_SUBPROFILE_STATIC_FALLBACK = False" in settings_text
     assert "DYNAMIC_INTRABAR_SUBPROFILE_RULES_FILE" in settings_text
     assert "intrabar_subprofile_block_rules.json" in script_text
     assert "trade_tracker_health_by_bucket.csv" in script_text
@@ -187,6 +192,6 @@ if __name__ == "__main__":
     test_parse_intrabar_policy_key_with_entry_model()
     test_generate_block_rule_from_block_temporarily_row()
     test_low_sample_row_does_not_generate_rule()
-    test_dynamic_file_replaces_static_when_present()
-    test_settings_and_script_markers_exist()
-    print("[PASS] Phase 6W3 dynamic intrabar sub-profile rules passed.")
+    test_dynamic_rules_can_be_enabled_temporarily()
+    test_settings_default_disabled_and_script_markers_exist()
+    print("[PASS] Phase 6W3 dynamic intrabar sub-profile toggle rules passed.")
