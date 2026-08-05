@@ -61,6 +61,8 @@ from src.confirmation_engine import (
     format_confirmation_report,
 )
 
+from src.tracked_setup_confirmation_gate import run_tracked_setup_confirmation_gate
+
 from src.confirmation_observation_logger import log_confirmation_observation
 from src.confirmation_risk_notifier import maybe_notify_confirmation_risk
 from src.confirmation_summary_notifier import maybe_notify_confirmation_summary
@@ -6036,10 +6038,54 @@ def process_mtf_conflict_candidate(
         setup_source_bucket="MTF_CONFLICT_TRACKED",
     )
 
-    observe_universal_confirmation_from_scope(
+    tracked_confirmation_gate = run_tracked_setup_confirmation_gate(
         locals(),
         setup_source_bucket_override="MTF_CONFLICT_TRACKED",
+        max_spread=MAX_SPREAD,
     )
+
+    if not tracked_confirmation_gate.get("allowed", False):
+        confirmation_gate_reason = tracked_confirmation_gate.get("reason")
+        logger.info(
+            f"[MTF CONFLICT] Confirmation gate blocked execution | "
+            f"setup_id={setup_id} strategy={strategy} signal={signal} "
+            f"reason={confirmation_gate_reason} "
+            f"failed_modules={tracked_confirmation_gate.get('failed_modules')}"
+        )
+
+        log_setup_event(
+            setup_id=mtf_trade_plan.get("setup_id"),
+            event="MTF_CONFLICT_CONFIRMATION_GATE_BLOCKED",
+            strategy=mtf_trade_plan.get("strategy") or strategy,
+            signal=signal,
+            entry_model=mtf_trade_plan.get("entry_model"),
+            score=candidate.get("score"),
+            session=session_name,
+            market_condition=market_condition,
+            entry=mtf_trade_plan.get("entry_price"),
+            sl=mtf_trade_plan.get("stop_loss"),
+            tp=mtf_trade_plan.get("take_profit"),
+            rr=mtf_rr,
+            required_rr=required_rr,
+            reason=confirmation_gate_reason,
+            extra={
+                "source_setup_id": setup_id,
+                "source_strategy": strategy,
+                "mtf_bias": mtf_bias,
+                "mtf_conflict_mode": execution_mode,
+                "confirmation_gate": tracked_confirmation_gate,
+            },
+        )
+
+        try:
+            mark_mtf_conflict_opportunity_failed(
+                setup_id,
+                f"confirmation_gate_blocked: {confirmation_gate_reason}",
+            )
+        except Exception as exc:
+            logger.warning(f"[MTF CONFLICT] Failed to mark confirmation-gated setup: {exc}")
+
+        return False
 
     _live_execute_start_ts = time.perf_counter()
     logger.info(
@@ -8332,10 +8378,52 @@ def process_candidate_rejection_recovery_setups(
             setup_source_bucket="REJECTED_CANDIDATE_TRACKED",
         )
         
-        observe_universal_confirmation_from_scope(
+        tracked_confirmation_gate = run_tracked_setup_confirmation_gate(
             locals(),
             setup_source_bucket_override="REJECTED_CANDIDATE_TRACKED",
+            max_spread=MAX_SPREAD,
         )
+
+        if not tracked_confirmation_gate.get("allowed", False):
+            confirmation_gate_reason = tracked_confirmation_gate.get("reason")
+            logger.info(
+                f"[CANDIDATE RECOVERY] Confirmation gate blocked execution | "
+                f"id={recovery_id} setup_id={setup_id} strategy={strategy_name} "
+                f"signal={signal} reason={confirmation_gate_reason} "
+                f"failed_modules={tracked_confirmation_gate.get('failed_modules')}"
+            )
+
+            log_setup_event(
+                setup_id=setup_id,
+                event="CANDIDATE_RECOVERY_CONFIRMATION_GATE_BLOCKED",
+                strategy=strategy_name,
+                signal=signal,
+                entry_model=signal_data.get("entry_model"),
+                score=signal_data.get("score"),
+                session=session_name,
+                market_condition=market_condition,
+                entry=trade_plan.get("entry_price"),
+                sl=trade_plan.get("stop_loss"),
+                tp=trade_plan.get("take_profit"),
+                rr=rr_value,
+                required_rr=min_rr,
+                reason=confirmation_gate_reason,
+                extra={
+                    "recovery_id": recovery_id,
+                    "reason_type": reason_type,
+                    "confirmation_gate": tracked_confirmation_gate,
+                },
+            )
+
+            try:
+                mark_recovery_candidate_failed(
+                    recovery_id,
+                    f"confirmation_gate_blocked: {confirmation_gate_reason}",
+                )
+            except Exception as exc:
+                logger.warning(f"[CANDIDATE RECOVERY] Failed to mark confirmation-gated setup: {exc}")
+
+            continue
 
         _live_execute_start_ts = time.perf_counter()
         logger.info(
