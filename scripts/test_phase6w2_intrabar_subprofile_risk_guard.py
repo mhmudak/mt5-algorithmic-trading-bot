@@ -95,6 +95,9 @@ def test_settings_flags_exist():
     assert '"AUTO_STRUCTURAL_LEVEL_SCALP"' in text
     assert '"SELL"' in text
     assert '"LONDON"' in text
+    assert '"FAILED_FVG_REVERSAL"' in text
+    assert "FAILED_FVG_REVERSAL intrabar non-ASIA BUY blocked" in text
+    assert "FAILED_FVG_REVERSAL intrabar SELL blocked" in text
 
 
 if __name__ == "__main__":

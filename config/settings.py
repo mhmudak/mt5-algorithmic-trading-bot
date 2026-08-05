@@ -2560,5 +2560,72 @@ INTRABAR_SUBPROFILE_BLOCK_RULES = (
         "*",
         "Phase 6W2: ASLS SELL NEWYORK_OPEN blocked temporarily after high loss-rate diagnostics",
     ),
+    (
+        "FAILED_FVG_REVERSAL",
+        "BUY",
+        "LONDON",
+        "*",
+        "Phase 6W3: FAILED_FVG_REVERSAL intrabar non-ASIA BUY blocked until more samples",
+    ),
+    (
+        "FAILED_FVG_REVERSAL",
+        "BUY",
+        "LONDON_OPEN",
+        "*",
+        "Phase 6W3: FAILED_FVG_REVERSAL intrabar non-ASIA BUY blocked until more samples",
+    ),
+    (
+        "FAILED_FVG_REVERSAL",
+        "BUY",
+        "LONDON_NY_OVERLAP",
+        "*",
+        "Phase 6W3: FAILED_FVG_REVERSAL intrabar non-ASIA BUY blocked until more samples",
+    ),
+    (
+        "FAILED_FVG_REVERSAL",
+        "BUY",
+        "NEWYORK_OPEN",
+        "*",
+        "Phase 6W3: FAILED_FVG_REVERSAL intrabar non-ASIA BUY blocked until more samples",
+    ),
+    (
+        "FAILED_FVG_REVERSAL",
+        "BUY",
+        "NEWYORK",
+        "*",
+        "Phase 6W3: FAILED_FVG_REVERSAL intrabar non-ASIA BUY blocked until more samples",
+    ),
+    (
+        "FAILED_FVG_REVERSAL",
+        "BUY",
+        "NEWYORK_LATE",
+        "*",
+        "Phase 6W3: FAILED_FVG_REVERSAL intrabar non-ASIA BUY blocked until more samples",
+    ),
+    (
+        "FAILED_FVG_REVERSAL",
+        "BUY",
+        "OFF_HOURS",
+        "*",
+        "Phase 6W3: FAILED_FVG_REVERSAL intrabar non-ASIA BUY blocked until more samples",
+    ),
+    (
+        "FAILED_FVG_REVERSAL",
+        "SELL",
+        "*",
+        "*",
+        "Phase 6W3: FAILED_FVG_REVERSAL intrabar SELL blocked until enough repaired samples",
+    ),
 )
+
+# =========================
+# Phase 6W3 Dynamic Intrabar Sub-Profile Rules
+# =========================
+ENABLE_DYNAMIC_INTRABAR_SUBPROFILE_RISK_RULES = True
+DYNAMIC_INTRABAR_SUBPROFILE_RULES_FILE = "data/strategy_intelligence/{account_key}/intrabar_subprofile_block_rules.json"
+DYNAMIC_INTRABAR_SUBPROFILE_STATIC_FALLBACK = True
+DYNAMIC_INTRABAR_SUBPROFILE_MIN_SAMPLES = 5
+DYNAMIC_INTRABAR_SUBPROFILE_BLOCK_DECISIONS = ("BLOCK_TEMPORARILY",)
+DYNAMIC_INTRABAR_SUBPROFILE_MAX_LOSS_RATE = 0.60
+DYNAMIC_INTRABAR_SUBPROFILE_MIN_EXPECTANCY = 0.0
 
