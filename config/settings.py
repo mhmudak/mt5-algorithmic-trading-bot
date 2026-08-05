@@ -2475,3 +2475,19 @@ except Exception:
     # Never break settings import because of profile-shape differences.
     pass
 
+# ============================================================
+# Phase 6U Intrabar JSON Optimization Report
+# ============================================================
+# Reporting only:
+# - Reads setup/performance JSON statistics
+# - Does not execute trades
+# - Does not block trades
+# - Does not modify risk
+# - Does not modify entry/SL/TP
+PHASE6U_INTRABAR_JSON_OPTIMIZATION_OUTPUT_DIR = "data/reports/intrabar_json_optimization"
+PHASE6U_INTRABAR_JSON_OPTIMIZATION_ALLOWED_STRATEGIES = (
+    "AUTO_STRUCTURAL_LEVEL_SCALP",
+    "FAILED_FVG_REVERSAL",
+)
+PHASE6U_INTRABAR_JSON_OPTIMIZATION_BLOCK_OTHERS = True
+
