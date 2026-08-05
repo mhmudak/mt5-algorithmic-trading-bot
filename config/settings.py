@@ -2392,3 +2392,16 @@ PHASE6T_STRATEGY_EVIDENCE_MIN_MATCHED_SAMPLES = 5
 PHASE6T_STRATEGY_EVIDENCE_PROMISING_MIN_WIN_RATE = 55.0
 PHASE6T_STRATEGY_EVIDENCE_WEAK_MAX_WIN_RATE = 40.0
 
+# ============================================================
+# Phase 6T Strategy Evidence Telegram Digest
+# ============================================================
+# Reporting only:
+# - Does not execute trades
+# - Does not block trades
+# - Does not modify risk
+# - Does not modify entry/SL/TP
+# - Telegram sending only when explicitly requested by script flag
+PHASE6T_STRATEGY_EVIDENCE_DIGEST_OUTPUT_DIR = "data/reports/strategy_evidence_digest"
+PHASE6T_STRATEGY_EVIDENCE_DIGEST_TOP_N = 5
+PHASE6T_STRATEGY_EVIDENCE_DIGEST_SEND_TELEGRAM = False
+
