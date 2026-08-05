@@ -48,6 +48,9 @@ from src.strategy_advisory import (
 )
 
 from src.market_outlook_advisory_runtime import maybe_send_runtime_outlook_advisory
+from src.intrabar_strategy_allowlist import (
+    explain_intrabar_strategy_allowlist_decision,
+)
 from src.market_outlook_execution_annotation import (
     build_phase6s_execution_annotation,
     append_phase6s_execution_annotation,
@@ -325,6 +328,7 @@ from config.settings import (
     PHASE6S_RUNTIME_OUTLOOK_ADVISORY_FORCE_SEND,
     PHASE6S_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION_DIR,
     ENABLE_PHASE6S_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION,
+    ENABLE_INTRABAR_STRATEGY_ALLOWLIST,
     PHASE6S_RUNTIME_OUTLOOK_ADVISORY_REPORT_TYPE,
     SEND_PHASE6S_RUNTIME_OUTLOOK_ADVISORY_TELEGRAM,
     ENABLE_PHASE6S_RUNTIME_OUTLOOK_ADVISORY,
@@ -4376,6 +4380,23 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
         locals(),
         setup_source_bucket_override="INTRABAR",
     )
+
+    phase6u_intrabar_allowlist_decision = explain_intrabar_strategy_allowlist_decision(
+        signal_payload=signal if isinstance(signal, dict) else {"signal": signal},
+        trade_plan=trade_plan,
+        enabled=ENABLE_INTRABAR_STRATEGY_ALLOWLIST,
+        allowlist=INTRABAR_STRATEGY_ALLOWLIST,
+    )
+
+    if not phase6u_intrabar_allowlist_decision.get("allowed", True):
+        logger.info(
+            "[PHASE 6U1 INTRABAR ALLOWLIST] "
+            f"blocked=True "
+            f"strategy={phase6u_intrabar_allowlist_decision.get('strategy')} "
+            f"reason={phase6u_intrabar_allowlist_decision.get('reason')} "
+            f"allowlist={phase6u_intrabar_allowlist_decision.get('allowlist')}"
+        )
+        return None
 
     _live_execute_start_ts = time.perf_counter()
     logger.info(

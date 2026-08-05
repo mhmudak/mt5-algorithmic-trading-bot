@@ -2405,3 +2405,73 @@ PHASE6T_STRATEGY_EVIDENCE_DIGEST_OUTPUT_DIR = "data/reports/strategy_evidence_di
 PHASE6T_STRATEGY_EVIDENCE_DIGEST_TOP_N = 5
 PHASE6T_STRATEGY_EVIDENCE_DIGEST_SEND_TELEGRAM = False
 
+# ============================================================
+# Phase 6U Intrabar Strategy Allowlist
+# ============================================================
+# Live intrabar control:
+# - Keeps only the intrabar strategies explicitly allowed below
+# - Blocks all other intrabar strategies before execution
+# - Attempts to filter intrabar strategy profiles before detection when possible
+# - Does not affect non-intrabar strategy execution
+ENABLE_INTRABAR_STRATEGY_ALLOWLIST = True
+ENABLE_INTRABAR_STRATEGY_DETECTION_ALLOWLIST = True
+
+INTRABAR_STRATEGY_ALLOWLIST = (
+    "AUTO_STRUCTURAL_LEVEL_SCALP",
+    "FAILED_FVG_REVERSAL",
+)
+
+INTRABAR_STRATEGY_BLOCKED_EXAMPLES = (
+    "MICRO_SR_SWEEP_RECLAIM",
+    "RANGE_SWEEP_RECLAIM",
+    "LIQUIDITY_SWEEP",
+    "LIQUIDITY_TRAP",
+    "VWAP_RECLAIM",
+)
+
+
+def _phase6u_normalize_intrabar_strategy_name(value):
+    if value is None:
+        return ""
+
+    if isinstance(value, (list, tuple, set)):
+        value = next((item for item in value if item), "")
+
+    return str(value).strip().upper()
+
+
+def _phase6u_extract_profile_strategy_name(profile):
+    if isinstance(profile, dict):
+        for key in (
+            "strategy",
+            "strategy_name",
+            "name",
+            "setup_source",
+            "setup_type",
+            "profile_name",
+        ):
+            value = profile.get(key)
+            if value:
+                return _phase6u_normalize_intrabar_strategy_name(value)
+
+    return _phase6u_normalize_intrabar_strategy_name(profile)
+
+
+try:
+    if (
+        ENABLE_INTRABAR_STRATEGY_DETECTION_ALLOWLIST
+        and "INTRABAR_PRICE_EVENT_STRATEGY_PROFILES" in globals()
+    ):
+        _PHASE6U_INTRABAR_ALLOWED_NORMALIZED = {
+            _phase6u_normalize_intrabar_strategy_name(strategy)
+            for strategy in INTRABAR_STRATEGY_ALLOWLIST
+        }
+
+        INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = [
+            profile for profile in INTRABAR_PRICE_EVENT_STRATEGY_PROFILES
+            if _phase6u_extract_profile_strategy_name(profile) in _PHASE6U_INTRABAR_ALLOWED_NORMALIZED
+        ]
+except Exception:
+    # Never break settings import because of profile-shape differences.
+    pass
+
