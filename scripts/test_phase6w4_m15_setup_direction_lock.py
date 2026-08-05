@@ -10,6 +10,7 @@ if str(ROOT) not in sys.path:
 from src.m15_setup_direction_lock import (
     evaluate_intrabar_m15_direction_lock_guard,
     get_active_m15_direction_lock,
+    is_m15_direction_lock_eligible_trade_plan,
     register_m15_direction_lock,
 )
 
@@ -122,11 +123,53 @@ def test_non_intrabar_ignores_m15_lock():
     assert decision["reason"] == "not_intrabar_trade_plan"
 
 
+def test_intrabar_trade_plan_is_not_eligible_to_register_lock():
+    assert (
+        is_m15_direction_lock_eligible_trade_plan(
+            {
+                "setup_id": "ASLS-BUY-1",
+                "strategy": "AUTO_STRUCTURAL_LEVEL_SCALP",
+                "setup_source_bucket": "INTRABAR",
+                "market_condition": "INTRABAR_STRUCTURAL_LEVEL_SCALP",
+            }
+        )
+        is False
+    )
+
+
+def test_tracked_recovery_is_not_eligible_to_register_lock():
+    assert (
+        is_m15_direction_lock_eligible_trade_plan(
+            {
+                "setup_id": "RECOVERY-BUY-1",
+                "strategy": "FAILED_FVG_REVERSAL",
+                "setup_source_bucket": "REJECTED_CANDIDATE_TRACKED",
+            }
+        )
+        is False
+    )
+
+
+def test_normal_candle_close_setup_is_eligible_to_register_lock():
+    assert (
+        is_m15_direction_lock_eligible_trade_plan(
+            {
+                "setup_id": "ORB-BUY-1",
+                "strategy": "ORB",
+                "setup_source_bucket": "NORMAL_OR_TRACKED",
+                "market_condition": "TRENDING",
+            }
+        )
+        is True
+    )
+
+
 def test_live_bot_markers_exist():
     text = LIVE.read_text(encoding="utf-8")
 
     assert "PHASE6W_M15_DIRECTION_LOCK = {}" in text
     assert "register_m15_direction_lock" in text
+    assert "is_m15_direction_lock_eligible_trade_plan" in text
     assert "evaluate_intrabar_m15_direction_lock_guard" in text
     assert "M15_SETUP_DIRECTION_LOCK_REGISTERED" in text
     assert "INTRABAR_M15_DIRECTION_LOCK_BLOCKED" in text
@@ -146,6 +189,9 @@ if __name__ == "__main__":
     test_intrabar_opposite_direction_blocks_against_m15_lock()
     test_intrabar_same_direction_allowed_against_m15_lock()
     test_non_intrabar_ignores_m15_lock()
+    test_intrabar_trade_plan_is_not_eligible_to_register_lock()
+    test_tracked_recovery_is_not_eligible_to_register_lock()
+    test_normal_candle_close_setup_is_eligible_to_register_lock()
     test_live_bot_markers_exist()
     test_settings_flags_exist()
     print("[PASS] Phase 6W4 M15 setup direction lock passed.")

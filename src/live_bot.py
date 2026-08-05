@@ -11708,9 +11708,18 @@ def process_cycle(last_processed_candle_time):
 
         try:
             from config import settings as _phase6w4_settings
-            from src.m15_setup_direction_lock import register_m15_direction_lock
+            from src.m15_setup_direction_lock import (
+                is_m15_direction_lock_eligible_trade_plan,
+                register_m15_direction_lock,
+            )
 
-            if bool(getattr(_phase6w4_settings, "ENABLE_M15_SETUP_DIRECTION_LOCK", True)):
+            if (
+                bool(getattr(_phase6w4_settings, "ENABLE_M15_SETUP_DIRECTION_LOCK", True))
+                and is_m15_direction_lock_eligible_trade_plan(
+                    trade_plan,
+                    selected_signal_data,
+                )
+            ):
                 register_m15_direction_lock(
                     PHASE6W_M15_DIRECTION_LOCK,
                     signal=signal,

@@ -18,6 +18,56 @@ def _now(now_ts: Optional[float] = None) -> float:
     return float(now_ts if now_ts is not None else time.time())
 
 
+def is_m15_direction_lock_eligible_trade_plan(
+    trade_plan: Any,
+    selected_signal_data: Optional[Any] = None,
+) -> bool:
+    plan = _as_dict(trade_plan)
+    signal_data = _as_dict(selected_signal_data)
+
+    if not plan and not signal_data:
+        return False
+
+    if is_intrabar_trade_plan(plan) or is_intrabar_trade_plan(signal_data):
+        return False
+
+    disallowed_sources = {
+        "INTRABAR",
+        "SCALP_FALLBACK",
+        "INTRABAR_STRUCTURAL_LEVEL_SCALP",
+        "TICK_SNIPER",
+        "ORB_TICK_WATCHER",
+        "REJECTED_CANDIDATE_TRACKED",
+        "MTF_CONFLICT_TRACKED",
+    }
+
+    source_values = [
+        plan.get("setup_source_bucket"),
+        signal_data.get("setup_source_bucket"),
+        plan.get("source"),
+        signal_data.get("source"),
+        plan.get("market_condition"),
+        signal_data.get("market_condition"),
+        plan.get("strategy"),
+        signal_data.get("strategy"),
+    ]
+
+    normalized_sources = {
+        str(value).strip().upper()
+        for value in source_values
+        if value is not None and str(value).strip()
+    }
+
+    if normalized_sources.intersection(disallowed_sources):
+        return False
+
+    # A real candle-close setup should have normal setup fields, not only a scalp/intrabar shell.
+    if not (plan.get("setup_id") or signal_data.get("setup_id")):
+        return False
+
+    return True
+
+
 def register_m15_direction_lock(
     lock_state: Dict[str, Any],
     *,
