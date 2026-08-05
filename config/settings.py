@@ -2368,3 +2368,13 @@ PHASE6S_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION_DIR = "data/reports/market_outlook/
 PHASE6S_OUTCOME_ATTRIBUTION_OUTPUT_DIR = "data/reports/market_outlook/outcome_attribution"
 PHASE6S_OUTCOME_ATTRIBUTION_MIN_SAMPLES = 5
 
+# ============================================================
+# Phase 6S Evidence Collection Health
+# ============================================================
+# Reporting only:
+# - Does not execute trades
+# - Does not block trades
+# - Does not modify risk
+# - Does not modify entry/SL/TP
+PHASE6S_EVIDENCE_HEALTH_OUTPUT_DIR = "data/reports/market_outlook/evidence_health"
+
