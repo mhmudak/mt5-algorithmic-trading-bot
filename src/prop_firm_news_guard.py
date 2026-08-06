@@ -10,6 +10,15 @@ RESTRICTED_ENTRY_ACTIONS = {
     "PLACE_PENDING_ORDER",
 }
 
+RESTRICTED_EXIT_ACTIONS = {
+    "PARTIAL_CLOSE_POSITION",
+    "FULL_CLOSE_POSITION",
+}
+
+RESTRICTED_PROTECTIVE_MODIFICATION_ACTIONS = {
+    "MODIFY_PROTECTIVE_SL_TP",
+}
+
 
 def _decision(
     *,
@@ -73,12 +82,24 @@ def evaluate_prop_firm_news_restriction(
             profile_name=normalized_profile,
         )
 
-    if normalized_action not in RESTRICTED_ENTRY_ACTIONS:
+    if normalized_action in RESTRICTED_ENTRY_ACTIONS:
+        action_category = "ENTRY"
+    elif normalized_action in RESTRICTED_EXIT_ACTIONS:
+        action_category = "AUTOMATED_EXIT"
+    elif (
+        normalized_action
+        in RESTRICTED_PROTECTIVE_MODIFICATION_ACTIONS
+    ):
+        action_category = "PROTECTIVE_MODIFICATION"
+    else:
         return _decision(
             allowed=True,
-            reason="action_not_restricted_by_entry_guard",
+            reason="action_not_restricted_by_news_guard",
             profile_name=normalized_profile,
-            snapshot={"action": normalized_action},
+            snapshot={
+                "action": normalized_action,
+                "action_category": "UNRESTRICTED",
+            },
         )
 
     if not isinstance(profile, dict):
@@ -95,6 +116,44 @@ def evaluate_prop_firm_news_restriction(
             profile_name=normalized_profile,
         )
 
+    if (
+        action_category == "AUTOMATED_EXIT"
+        and not bool(
+            profile.get(
+                "news_block_automated_position_closes",
+                True,
+            )
+        )
+    ):
+        return _decision(
+            allowed=True,
+            reason="automated_exit_news_guard_disabled",
+            profile_name=normalized_profile,
+            snapshot={
+                "action": normalized_action,
+                "action_category": action_category,
+            },
+        )
+
+    if (
+        action_category == "PROTECTIVE_MODIFICATION"
+        and not bool(
+            profile.get(
+                "news_freeze_sl_tp_modifications",
+                True,
+            )
+        )
+    ):
+        return _decision(
+            allowed=True,
+            reason="protective_modification_news_guard_disabled",
+            profile_name=normalized_profile,
+            snapshot={
+                "action": normalized_action,
+                "action_category": action_category,
+            },
+        )
+
     snapshot = (
         calendar_snapshot
         if isinstance(calendar_snapshot, dict)
@@ -108,6 +167,7 @@ def evaluate_prop_firm_news_restriction(
 
     base_snapshot = {
         "action": normalized_action,
+        "action_category": action_category,
         "calendar_available": calendar_available,
         "calendar_provider": snapshot.get("provider"),
         "calendar_error": snapshot.get("error"),
@@ -225,3 +285,94 @@ def evaluate_prop_firm_news_restriction(
             "after_minutes": after_minutes,
         },
     )
+
+def evaluate_runtime_prop_firm_news_action(
+    *,
+    action: str,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """
+    Evaluate the currently selected prop-firm profile using the
+    configured runtime calendar.
+
+    This helper never submits, modifies, or closes an order.
+    """
+    enabled = False
+    fail_closed = True
+    profile_name = ""
+
+    try:
+        from config import settings as runtime_settings
+
+        enabled = bool(
+            getattr(
+                runtime_settings,
+                "ENABLE_PROP_FIRM_SAFE_MODE",
+                False,
+            )
+        )
+        fail_closed = bool(
+            getattr(
+                runtime_settings,
+                "PROP_FIRM_SAFE_MODE_FAIL_CLOSED",
+                True,
+            )
+        )
+
+        profile_name = str(
+            getattr(
+                runtime_settings,
+                "PROP_FIRM_PROFILE",
+                "",
+            )
+            or ""
+        ).strip().upper()
+
+        if not enabled:
+            return _decision(
+                allowed=True,
+                reason="prop_firm_news_guard_disabled",
+                profile_name=profile_name,
+                snapshot={"action": str(action).upper()},
+            )
+
+        profiles = getattr(
+            runtime_settings,
+            "PROP_FIRM_PROFILES",
+            {},
+        )
+        profile = (
+            profiles.get(profile_name)
+            if isinstance(profiles, dict)
+            else None
+        )
+
+        from src.news_filter import (
+            get_prop_firm_news_calendar_snapshot,
+        )
+
+        calendar_snapshot = (
+            get_prop_firm_news_calendar_snapshot(now=now)
+        )
+
+        return evaluate_prop_firm_news_restriction(
+            enabled=True,
+            profile_name=profile_name,
+            profile=profile,
+            calendar_snapshot=calendar_snapshot,
+            action=action,
+            now=now,
+            fail_closed=fail_closed,
+        )
+
+    except Exception as exc:
+        return _decision(
+            allowed=not (enabled and fail_closed),
+            reason="prop_firm_news_runtime_evaluation_failed",
+            profile_name=profile_name,
+            snapshot={
+                "action": str(action or "").upper(),
+                "error": str(exc),
+                "orders_sent": 0,
+            },
+        )

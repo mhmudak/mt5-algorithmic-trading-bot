@@ -2707,6 +2707,14 @@ PROP_FIRM_PROFILES = {
         "news_calendar_fail_closed": True,
         "news_notify_telegram": True,
 
+        # Phase 7A3B ? position-management compliance.
+        "news_block_automated_position_closes": True,
+        "news_freeze_sl_tp_modifications": True,
+
+        # Existing broker-side protection is never removed merely
+        # because a restricted-news window is active.
+        "news_preserve_existing_sl_tp": True,
+
         # Official program limits.
         "official_daily_loss_pct": 3.0,
         "official_trailing_drawdown_pct": 6.0,

@@ -151,16 +151,16 @@ def test_calendar_unavailable_fails_closed():
     )
 
 
-def test_non_entry_action_is_not_blocked():
+def test_broker_triggered_protection_is_not_intercepted():
     result = evaluate(
         snapshot([event()]),
-        action="MODIFY_PROTECTIVE_SL",
+        action="BROKER_TRIGGERED_SL_TP",
     )
 
     assert result["allowed"] is True
     assert (
         result["reason"]
-        == "action_not_restricted_by_entry_guard"
+        == "action_not_restricted_by_news_guard"
     )
 
 
@@ -189,7 +189,7 @@ if __name__ == "__main__":
     test_non_high_event_is_allowed()
     test_manual_event_is_restricted()
     test_calendar_unavailable_fails_closed()
-    test_non_entry_action_is_not_blocked()
+    test_broker_triggered_protection_is_not_intercepted()
     test_source_markers_exist()
 
     print("[PASS] Phase 7A3 prop-firm news entry guard passed.")

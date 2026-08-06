@@ -2,6 +2,7 @@ import MetaTrader5 as mt5
 
 from src.logger import logger
 from src.trade_tracker import load_trades
+from src.prop_firm_news_guard import evaluate_runtime_prop_firm_news_action
 
 
 def manage_manual_trailing_positions(symbol: str, start_price: float, trail_distance: float):
@@ -73,6 +74,24 @@ def manage_manual_trailing_positions(symbol: str, start_price: float, trail_dist
 
 
 def modify_sl(position, new_sl, tp, reason="SL update"):
+    news_decision = evaluate_runtime_prop_firm_news_action(
+        action="MODIFY_PROTECTIVE_SL_TP",
+    )
+
+    if not news_decision.get("allowed", False):
+        logger.warning(
+            "[PROP FIRM NEWS PROTECTION GUARD] "
+            f"manual trailing update frozen | "
+            f"ticket={position.ticket} "
+            f"symbol={position.symbol} "
+            f"requested_sl={round(new_sl, 2)} "
+            f"requested_tp={tp} "
+            f"reason={reason} "
+            f"guard_reason={news_decision.get('reason')} "
+            f"existing protection remains active"
+        )
+        return False
+
     request = {
         "action": mt5.TRADE_ACTION_SLTP,
         "position": position.ticket,

@@ -4,6 +4,7 @@ from src.logger import logger
 from src.notifier import send_telegram_message
 from src.order_executor import get_supported_filling_modes
 from src.trade_tracker import load_trades, save_trades, update_trade_statistics
+from src.prop_firm_news_guard import evaluate_runtime_prop_firm_news_action
 from config.settings import (
     ENABLE_MAIN_STAGE_MANAGEMENT,
     MAIN_STAGE_1_TRIGGER_PRICE,
@@ -475,6 +476,50 @@ def close_position_volume(position, close_volume, tick, reason="Partial close"):
     if close_volume <= 0:
         return False
 
+    try:
+        current_volume = float(position.volume)
+        requested_close_volume = float(close_volume)
+
+        if requested_close_volume >= current_volume - 1e-9:
+            news_action = "FULL_CLOSE_POSITION"
+        else:
+            news_action = "PARTIAL_CLOSE_POSITION"
+
+        news_decision = evaluate_runtime_prop_firm_news_action(
+            action=news_action,
+        )
+
+        if not news_decision.get("allowed", False):
+            logger.warning(
+                "[PROP FIRM NEWS EXIT GUARD] "
+                f"position close blocked | "
+                f"ticket={position.ticket} "
+                f"symbol={position.symbol} "
+                f"action={news_action} "
+                f"close_volume={close_volume} "
+                f"reason={reason} "
+                f"guard_reason={news_decision.get('reason')} "
+                f"snapshot={news_decision.get('snapshot')}"
+            )
+            return False
+
+    except Exception as exc:
+        logger.error(
+            "[PROP FIRM NEWS EXIT GUARD] "
+            f"close evaluation failed: {exc}"
+        )
+
+        try:
+            from config import settings as runtime_settings
+
+            if (
+                runtime_settings.ENABLE_PROP_FIRM_SAFE_MODE
+                and runtime_settings.PROP_FIRM_SAFE_MODE_FAIL_CLOSED
+            ):
+                return False
+        except Exception:
+            pass
+
     if position.type == mt5.POSITION_TYPE_BUY:
         order_type = mt5.ORDER_TYPE_SELL
         price = tick.bid
@@ -569,6 +614,24 @@ def apply_price_lock(position, direction, trigger_price, lock_profit_price, reas
 
 
 def modify_sl(position, new_sl, tp, reason="SL update"):
+    news_decision = evaluate_runtime_prop_firm_news_action(
+        action="MODIFY_PROTECTIVE_SL_TP",
+    )
+
+    if not news_decision.get("allowed", False):
+        logger.warning(
+            "[PROP FIRM NEWS PROTECTION GUARD] "
+            f"SL/TP modification frozen | "
+            f"ticket={position.ticket} "
+            f"symbol={position.symbol} "
+            f"requested_sl={round(new_sl, 2)} "
+            f"requested_tp={tp} "
+            f"reason={reason} "
+            f"guard_reason={news_decision.get('reason')} "
+            f"existing protection remains active"
+        )
+        return False
+
     request = {
         "action": mt5.TRADE_ACTION_SLTP,
         "position": position.ticket,
