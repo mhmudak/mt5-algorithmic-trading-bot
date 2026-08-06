@@ -2695,6 +2695,18 @@ PROP_FIRM_PROFILES = {
         # accounts that clearly are not the configured $50K account.
         "activation_balance_tolerance_pct": 10.0,
 
+        # Phase 7A3 ? GetLeveraged restricted-news window.
+        "news_restriction_enabled": True,
+        "news_before_minutes": 5,
+        "news_after_minutes": 5,
+        "news_restricted_currencies": ("USD",),
+        "news_required_impacts": ("HIGH",),
+
+        # Block new orders when the configured calendar feed cannot
+        # be verified while funded safe mode is active.
+        "news_calendar_fail_closed": True,
+        "news_notify_telegram": True,
+
         # Official program limits.
         "official_daily_loss_pct": 3.0,
         "official_trailing_drawdown_pct": 6.0,

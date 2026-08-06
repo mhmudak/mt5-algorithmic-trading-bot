@@ -732,6 +732,167 @@ def execute_trade(signal, trade_plan, symbol):
         )
         return False
 
+    # ========================================================
+    # Phase 7A3 ? Prop-firm restricted-news entry guard
+    # ========================================================
+    try:
+        from config import settings as _prop_settings
+
+        prop_safe_mode_enabled = bool(
+            getattr(
+                _prop_settings,
+                "ENABLE_PROP_FIRM_SAFE_MODE",
+                False,
+            )
+        )
+
+        if prop_safe_mode_enabled:
+            from src.news_filter import (
+                get_prop_firm_news_calendar_snapshot,
+            )
+            from src.prop_firm_news_guard import (
+                evaluate_prop_firm_news_restriction,
+            )
+
+            profile_name = str(
+                getattr(
+                    _prop_settings,
+                    "PROP_FIRM_PROFILE",
+                    "",
+                )
+                or ""
+            ).strip().upper()
+
+            profiles = getattr(
+                _prop_settings,
+                "PROP_FIRM_PROFILES",
+                {},
+            )
+            profile = (
+                profiles.get(profile_name)
+                if isinstance(profiles, dict)
+                else None
+            )
+
+            calendar_snapshot = (
+                get_prop_firm_news_calendar_snapshot()
+            )
+
+            news_decision = (
+                evaluate_prop_firm_news_restriction(
+                    enabled=True,
+                    profile_name=profile_name,
+                    profile=profile,
+                    calendar_snapshot=calendar_snapshot,
+                    action="OPEN_POSITION",
+                    fail_closed=bool(
+                        getattr(
+                            _prop_settings,
+                            "PROP_FIRM_SAFE_MODE_FAIL_CLOSED",
+                            True,
+                        )
+                    ),
+                )
+            )
+
+            if not news_decision.get("allowed", False):
+                news_reason = news_decision.get("reason")
+                news_snapshot = (
+                    news_decision.get("snapshot") or {}
+                )
+
+                if isinstance(trade_plan, dict):
+                    trade_plan[
+                        "execution_block_reason"
+                    ] = news_reason
+                    trade_plan[
+                        "execution_block_action"
+                    ] = "WAIT_UNTIL_NEWS_WINDOW_END"
+                    trade_plan[
+                        "prop_firm_news_snapshot"
+                    ] = news_snapshot
+
+                logger.error(
+                    "[PROP FIRM NEWS GUARD] "
+                    f"execution blocked | "
+                    f"profile={profile_name} "
+                    f"reason={news_reason} "
+                    f"symbol={symbol} "
+                    f"signal={signal} "
+                    f"setup_id={trade_plan.get('setup_id') if isinstance(trade_plan, dict) else None} "
+                    f"strategy={trade_plan.get('strategy') if isinstance(trade_plan, dict) else None} "
+                    f"snapshot={news_snapshot}"
+                )
+
+                if (
+                    isinstance(profile, dict)
+                    and profile.get(
+                        "news_notify_telegram",
+                        True,
+                    )
+                ):
+                    restricted_event = (
+                        news_snapshot.get(
+                            "restricted_event"
+                        )
+                        or {}
+                    )
+
+                    send_telegram_message(
+                        f"? PROP-FIRM NEWS ENTRY BLOCK\n"
+                        f"Profile: {profile_name}\n"
+                        f"Symbol: {symbol}\n"
+                        f"Signal: {signal}\n"
+                        f"Strategy: "
+                        f"{trade_plan.get('strategy') if isinstance(trade_plan, dict) else None}\n"
+                        f"Reason: {news_reason}\n"
+                        f"Event: "
+                        f"{restricted_event.get('name')}\n"
+                        f"Currency: "
+                        f"{restricted_event.get('currency')}\n"
+                        f"Minutes From Event: "
+                        f"{restricted_event.get('minutes_from_event')}\n"
+                        f"Action: no order submitted"
+                    )
+
+                return False
+
+    except Exception as exc:
+        try:
+            from config import settings as _prop_settings
+
+            enabled = bool(
+                getattr(
+                    _prop_settings,
+                    "ENABLE_PROP_FIRM_SAFE_MODE",
+                    False,
+                )
+            )
+            fail_closed = bool(
+                getattr(
+                    _prop_settings,
+                    "PROP_FIRM_SAFE_MODE_FAIL_CLOSED",
+                    True,
+                )
+            )
+        except Exception:
+            enabled = False
+            fail_closed = True
+
+        logger.error(
+            f"[PROP FIRM NEWS GUARD] evaluation failed: {exc}"
+        )
+
+        if enabled and fail_closed:
+            send_telegram_message(
+                f"? PROP-FIRM NEWS GUARD FAILURE\n"
+                f"Symbol: {symbol}\n"
+                f"Signal: {signal}\n"
+                f"Reason: {exc}\n"
+                f"Action: no order submitted"
+            )
+            return False
+
     if isinstance(trade_plan, dict) and not trade_plan.get("tp_ladder_child_order"):
         split_result = _execute_tp_ladder_split_orders(signal, trade_plan, symbol)
 

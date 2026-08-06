@@ -25,6 +25,8 @@ from src.logger import logger
 _cached_events = {
     "fetched_at": None,
     "events": [],
+    "fetch_ok": None,
+    "error": None,
 }
 
 
@@ -100,12 +102,19 @@ def _is_relevant_event(event):
 
 def _fetch_forex_factory_events():
     try:
-        response = requests.get(FOREX_FACTORY_CALENDAR_URL, timeout=8)
+        response = requests.get(
+            FOREX_FACTORY_CALENDAR_URL,
+            timeout=8,
+        )
 
         if response.status_code != 200:
-            logger.error(
-                f"[NEWS FILTER] ForexFactory HTTP {response.status_code}: {response.text[:200]}"
+            error = (
+                f"ForexFactory HTTP {response.status_code}: "
+                f"{response.text[:200]}"
             )
+            _cached_events["fetch_ok"] = False
+            _cached_events["error"] = error
+            logger.error(f"[NEWS FILTER] {error}")
             return []
 
         root = ET.fromstring(response.content)
@@ -119,7 +128,10 @@ def _fetch_forex_factory_events():
             date_value = _text(item, "date")
             time_value = _text(item, "time")
 
-            event_time = _parse_forex_factory_datetime(date_value, time_value)
+            event_time = _parse_forex_factory_datetime(
+                date_value,
+                time_value,
+            )
 
             if event_time is None:
                 continue
@@ -138,11 +150,20 @@ def _fetch_forex_factory_events():
 
             events.append(event)
 
-        logger.info(f"[NEWS FILTER] Loaded {len(events)} relevant ForexFactory events")
+        _cached_events["fetch_ok"] = True
+        _cached_events["error"] = None
+
+        logger.info(
+            f"[NEWS FILTER] Loaded {len(events)} "
+            f"relevant ForexFactory events"
+        )
         return events
 
-    except Exception as e:
-        logger.error(f"[NEWS FILTER] Failed to fetch ForexFactory calendar: {e}")
+    except Exception as exc:
+        error = f"ForexFactory fetch failed: {exc}"
+        _cached_events["fetch_ok"] = False
+        _cached_events["error"] = error
+        logger.error(f"[NEWS FILTER] {error}")
         return []
 
 
@@ -169,14 +190,109 @@ def _get_auto_news_events():
     return events
 
 
+
+def _safe_nonnegative_minutes(value, default):
+    try:
+        return max(float(value), 0.0)
+    except Exception:
+        return max(float(default), 0.0)
+
+
+def _get_active_news_block_minutes():
+    """
+    Resolve the effective entry blackout window.
+
+    Normal account:
+        Uses the existing generic settings.
+
+    Enabled prop-firm account:
+        Uses the selected prop-firm profile.
+    """
+    generic_before = _safe_nonnegative_minutes(
+        NEWS_BLOCK_BEFORE_MINUTES,
+        15.0,
+    )
+    generic_after = _safe_nonnegative_minutes(
+        NEWS_BLOCK_AFTER_MINUTES,
+        15.0,
+    )
+
+    try:
+        from config import settings as runtime_settings
+
+        if not bool(
+            getattr(
+                runtime_settings,
+                "ENABLE_PROP_FIRM_SAFE_MODE",
+                False,
+            )
+        ):
+            return generic_before, generic_after
+
+        profile_name = str(
+            getattr(
+                runtime_settings,
+                "PROP_FIRM_PROFILE",
+                "",
+            )
+            or ""
+        ).strip().upper()
+
+        profiles = getattr(
+            runtime_settings,
+            "PROP_FIRM_PROFILES",
+            {},
+        )
+
+        profile = (
+            profiles.get(profile_name)
+            if isinstance(profiles, dict)
+            else None
+        )
+
+        if not isinstance(profile, dict):
+            return generic_before, generic_after
+
+        if not bool(
+            profile.get(
+                "news_restriction_enabled",
+                True,
+            )
+        ):
+            return generic_before, generic_after
+
+        funded_before = _safe_nonnegative_minutes(
+            profile.get(
+                "news_before_minutes",
+                generic_before,
+            ),
+            generic_before,
+        )
+        funded_after = _safe_nonnegative_minutes(
+            profile.get(
+                "news_after_minutes",
+                generic_after,
+            ),
+            generic_after,
+        )
+
+        return funded_before, funded_after
+
+    except Exception:
+        return generic_before, generic_after
+
 def _manual_news_blackout(now):
+    before_minutes, after_minutes = (
+        _get_active_news_block_minutes()
+    )
+
     for event in NEWS_BLACKOUT_WINDOWS:
         try:
             event_time = _parse_manual_news_time(event["time"])
             event_name = event.get("name", "High-impact news")
 
-            start = event_time - timedelta(minutes=NEWS_BLOCK_BEFORE_MINUTES)
-            end = event_time + timedelta(minutes=NEWS_BLOCK_AFTER_MINUTES)
+            start = event_time - timedelta(minutes=before_minutes)
+            end = event_time + timedelta(minutes=after_minutes)
 
             if start <= now <= end:
                 reason = (
@@ -196,13 +312,16 @@ def _manual_news_blackout(now):
 
 
 def _auto_news_blackout(now):
+    before_minutes, after_minutes = (
+        _get_active_news_block_minutes()
+    )
     events = _get_auto_news_events()
 
     for event in events:
         event_time = event["time"]
 
-        start = event_time - timedelta(minutes=NEWS_BLOCK_BEFORE_MINUTES)
-        end = event_time + timedelta(minutes=NEWS_BLOCK_AFTER_MINUTES)
+        start = event_time - timedelta(minutes=before_minutes)
+        end = event_time + timedelta(minutes=after_minutes)
 
         if start <= now <= end:
             reason = (
@@ -218,6 +337,63 @@ def _auto_news_blackout(now):
             return True, reason
 
     return False, "no_auto_news_blackout"
+
+
+def get_prop_firm_news_calendar_snapshot(now=None):
+    """
+    Return normalized restricted-news events and calendar health.
+
+    No order operation is performed here.
+    """
+    if now is None:
+        now = datetime.now()
+
+    manual_events = []
+
+    for event in NEWS_BLACKOUT_WINDOWS:
+        try:
+            event_time = _parse_manual_news_time(event["time"])
+
+            manual_events.append({
+                "name": event.get(
+                    "name",
+                    "Manual high-impact news",
+                ),
+                "time": event_time,
+                "currency": event.get("currency", "USD"),
+                "impact": event.get("impact", "High"),
+                "source": "MANUAL",
+            })
+        except Exception as exc:
+            logger.error(
+                f"[NEWS FILTER] Invalid manual news config: "
+                f"{event} | {exc}"
+            )
+
+    auto_events = []
+
+    if ENABLE_AUTO_NEWS_FILTER:
+        auto_events = list(_get_auto_news_events())
+
+    auto_available = (
+        ENABLE_AUTO_NEWS_FILTER
+        and _cached_events.get("fetch_ok") is True
+    )
+    manual_available = bool(manual_events)
+
+    available = bool(auto_available or manual_available)
+
+    return {
+        "available": available,
+        "provider": ECONOMIC_CALENDAR_PROVIDER,
+        "events": manual_events + auto_events,
+        "manual_event_count": len(manual_events),
+        "auto_event_count": len(auto_events),
+        "fetched_at": _cached_events.get("fetched_at"),
+        "fetch_ok": _cached_events.get("fetch_ok"),
+        "error": _cached_events.get("error"),
+        "checked_at": now,
+    }
 
 def classify_news_event_name(name):
     text = str(name or "").upper()
