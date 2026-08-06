@@ -2684,6 +2684,17 @@ PROP_FIRM_PROFILES = {
 
         "initial_balance": 50000.0,
 
+        # Phase 7A2 activation identity guard.
+        # Set expected_login after receiving the real funded account.
+        "activation_require_explicit_identity": True,
+        "expected_login": None,
+        "expected_server": None,
+        "expected_currency": "USD",
+
+        # Allows normal evaluation-stage balance movement while rejecting
+        # accounts that clearly are not the configured $50K account.
+        "activation_balance_tolerance_pct": 10.0,
+
         # Official program limits.
         "official_daily_loss_pct": 3.0,
         "official_trailing_drawdown_pct": 6.0,

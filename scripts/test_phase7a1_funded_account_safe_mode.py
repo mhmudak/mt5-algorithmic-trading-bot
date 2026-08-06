@@ -28,6 +28,14 @@ PROFILES = {
         "program": "TURBO",
         "stage": "EVALUATION",
         "initial_balance": 50000.0,
+
+        # Phase 7A2 identity values matching FakeMT5.account_info().
+        "activation_require_explicit_identity": True,
+        "expected_login": "123456",
+        "expected_server": "GetLeveraged-Test",
+        "expected_currency": None,
+        "activation_balance_tolerance_pct": 10.0,
+
         "official_daily_loss_pct": 3.0,
         "official_trailing_drawdown_pct": 6.0,
         "daily_safety_buffer_pct": 0.5,

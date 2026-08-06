@@ -124,6 +124,201 @@ def _decision(
     }
 
 
+def evaluate_funded_account_activation(
+    *,
+    account: Any,
+    enabled: bool,
+    profile_name: str,
+    profile: Optional[Dict[str, Any]],
+    fail_closed: bool = True,
+) -> Dict[str, Any]:
+    """
+    Verify that funded-account safe mode is being activated against
+    the intended MT5 account.
+
+    This function never submits, modifies, or closes an order.
+    """
+    normalized_profile = str(profile_name or "").strip().upper()
+
+    if not enabled:
+        return _decision(
+            allowed=True,
+            reason="funded_safe_mode_disabled",
+            profile_name=normalized_profile,
+        )
+
+    if not isinstance(profile, dict):
+        return _decision(
+            allowed=not fail_closed,
+            reason="funded_profile_missing",
+            profile_name=normalized_profile,
+        )
+
+    if account is None:
+        return _decision(
+            allowed=not fail_closed,
+            reason="account_info_unavailable",
+            profile_name=normalized_profile,
+        )
+
+    connected_login = str(
+        _get_value(account, "login", "") or ""
+    ).strip()
+    connected_server = str(
+        _get_value(account, "server", "") or ""
+    ).strip()
+    connected_currency = str(
+        _get_value(account, "currency", "") or ""
+    ).strip().upper()
+    connected_balance = _safe_float(
+        _get_value(account, "balance")
+    )
+
+    expected_login = str(
+        profile.get("expected_login") or ""
+    ).strip()
+    expected_server = str(
+        profile.get("expected_server") or ""
+    ).strip()
+    expected_currency = str(
+        profile.get("expected_currency") or ""
+    ).strip().upper()
+
+    require_explicit_identity = bool(
+        profile.get(
+            "activation_require_explicit_identity",
+            True,
+        )
+    )
+
+    expected_balance = _safe_float(
+        profile.get("initial_balance")
+    )
+    balance_tolerance_pct = max(
+        _safe_float(
+            profile.get(
+                "activation_balance_tolerance_pct",
+                10.0,
+            )
+        ),
+        0.0,
+    )
+
+    balance_tolerance_amount = (
+        expected_balance * balance_tolerance_pct / 100.0
+    )
+    minimum_allowed_balance = (
+        expected_balance - balance_tolerance_amount
+    )
+    maximum_allowed_balance = (
+        expected_balance + balance_tolerance_amount
+    )
+
+    snapshot = {
+        "connected_login": connected_login,
+        "connected_server": connected_server,
+        "connected_currency": connected_currency,
+        "connected_balance": round(connected_balance, 2),
+        "expected_login": expected_login or "NOT_CONFIGURED",
+        "expected_server": expected_server or "NOT_CONFIGURED",
+        "expected_currency": (
+            expected_currency or "NOT_CONFIGURED"
+        ),
+        "expected_initial_balance": round(
+            expected_balance,
+            2,
+        ),
+        "balance_tolerance_pct": balance_tolerance_pct,
+        "minimum_allowed_balance": round(
+            minimum_allowed_balance,
+            2,
+        ),
+        "maximum_allowed_balance": round(
+            maximum_allowed_balance,
+            2,
+        ),
+        "orders_sent": 0,
+    }
+
+    if require_explicit_identity and not expected_login:
+        return _decision(
+            allowed=False,
+            reason="funded_account_identity_not_configured",
+            profile_name=normalized_profile,
+            snapshot=snapshot,
+        )
+
+    if not connected_login:
+        return _decision(
+            allowed=not fail_closed,
+            reason="funded_account_login_unavailable",
+            profile_name=normalized_profile,
+            snapshot=snapshot,
+        )
+
+    if expected_login and connected_login != expected_login:
+        return _decision(
+            allowed=False,
+            reason="funded_account_login_mismatch",
+            profile_name=normalized_profile,
+            snapshot=snapshot,
+        )
+
+    if (
+        expected_server
+        and connected_server.casefold()
+        != expected_server.casefold()
+    ):
+        return _decision(
+            allowed=False,
+            reason="funded_account_server_mismatch",
+            profile_name=normalized_profile,
+            snapshot=snapshot,
+        )
+
+    if (
+        expected_currency
+        and connected_currency
+        and connected_currency != expected_currency
+    ):
+        return _decision(
+            allowed=False,
+            reason="funded_account_currency_mismatch",
+            profile_name=normalized_profile,
+            snapshot=snapshot,
+        )
+
+    if connected_balance <= 0:
+        return _decision(
+            allowed=not fail_closed,
+            reason="funded_account_balance_unavailable",
+            profile_name=normalized_profile,
+            snapshot=snapshot,
+        )
+
+    if (
+        expected_balance > 0
+        and not (
+            minimum_allowed_balance
+            <= connected_balance
+            <= maximum_allowed_balance
+        )
+    ):
+        return _decision(
+            allowed=False,
+            reason="funded_account_size_mismatch",
+            profile_name=normalized_profile,
+            snapshot=snapshot,
+        )
+
+    return _decision(
+        allowed=True,
+        reason="funded_account_activation_allowed",
+        profile_name=normalized_profile,
+        snapshot=snapshot,
+    )
+
+
 def evaluate_funded_account_safe_mode(
     *,
     mt5_module: Any,
@@ -170,6 +365,17 @@ def evaluate_funded_account_safe_mode(
             reason="account_info_unavailable",
             profile_name=normalized_profile,
         )
+
+    activation_decision = evaluate_funded_account_activation(
+        account=account,
+        enabled=True,
+        profile_name=normalized_profile,
+        profile=profile,
+        fail_closed=fail_closed,
+    )
+
+    if not activation_decision.get("allowed", False):
+        return activation_decision
 
     balance = _safe_float(_get_value(account, "balance"))
     equity = _safe_float(_get_value(account, "equity"))
@@ -355,6 +561,10 @@ def evaluate_funded_account_safe_mode(
         "firm": profile.get("firm"),
         "program": profile.get("program"),
         "stage": profile.get("stage"),
+        "activation": activation_decision.get(
+            "snapshot",
+            {},
+        ),
         "broker_time_gmt3": current_time.isoformat(),
         "risk_day_key": current_risk_day,
         "balance": round(balance, 2),
