@@ -1,6 +1,6 @@
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import MetaTrader5 as mt5
 import pandas as pd
@@ -331,6 +331,7 @@ from config.settings import (
     PHASE6S_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION_DIR,
     ENABLE_PHASE6S_RUNTIME_OUTLOOK_EXECUTION_ANNOTATION,
     ENABLE_INTRABAR_STRATEGY_ALLOWLIST,
+    INTRABAR_STRATEGY_ALLOWLIST,
     PHASE6S_RUNTIME_OUTLOOK_ADVISORY_REPORT_TYPE,
     SEND_PHASE6S_RUNTIME_OUTLOOK_ADVISORY_TELEGRAM,
     ENABLE_PHASE6S_RUNTIME_OUTLOOK_ADVISORY,
@@ -570,7 +571,7 @@ def maybe_notify_phase6s_runtime_outlook_advisory(signal_payload, trade_plan, tr
         summary = maybe_send_runtime_outlook_advisory(
             raw_setup=raw_setup,
             symbol=SYMBOL,
-            report_type=PHASE6S_RUNTIME_OUTLOOKSYMBOL,
+            report_type=PHASE6S_RUNTIME_OUTLOOK_ADVISORY_REPORT_TYPE,
             enabled=True,
             send_telegram=SEND_PHASE6S_RUNTIME_OUTLOOK_ADVISORY_TELEGRAM,
             force_send=PHASE6S_RUNTIME_OUTLOOK_ADVISORY_FORCE_SEND,
@@ -4631,7 +4632,7 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
     return True
 
 def is_intrabar_detection_recent(setup_id, expiry_seconds):
-    now_ts = datetime.utcnow().timestamp()
+    now_ts = datetime.now(timezone.utc).timestamp()
 
     expired_keys = [
         key for key, seen_ts in INTRABAR_DETECTION_CACHE.items()
@@ -4732,7 +4733,7 @@ def build_intrabar_price_event_dedup_key(signal_data, current_candle_time):
 
 
 def cleanup_intrabar_price_event_dedup_cache():
-    now_ts = datetime.utcnow().timestamp()
+    now_ts = datetime.now(timezone.utc).timestamp()
 
     expired_keys = []
 
@@ -4782,7 +4783,7 @@ def is_intrabar_price_event_duplicate(signal_data, current_candle_time):
         return True, f"max_per_strategy_per_candle_reached:{strategy}"
 
     INTRABAR_PRICE_EVENT_DEDUP_CACHE[key] = {
-        "seen_at": datetime.utcnow().timestamp(),
+        "seen_at": datetime.now(timezone.utc).timestamp(),
         "setup_id": signal_data.get("setup_id"),
         "strategy": strategy,
         "signal": signal_data.get("signal"),
@@ -5543,13 +5544,13 @@ def get_mtf_conflict_setup_id(candidate, signal, tick):
     if tick_time:
         return build_setup_id(strategy, signal, tick_time)
 
-    return f"MTF-{strategy}-{signal}-{datetime.utcnow().timestamp()}"
+    return f"MTF-{strategy}-{signal}-{datetime.now(timezone.utc).timestamp()}"
 
 def is_mtf_conflict_candidate_already_tracked(setup_id, rejection_reason, execution_mode, ttl_seconds=900):
     if not setup_id:
         return False
 
-    now_ts = datetime.utcnow().timestamp()
+    now_ts = datetime.now(timezone.utc).timestamp()
 
     expired_keys = [
         key for key, seen_ts in MTF_CONFLICT_TRACKED_CACHE.items()
@@ -9150,6 +9151,217 @@ def execute_trade(signal, trade_plan, symbol):
         _logger = globals().get("logger")
         if _logger is not None:
             _logger.warning(f"[INTRABAR SUBPROFILE GUARD] failed open: {exc}")
+
+    # ========================================================
+    # Phase 7A1 ? Central Funded Account Safe-Mode Gate
+    # ========================================================
+    try:
+        from config import settings as _funded_settings
+        from src.funded_account_safe_mode import (
+            evaluate_funded_account_safe_mode,
+        )
+
+        funded_profiles = getattr(
+            _funded_settings,
+            "PROP_FIRM_PROFILES",
+            {},
+        )
+        funded_profile_name = getattr(
+            _funded_settings,
+            "PROP_FIRM_PROFILE",
+            "",
+        )
+        funded_fail_closed = bool(
+            getattr(
+                _funded_settings,
+                "PROP_FIRM_SAFE_MODE_FAIL_CLOSED",
+                True,
+            )
+        )
+        funded_account_wide = bool(
+            getattr(
+                _funded_settings,
+                "PROP_FIRM_SAFE_MODE_ACCOUNT_WIDE",
+                True,
+            )
+        )
+
+        funded_decision = evaluate_funded_account_safe_mode(
+            mt5_module=mt5,
+            symbol=symbol,
+            trade_plan=trade_plan,
+            enabled=bool(
+                getattr(
+                    _funded_settings,
+                    "ENABLE_PROP_FIRM_SAFE_MODE",
+                    False,
+                )
+            ),
+            profile_name=funded_profile_name,
+            profiles=funded_profiles,
+            fail_closed=funded_fail_closed,
+            account_wide=funded_account_wide,
+        )
+
+        funded_snapshot = funded_decision.get("snapshot") or {}
+
+        if isinstance(trade_plan, dict):
+            trade_plan["prop_firm_profile"] = funded_decision.get("profile")
+            trade_plan["funded_safe_mode_reason"] = funded_decision.get("reason")
+            trade_plan["funded_safe_mode_snapshot"] = funded_snapshot
+
+        if not funded_decision.get("allowed", False):
+            funded_reason = funded_decision.get(
+                "reason",
+                "funded_safe_mode_blocked",
+            )
+            funded_profile = funded_decision.get(
+                "profile",
+                funded_profile_name,
+            )
+
+            setup_id = (
+                trade_plan.get("setup_id")
+                if isinstance(trade_plan, dict)
+                else None
+            )
+            strategy = (
+                trade_plan.get("strategy")
+                if isinstance(trade_plan, dict)
+                else None
+            )
+
+            logger.error(
+                f"[FUNDED SAFE MODE] execution blocked | "
+                f"profile={funded_profile} reason={funded_reason} "
+                f"symbol={symbol} signal={signal} "
+                f"setup_id={setup_id} strategy={strategy} "
+                f"snapshot={funded_snapshot}"
+            )
+
+            try:
+                log_setup_event(
+                    setup_id=setup_id or "FUNDED-SAFE-MODE",
+                    event="FUNDED_SAFE_MODE_BLOCKED",
+                    strategy=strategy or "UNKNOWN",
+                    signal=signal,
+                    entry_model=(
+                        trade_plan.get("entry_model")
+                        if isinstance(trade_plan, dict)
+                        else None
+                    ),
+                    score=(
+                        trade_plan.get("score")
+                        if isinstance(trade_plan, dict)
+                        else None
+                    ),
+                    session=(
+                        trade_plan.get("session")
+                        if isinstance(trade_plan, dict)
+                        else None
+                    ),
+                    market_condition=(
+                        trade_plan.get("market_condition")
+                        if isinstance(trade_plan, dict)
+                        else None
+                    ),
+                    entry=(
+                        trade_plan.get("entry_price")
+                        if isinstance(trade_plan, dict)
+                        else None
+                    ),
+                    sl=(
+                        trade_plan.get("stop_loss")
+                        if isinstance(trade_plan, dict)
+                        else None
+                    ),
+                    tp=(
+                        trade_plan.get("take_profit")
+                        if isinstance(trade_plan, dict)
+                        else None
+                    ),
+                    rr=(
+                        trade_plan.get("rr")
+                        if isinstance(trade_plan, dict)
+                        else None
+                    ),
+                    reason=funded_reason,
+                    extra={
+                        "prop_firm_profile": funded_profile,
+                        "funded_snapshot": funded_snapshot,
+                    },
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"[FUNDED SAFE MODE] audit logging failed: {exc}"
+                )
+
+            try:
+                profile_config = funded_profiles.get(
+                    str(funded_profile).upper(),
+                    {},
+                )
+
+                if bool(profile_config.get("notify_telegram", True)):
+                    send_telegram_message(
+                        "Funded Account Safe Mode Blocked\n"
+                        f"Profile: {funded_profile}\n"
+                        f"Reason: {funded_reason}\n"
+                        f"Symbol: {symbol}\n"
+                        f"Signal: {signal}\n"
+                        f"Setup ID: {setup_id}\n"
+                        f"Strategy: {strategy}\n\n"
+                        f"Balance: {funded_snapshot.get('balance')}\n"
+                        f"Equity: {funded_snapshot.get('equity')}\n"
+                        f"Daily Reference: {funded_snapshot.get('daily_reference')}\n"
+                        f"Daily Safety Floor: {funded_snapshot.get('safe_daily_floor')}\n"
+                        f"Highest Closed Balance: "
+                        f"{funded_snapshot.get('highest_closed_balance')}\n"
+                        f"Trailing Safety Floor: "
+                        f"{funded_snapshot.get('safe_trailing_floor')}\n"
+                        f"Effective Safety Floor: "
+                        f"{funded_snapshot.get('effective_safe_floor')}\n"
+                        f"Remaining Safety Margin: "
+                        f"{funded_snapshot.get('equity_safety_margin')}"
+                    )
+            except Exception as exc:
+                logger.warning(
+                    f"[FUNDED SAFE MODE] Telegram notification failed: {exc}"
+                )
+
+            return False
+
+    except Exception as exc:
+        logger.exception(
+            f"[FUNDED SAFE MODE] evaluation failure: {exc}"
+        )
+
+        try:
+            from config import settings as _funded_failure_settings
+
+            funded_mode_enabled = bool(
+                getattr(
+                    _funded_failure_settings,
+                    "ENABLE_PROP_FIRM_SAFE_MODE",
+                    False,
+                )
+            )
+            funded_fail_closed = bool(
+                getattr(
+                    _funded_failure_settings,
+                    "PROP_FIRM_SAFE_MODE_FAIL_CLOSED",
+                    True,
+                )
+            )
+        except Exception:
+            funded_mode_enabled = True
+            funded_fail_closed = True
+
+        if funded_mode_enabled and funded_fail_closed:
+            logger.critical(
+                "[FUNDED SAFE MODE] blocked because the safety gate failed closed"
+            )
+            return False
 
     return _raw_execute_trade(signal, trade_plan, symbol)
 

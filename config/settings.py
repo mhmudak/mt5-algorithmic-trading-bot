@@ -2467,10 +2467,39 @@ try:
             for strategy in INTRABAR_STRATEGY_ALLOWLIST
         }
 
-        INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = [
-            profile for profile in INTRABAR_PRICE_EVENT_STRATEGY_PROFILES
-            if _phase6u_extract_profile_strategy_name(profile) in _PHASE6U_INTRABAR_ALLOWED_NORMALIZED
-        ]
+        if isinstance(INTRABAR_PRICE_EVENT_STRATEGY_PROFILES, dict):
+            INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = {
+                strategy_name: profile
+                for strategy_name, profile
+                in INTRABAR_PRICE_EVENT_STRATEGY_PROFILES.items()
+                if (
+                    _phase6u_normalize_intrabar_strategy_name(strategy_name)
+                    in _PHASE6U_INTRABAR_ALLOWED_NORMALIZED
+                )
+            }
+
+        elif isinstance(
+            INTRABAR_PRICE_EVENT_STRATEGY_PROFILES,
+            (list, tuple),
+        ):
+            INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = [
+                profile
+                for profile in INTRABAR_PRICE_EVENT_STRATEGY_PROFILES
+                if (
+                    _phase6u_extract_profile_strategy_name(profile)
+                    in _PHASE6U_INTRABAR_ALLOWED_NORMALIZED
+                )
+            ]
+
+        if "INTRABAR_PRICE_EVENT_ALLOWED_STRATEGIES" in globals():
+            INTRABAR_PRICE_EVENT_ALLOWED_STRATEGIES = [
+                strategy
+                for strategy in INTRABAR_PRICE_EVENT_ALLOWED_STRATEGIES
+                if (
+                    _phase6u_normalize_intrabar_strategy_name(strategy)
+                    in _PHASE6U_INTRABAR_ALLOWED_NORMALIZED
+                )
+            ]
 except Exception:
     # Never break settings import because of profile-shape differences.
     pass
@@ -2637,3 +2666,52 @@ M15_SETUP_DIRECTION_LOCK_TTL_SECONDS = 900
 ENABLE_INTRABAR_M15_DIRECTION_LOCK_GUARD = True
 ENABLE_INTRABAR_M15_DIRECTION_LOCK_ALIGNMENT_ANNOTATION = True
 
+# ============================================================
+# Phase 7A1 ? Funded Account Safe Mode
+# ============================================================
+
+ENABLE_PROP_FIRM_SAFE_MODE = False
+PROP_FIRM_PROFILE = "GETLEVERAGED_TURBO_EVALUATION_50K"
+
+# Block new orders when account information or state cannot be verified.
+PROP_FIRM_SAFE_MODE_FAIL_CLOSED = True
+
+PROP_FIRM_PROFILES = {
+    "GETLEVERAGED_TURBO_EVALUATION_50K": {
+        "firm": "GETLEVERAGED",
+        "program": "TURBO",
+        "stage": "EVALUATION",
+
+        "initial_balance": 50000.0,
+
+        # Official program limits.
+        "official_daily_loss_pct": 3.0,
+        "official_trailing_drawdown_pct": 6.0,
+
+        # Internal safety margin before the official breach level.
+        "daily_safety_buffer_pct": 0.5,
+        "trailing_safety_buffer_pct": 0.5,
+
+        # Daily reference resets using max(balance, equity) at 23:00 GMT+3.
+        "daily_reset_hour_gmt3": 23,
+        "daily_reset_minute_gmt3": 0,
+
+        # Turbo trailing floor follows the highest closed balance and
+        # permanently stops at the initial balance.
+        "trailing_high_water_source": "CLOSED_BALANCE",
+        "trailing_floor_locks_at_initial_balance": True,
+
+        # No firm rule supplied for either count.
+        "max_open_positions": None,
+        "max_daily_entries": None,
+
+        # Strategy names alone are not compliance evidence.
+        "block_tick_sniper": False,
+
+        # Evaluation-stage rules.
+        "minimum_profitable_days": 0,
+        "consistency_rule_pct": None,
+
+        "notify_telegram": True,
+    },
+}
