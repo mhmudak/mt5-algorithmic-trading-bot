@@ -25,6 +25,8 @@ from src.execution import check_trade_guard
 from src.notifier import send_telegram_message
 from src.order_executor import execute_trade
 from src.trade_tracker import load_trades, save_trades
+from src.logger import logger
+from src.prop_firm_news_guard import evaluate_runtime_prop_firm_news_action
 
 
 def _calculate_rr(signal, entry, sl, tp):
@@ -373,6 +375,30 @@ def _update_existing_trade_tp(parsed, symbol):
 
     if target_position is None:
         return False, "position_not_found"
+
+    news_decision = evaluate_runtime_prop_firm_news_action(
+        action="MODIFY_PROTECTIVE_SL_TP",
+    )
+
+    if not news_decision.get("allowed", False):
+        guard_reason = news_decision.get(
+            "reason",
+            "prop_firm_news_tp_update_blocked",
+        )
+
+        logger.warning(
+            "[PROP FIRM NEWS TELEGRAM GUARD] "
+            f"Telegram TP modification frozen | "
+            f"position={target_position.ticket} "
+            f"symbol={symbol} "
+            f"requested_tp={round(tp1, 2)} "
+            f"reason={guard_reason} "
+            f"existing_sl={target_position.sl} "
+            f"existing_tp={target_position.tp} "
+            f"orders_sent=0"
+        )
+
+        return False, guard_reason
 
     request = {
         "action": mt5.TRADE_ACTION_SLTP,

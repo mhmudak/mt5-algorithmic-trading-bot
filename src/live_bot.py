@@ -13782,10 +13782,48 @@ def main():
                 exceeded, pnl = is_drawdown_exceeded(SYMBOL)
 
                 if exceeded:
-                    logger.info(f"🚨 MAX DRAWDOWN HIT: {pnl} USD")
-                    close_all_positions(SYMBOL)
-                    mt5.shutdown()
-                    sys.exit()
+                    logger.info(
+                        f"[MAX DRAWDOWN HIT] {pnl} USD"
+                    )
+
+                    emergency_result = close_all_positions(
+                        SYMBOL
+                    )
+
+                    if emergency_result.get(
+                        "all_closed",
+                        False,
+                    ):
+                        logger.critical(
+                            "[EMERGENCY CLOSE] "
+                            "All positions confirmed closed. "
+                            "Bot will shut down."
+                        )
+                        mt5.shutdown()
+                        sys.exit()
+
+                    if emergency_result.get(
+                        "blocked",
+                        False,
+                    ):
+                        logger.critical(
+                            "[EMERGENCY CLOSE] "
+                            "Close blocked by restricted-news "
+                            "compliance. Bot remains active and "
+                            "will retry. "
+                            f"reason={emergency_result.get('reason')}"
+                        )
+                        time.sleep(30)
+                        continue
+
+                    logger.error(
+                        "[EMERGENCY CLOSE] "
+                        "Not all positions were confirmed closed. "
+                        "Bot remains active and will retry. "
+                        f"result={emergency_result}"
+                    )
+                    time.sleep(5)
+                    continue
 
             try:
                 last_processed_candle_time = process_cycle(last_processed_candle_time)
