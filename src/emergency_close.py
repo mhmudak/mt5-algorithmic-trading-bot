@@ -36,6 +36,9 @@ def close_all_positions(symbol):
     During an active prop-firm restricted-news window, no market
     close request is submitted. The caller must remain active and
     retry after the restriction ends.
+
+    Emergency drawdown liquidation is an explicit safety exception
+    to the ordinary two-minute automated holding-period guard.
     """
     news_decision = evaluate_runtime_prop_firm_news_action(
         action="FULL_CLOSE_POSITION",

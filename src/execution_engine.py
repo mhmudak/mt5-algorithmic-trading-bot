@@ -189,6 +189,7 @@ class ExecutionEngine:
                 "EXPIRED",
                 "WAIT_BETTER_ENTRY",
                 "WAIT_DELAYED_ENTRY",
+                "WAIT_FVG_STAGED_ENTRY",
                 "WAIT_TICK_SNIPER",
                 "EXECUTION_FAILED",
                 "SKIPPED",
@@ -210,6 +211,7 @@ class ExecutionEngine:
             if strategy == "FVG":
                 top = data.get("fvg_top")
                 bottom = data.get("fvg_bottom")
+                entry_model = data.get("entry_model")
 
                 if top is None or bottom is None:
                     self._mark_waiting(setup, "FVG levels missing")
@@ -230,6 +232,17 @@ class ExecutionEngine:
                         setup,
                         f"FVG SELL invalidated | close above gap {round(zone_high, 2)}",
                     )
+                    continue
+
+                # FVG_RETRACE_REACTION is already confirmed inside strategy_fvg:
+                # displacement, gap interaction, directional reaction, EMA context,
+                # extension, and structure validity are all checked there.
+                # Do not require a second, unrelated long-wick rejection candle.
+                if entry_model == "FVG_RETRACE_REACTION":
+                    data["execution_confirmation"] = (
+                        "strategy_confirmed_fvg_retrace_reaction"
+                    )
+                    self._mark_ready(setup, executable)
                     continue
 
                 if confirm_rejection_entry(df, signal, zone_low, zone_high, atr):

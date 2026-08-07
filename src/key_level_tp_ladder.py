@@ -396,6 +396,7 @@ def apply_key_level_tp_ladder(
         ENABLE_KEY_LEVEL_TP_LADDER,
         KEY_LEVEL_TP_LADDER_STRATEGIES,
         KLT_SET_EXECUTION_TP_TO_TP1,
+        KLT_STRATEGY_MIN_EXECUTION_RR,
     )
 
     if not ENABLE_KEY_LEVEL_TP_LADDER:
@@ -416,6 +417,38 @@ def apply_key_level_tp_ladder(
     if not result.get("applied"):
         trade_plan["key_level_tp_ladder_checked"] = True
         trade_plan["key_level_tp_ladder_reason"] = result.get("reason")
+        return trade_plan
+
+    strategy_rr_floor = safe_float(
+        (KLT_STRATEGY_MIN_EXECUTION_RR or {}).get(strategy_key)
+    )
+    proposed_execution_rr = safe_float(
+        result.get("execution_rr")
+    )
+
+    if (
+        KLT_SET_EXECUTION_TP_TO_TP1
+        and strategy_rr_floor is not None
+        and (
+            proposed_execution_rr is None
+            or proposed_execution_rr < strategy_rr_floor
+        )
+    ):
+        trade_plan["key_level_tp_ladder_checked"] = True
+        trade_plan["key_level_tp_ladder_applied"] = False
+        trade_plan["key_level_tp_ladder_reason"] = (
+            "strategy_execution_rr_floor "
+            f"{proposed_execution_rr}/{strategy_rr_floor}"
+        )
+        trade_plan["key_level_tp_ladder_original_rr"] = (
+            result.get("original_rr")
+        )
+        trade_plan["key_level_tp_ladder_rejected_execution_rr"] = (
+            proposed_execution_rr
+        )
+        trade_plan["key_level_tp_ladder_strategy_rr_floor"] = (
+            strategy_rr_floor
+        )
         return trade_plan
 
     adjusted = dict(trade_plan)

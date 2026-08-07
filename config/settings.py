@@ -186,7 +186,7 @@ NEWS_CONTEXT_AFTER_MINUTES = 180
 # Execution / Risk Settings
 # =========================
 POSITION_MODE = "fixed"   # "fixed" or "risk"
-FIXED_LOT = 0.03
+FIXED_LOT = 0.06
 RISK_PER_TRADE_PCT = 0.25
 
 # =========================
@@ -2181,6 +2181,14 @@ KLT_SWING_WINDOW = 2
 KLT_MIN_BARRIER_STRENGTH = 3
 KLT_LEVEL_BUFFER_PRICE = 0.55
 KLT_MIN_TP1_RR = 0.50
+
+# Strategy-specific floor applied when TP1 becomes the broker execution TP.
+# The HTF double-top/bottom strategy may use a key-level ladder, but TP1
+# must not reduce its executable plan below the bot's 1.10R review floor.
+KLT_STRATEGY_MIN_EXECUTION_RR = {
+    "HTF_DOUBLE_TOP_BOTTOM_MTF_ENTRY": 1.10,
+}
+
 KLT_SET_EXECUTION_TP_TO_TP1 = True
 KLT_ROUND_LEVEL_STEPS = [25.0, 50.0, 100.0]
 KLT_MINOR_ROUND_LEVEL_STEPS = [5.0, 10.0]
@@ -2670,7 +2678,7 @@ ENABLE_INTRABAR_M15_DIRECTION_LOCK_ALIGNMENT_ANNOTATION = True
 # Phase 7A1 ? Funded Account Safe Mode
 # ============================================================
 
-ENABLE_PROP_FIRM_SAFE_MODE = False
+ENABLE_PROP_FIRM_SAFE_MODE = True
 PROP_FIRM_PROFILE = "GETLEVERAGED_TURBO_EVALUATION_50K"
 
 # Block new orders when account information or state cannot be verified.
@@ -2685,10 +2693,10 @@ PROP_FIRM_PROFILES = {
         "initial_balance": 50000.0,
 
         # Phase 7A2 activation identity guard.
-        # Set expected_login after receiving the real funded account.
+        # Funded identity is loaded from the private local environment.
         "activation_require_explicit_identity": True,
-        "expected_login": None,
-        "expected_server": None,
+        "expected_login": os.getenv("PROP_FIRM_EXPECTED_LOGIN", "").strip(),
+        "expected_server": os.getenv("PROP_FIRM_EXPECTED_SERVER", "").strip(),
         "expected_currency": "USD",
 
         # Allows normal evaluation-stage balance movement while rejecting
@@ -2714,6 +2722,16 @@ PROP_FIRM_PROFILES = {
         # Existing broker-side protection is never removed merely
         # because a restricted-news window is active.
         "news_preserve_existing_sl_tp": True,
+
+        # Phase 7A6A - normal bot-controlled partial/full closes
+        # must respect the two-minute duration expectation.
+        "minimum_automated_hold_seconds": 120,
+        "minimum_hold_fail_closed": True,
+
+        # Protective broker exits and emergency drawdown closure
+        # remain explicit safety exceptions.
+        "minimum_hold_broker_protection_exception": True,
+        "minimum_hold_emergency_drawdown_exception": True,
 
         # Official program limits.
         "official_daily_loss_pct": 3.0,

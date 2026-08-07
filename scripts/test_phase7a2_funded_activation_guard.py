@@ -1,4 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
+
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -190,9 +196,24 @@ def test_current_settings_remain_safe():
         ROOT / "config" / "settings.py"
     ).read_text(encoding="utf-8")
 
-    assert "ENABLE_PROP_FIRM_SAFE_MODE = False" in settings
+    safe_mode_enabled = "ENABLE_PROP_FIRM_SAFE_MODE = True" in settings
+    safe_mode_disabled = "ENABLE_PROP_FIRM_SAFE_MODE = False" in settings
+
+    # Exactly one explicit state must be configured.
+    assert safe_mode_enabled != safe_mode_disabled
+
+    # Live funded activation is safe only when it remains fail-closed
+    # and explicit account identity is configured.
+    if safe_mode_enabled:
+        assert "PROP_FIRM_SAFE_MODE_FAIL_CLOSED = True" in settings
+        assert '"activation_require_explicit_identity": True' in settings
+        assert '"expected_login": ""' not in settings
+        assert '"expected_login": "REDACTED"' not in settings
+        assert '"expected_server": ""' not in settings
+        assert '"expected_server": "REDACTED"' not in settings
     assert '"activation_require_explicit_identity": True' in settings
-    assert '"expected_login": None' in settings
+    assert '"expected_login": os.getenv("PROP_FIRM_EXPECTED_LOGIN", "")' in settings
+    assert '"expected_server": os.getenv("PROP_FIRM_EXPECTED_SERVER", "")' in settings
     assert '"activation_balance_tolerance_pct": 10.0' in settings
 
 

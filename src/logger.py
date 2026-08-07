@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 from loguru import logger
 
@@ -6,6 +7,34 @@ LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
 
 LOG_FILE = LOG_DIR / "bot.log"
+
+def _safe_console_sink(message):
+    text = str(message)
+    stream = sys.stdout
+
+    try:
+        stream.write(text)
+    except UnicodeEncodeError:
+        encoding = (
+            getattr(stream, "encoding", None)
+            or "utf-8"
+        )
+
+        safe_text = (
+            text.encode(
+                encoding,
+                errors="backslashreplace",
+            )
+            .decode(
+                encoding,
+                errors="strict",
+            )
+        )
+
+        stream.write(safe_text)
+
+    stream.flush()
+
 
 logger.remove()
 
@@ -22,7 +51,7 @@ logger.add(
 )
 
 logger.add(
-    lambda msg: print(msg, end=""),
+    _safe_console_sink,
     level="INFO",
     format="{time:HH:mm:ss} | {level} | {message}",
     enqueue=True,

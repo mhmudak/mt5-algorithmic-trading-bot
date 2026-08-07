@@ -5,6 +5,9 @@ from src.notifier import send_telegram_message
 from src.order_executor import get_supported_filling_modes
 from src.trade_tracker import load_trades, save_trades, update_trade_statistics
 from src.prop_firm_news_guard import evaluate_runtime_prop_firm_news_action
+from src.prop_firm_minimum_hold_guard import (
+    evaluate_runtime_prop_firm_minimum_hold,
+)
 from config.settings import (
     ENABLE_MAIN_STAGE_MANAGEMENT,
     MAIN_STAGE_1_TRIGGER_PRICE,
@@ -500,6 +503,27 @@ def close_position_volume(position, close_volume, tick, reason="Partial close"):
                 f"reason={reason} "
                 f"guard_reason={news_decision.get('reason')} "
                 f"snapshot={news_decision.get('snapshot')}"
+            )
+            return False
+
+        hold_decision = evaluate_runtime_prop_firm_minimum_hold(
+            position=position,
+            action=news_action,
+            now_timestamp=getattr(tick, "time", None),
+        )
+
+        if not hold_decision.get("allowed", False):
+            logger.warning(
+                "[PROP FIRM MINIMUM HOLD GUARD] "
+                f"position close blocked | "
+                f"ticket={position.ticket} "
+                f"symbol={position.symbol} "
+                f"action={news_action} "
+                f"close_volume={close_volume} "
+                f"reason={reason} "
+                f"guard_reason={hold_decision.get('reason')} "
+                f"snapshot={hold_decision.get('snapshot')} "
+                f"orders_sent=0"
             )
             return False
 

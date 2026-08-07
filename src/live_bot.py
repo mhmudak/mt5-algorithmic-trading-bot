@@ -24,6 +24,9 @@ from src.health_monitor import send_heartbeat, send_critical_alert
 from src.manual_trailing_manager import manage_manual_trailing_positions
 from src.drawdown_guard import is_drawdown_exceeded
 from src.emergency_close import close_all_positions
+from src.funded_account_runtime_watch import (
+    evaluate_runtime_funded_account_watch,
+)
 from src.dashboard import rebuild_dashboard
 from src.mtf_confirmation import get_mtf_bias
 from src.htf_filter import get_htf_context, htf_allows_signal
@@ -3002,13 +3005,68 @@ def select_confirmed_ready_setup(ready_setups, df, selected_signal_data):
 
         smc_check = smart_money_confirm(df, setup_signal)
 
+        from src.key_level_smc_override import (
+            evaluate_key_level_strong_smc_override,
+        )
+
+        key_level_smc_override = (
+            evaluate_key_level_strong_smc_override(
+                setup_data,
+                setup_signal,
+            )
+        )
+
+        key_level_smc_override_allowed = bool(
+            key_level_smc_override.get("allowed")
+        )
+
+        from src.fvg_retrace_smc_override import (
+            evaluate_fvg_retrace_smc_override,
+        )
+
+        fvg_retrace_smc_override = (
+            evaluate_fvg_retrace_smc_override(
+                setup_data,
+                setup_signal,
+            )
+        )
+        fvg_retrace_smc_override_allowed = bool(
+            fvg_retrace_smc_override.get("allowed")
+        )
+
         soft_smc_allowed = (
             ENABLE_SOFT_SMC_FOR_STRONG_SETUPS
             and setup_strategy in SOFT_SMC_STRATEGIES
             and setup_data.get("score", 0) >= SOFT_SMC_MIN_SCORE
         )
 
-        if not smc_check["confirmed"] and not soft_smc_allowed:
+        smc_override_allowed = bool(
+            soft_smc_allowed
+            or key_level_smc_override_allowed
+            or fvg_retrace_smc_override_allowed
+        )
+
+        if not smc_check["confirmed"] and not smc_override_allowed:
+            if setup_strategy == "KEY_LEVEL_BREAK_HOLD":
+                logger.info(
+                    "[KEY LEVEL SMC OVERRIDE] denied | "
+                    f"signal={setup_signal} "
+                    f"reason={key_level_smc_override.get('reason')} "
+                    f"snapshot={key_level_smc_override.get('snapshot')}"
+                )
+
+            if (
+                setup_strategy == "FVG"
+                and setup_data.get("entry_model")
+                == "FVG_RETRACE_REACTION"
+            ):
+                logger.info(
+                    "[FVG RETRACE SMC OVERRIDE] denied | "
+                    f"signal={setup_signal} "
+                    f"reason={fvg_retrace_smc_override.get('reason')} "
+                    f"snapshot={fvg_retrace_smc_override.get('snapshot')}"
+                )
+
             rejected_reasons.append(
                 f"{setup_strategy}:{setup_signal}:smc_failed"
             )
@@ -3025,17 +3083,75 @@ def select_confirmed_ready_setup(ready_setups, df, selected_signal_data):
             
             continue
 
-        if not smc_check["confirmed"] and soft_smc_allowed:
+        if not smc_check["confirmed"] and smc_override_allowed:
+            if key_level_smc_override_allowed:
+                override_reason = (
+                    "key_level_strong_smc_override"
+                )
+                override_label = (
+                    "KEY_LEVEL_STRONG_SMC_OVERRIDE"
+                )
+                override_snapshot = (
+                    key_level_smc_override.get(
+                        "snapshot"
+                    )
+                    or {}
+                )
+
+                setup_data[
+                    "key_level_smc_override"
+                ] = override_snapshot
+
+                logger.info(
+                    "[KEY LEVEL SMC OVERRIDE] allowed | "
+                    f"strategy={setup_strategy} "
+                    f"signal={setup_signal} "
+                    f"snapshot={override_snapshot}"
+                )
+            elif fvg_retrace_smc_override_allowed:
+                override_reason = (
+                    "fvg_retrace_strategy_smc_override"
+                )
+                override_label = (
+                    "FVG_RETRACE_STRATEGY_SMC_OVERRIDE"
+                )
+                override_snapshot = (
+                    fvg_retrace_smc_override.get(
+                        "snapshot"
+                    )
+                    or {}
+                )
+
+                setup_data[
+                    "fvg_retrace_smc_override"
+                ] = override_snapshot
+
+                logger.info(
+                    "[FVG RETRACE SMC OVERRIDE] allowed | "
+                    f"strategy={setup_strategy} "
+                    f"signal={setup_signal} "
+                    f"snapshot={override_snapshot}"
+                )
+            else:
+                override_reason = "soft_smc_pass"
+                override_label = "SOFT_SMC_PASS"
+                override_snapshot = {}
+
             setup_data.setdefault("smc", [])
-            setup_data["smc"].append("soft_smc_pass")
+            setup_data["smc"].append(
+                override_reason
+            )
             setup_data["reason"] = (
                 f"{setup_data.get('reason', 'N/A')} | "
-                f"SOFT_SMC_PASS: score={setup_data.get('score', 0)}"
+                f"{override_label}: "
+                f"score={setup_data.get('score', 0)}"
             )
 
             smc_check = {
                 "confirmed": True,
-                "reasons": ["soft_smc_pass"],
+                "reasons": [override_reason],
+                "override_snapshot":
+                    override_snapshot,
             }
 
         return setup, smc_check, rejected_reasons
@@ -4993,23 +5109,82 @@ def get_fvg_zone(candidate):
 
 
 def build_fvg_staged_entry_prices(signal, fvg_top, fvg_bottom):
-    fvg_height = abs(float(fvg_top) - float(fvg_bottom))
+    top = max(float(fvg_top), float(fvg_bottom))
+    bottom = min(float(fvg_top), float(fvg_bottom))
+    fvg_height = top - bottom
 
-    if signal == "BUY":
-        return [
-            round(float(fvg_top), 2),
-            round(float(fvg_top) - fvg_height * 0.60, 2),
-            round(float(fvg_top) - fvg_height * 0.85, 2),
-        ]
+    if fvg_height <= 0:
+        return []
 
-    if signal == "SELL":
-        return [
-            round(float(fvg_bottom), 2),
-            round(float(fvg_bottom) + fvg_height * 0.60, 2),
-            round(float(fvg_bottom) + fvg_height * 0.85, 2),
-        ]
+    targets = []
 
-    return []
+    for raw_depth in FVG_ZONE_STAGED_ENTRY_LEVELS:
+        try:
+            depth = float(raw_depth)
+        except (TypeError, ValueError):
+            continue
+
+        if depth < 0 or depth > 1:
+            continue
+
+        if signal == "BUY":
+            target = round(top - fvg_height * depth, 2)
+        elif signal == "SELL":
+            target = round(bottom + fvg_height * depth, 2)
+        else:
+            return []
+
+        if target not in targets:
+            targets.append(target)
+
+    return targets
+
+
+def allocate_fvg_staged_lots(symbol, total_lot, stage_count):
+    try:
+        total_lot = float(total_lot)
+        stage_count = int(stage_count)
+    except (TypeError, ValueError):
+        return []
+
+    if total_lot <= 0 or stage_count <= 0:
+        return []
+
+    symbol_info = mt5.symbol_info(symbol)
+
+    if symbol_info is None:
+        return []
+
+    step = float(symbol_info.volume_step or 0)
+    min_volume = float(symbol_info.volume_min or 0)
+
+    if step <= 0 or min_volume <= 0:
+        return []
+
+    total_steps = int(round(total_lot / step))
+    minimum_steps = max(1, int(round(min_volume / step)))
+
+    if total_steps < minimum_steps * stage_count:
+        return []
+
+    base_steps, remainder_steps = divmod(total_steps, stage_count)
+    stage_lots = []
+
+    for index in range(stage_count):
+        steps = base_steps + (1 if index < remainder_steps else 0)
+        stage_lot = round(steps * step, 8)
+
+        if stage_lot + 1e-9 < min_volume:
+            return []
+
+        stage_lots.append(stage_lot)
+
+    allocated_total = round(sum(stage_lots), 8)
+
+    if allocated_total > total_lot + step / 2:
+        return []
+
+    return stage_lots
 
 
 def should_use_fvg_zone_staged_entry(strategy_name, signal_data):
@@ -5080,6 +5255,125 @@ def process_wait_fvg_staged_entry_setups(df, tick, account_info, market_conditio
                 f"FVG_STAGED_ENTRY {stage.get('stage_name')} "
                 f"target={target_entry}"
             )
+            trade_plan["signal"] = signal
+            trade_plan["strategy"] = strategy_name
+            trade_plan["entry_model"] = setup_data.get("entry_model")
+            trade_plan["score"] = setup_data.get("score", 0)
+            trade_plan["session"] = setup_data.get("session", session_name)
+            trade_plan["market_condition"] = setup_data.get(
+                "market_condition",
+                market_condition,
+            )
+
+            rr_value = calculate_rr_value(trade_plan)
+            min_rr_required = get_min_rr(
+                strategy_name,
+                setup_data.get("entry_model"),
+                setup_data.get("sl_model"),
+            )
+
+            if rr_value is None or rr_value < min_rr_required:
+                logger.info(
+                    f"[FVG STAGED ENTRY] RR invalid | "
+                    f"setup_id={setup_id} stage={stage.get('stage_name')} "
+                    f"rr={rr_value} required={min_rr_required}"
+                )
+                continue
+
+            trade_plan["rr"] = rr_value
+            trade_plan["risk_reward"] = rr_value
+
+            news_blocked, news_reason = is_news_blackout_active()
+
+            if news_blocked:
+                logger.info(
+                    f"[FVG STAGED ENTRY] News blocked | "
+                    f"setup_id={setup_id} reason={news_reason}"
+                )
+                continue
+
+            time_blocked, time_reason = is_trading_blackout_active()
+
+            if time_blocked:
+                logger.info(
+                    f"[FVG STAGED ENTRY] Time blocked | "
+                    f"setup_id={setup_id} reason={time_reason}"
+                )
+                continue
+
+            trade_allowed, guard_reason = check_trade_guard(signal, tick)
+
+            if not trade_allowed:
+                logger.info(
+                    f"[FVG STAGED ENTRY] Guard blocked | "
+                    f"setup_id={setup_id} reason={guard_reason}"
+                )
+                continue
+
+            from config import settings as runtime_settings
+            from src.position_guard import has_same_direction_position
+
+            opposite = "SELL" if signal == "BUY" else "BUY"
+
+            if has_same_direction_position(SYMBOL, opposite):
+                setup["state"] = "SKIPPED"
+                setup["wait_reason"] = (
+                    f"Skipped because opposite {opposite} position exists"
+                )
+                logger.info(
+                    f"[FVG STAGED ENTRY] Opposite position blocked | "
+                    f"setup_id={setup_id} opposite={opposite}"
+                )
+                continue
+
+            same_direction_count = count_same_direction_positions(
+                SYMBOL,
+                signal,
+            )
+            allow_same_direction = bool(
+                getattr(
+                    runtime_settings,
+                    "ALLOW_SAME_DIRECTION_ENTRIES",
+                    False,
+                )
+            )
+            raw_max_same_direction = getattr(
+                runtime_settings,
+                "MAX_SAME_DIRECTION_TRADES",
+                1,
+            )
+
+            try:
+                max_same_direction = max(
+                    1,
+                    int(raw_max_same_direction),
+                )
+            except (TypeError, ValueError):
+                max_same_direction = 1
+
+            if (
+                (same_direction_count > 0 and not allow_same_direction)
+                or same_direction_count >= max_same_direction
+            ):
+                logger.info(
+                    f"[FVG STAGED ENTRY] Exposure blocked | "
+                    f"setup_id={setup_id} same_direction={same_direction_count} "
+                    f"maximum={max_same_direction}"
+                )
+                continue
+
+            if is_trade_blocked_by_execution_memory(
+                trade_plan=trade_plan,
+                signal_data=setup_data,
+                setup=setup,
+                strategy_name=strategy_name,
+                signal=signal,
+            ):
+                logger.info(
+                    f"[FVG STAGED ENTRY] Execution memory blocked | "
+                    f"setup_id={setup_id} stage={stage.get('stage_name')}"
+                )
+                continue
 
             logger.info(
                 f"[FVG STAGED ENTRY] Executing | "
@@ -5133,8 +5427,8 @@ def process_wait_fvg_staged_entry_setups(df, tick, account_info, market_conditio
                 trade_plan=trade_plan,
                 decision="FVG_STAGED_ENTRY_EXECUTION_ATTEMPT",
                 decision_reason="sending FVG staged entry order to MT5",
-                rr_value=None,
-                required_rr=None,
+                rr_value=rr_value,
+                required_rr=min_rr_required,
                 extra={
                     "parent_setup_id": setup_id,
                     "stage": stage,
@@ -5226,8 +5520,8 @@ def process_wait_fvg_staged_entry_setups(df, tick, account_info, market_conditio
                 trade_plan=trade_plan,
                 decision="FVG_STAGED_ENTRY_EXECUTION_FAILED",
                 decision_reason="FVG staged entry execute_trade returned False",
-                rr_value=None,
-                required_rr=None,
+                rr_value=rr_value,
+                required_rr=min_rr_required,
                 execution_result=execution_result,
                 extra={
                     "parent_setup_id": setup_id,
@@ -13180,20 +13474,32 @@ def process_cycle(last_processed_candle_time):
                         extra_sl_buffer,
                     )
 
-                    stage_lot = round(float(trade_plan.get("lot", 0.0)), 2)
+                    original_lot = round(
+                        float(trade_plan.get("lot", 0.0)),
+                        8,
+                    )
+                    stage_lots = allocate_fvg_staged_lots(
+                        SYMBOL,
+                        original_lot,
+                        len(staged_prices),
+                    )
 
-                    if stage_lot <= 0:
+                    if len(stage_lots) != len(staged_prices):
                         logger.info(
-                            f"[FVG STAGED ENTRY] Skipped | invalid full stage lot "
-                            f"lot={stage_lot} stages={len(staged_prices)}"
+                            f"[FVG STAGED ENTRY] Skipped | unable to split total lot "
+                            f"safely | lot={original_lot} "
+                            f"stages={len(staged_prices)}"
                         )
                         return current_candle_time
-                    
-                    total_planned_lot = round(stage_lot * len(staged_prices), 2)
-                    
+
+                    total_planned_lot = round(sum(stage_lots), 8)
+
                     stages = []
-                    
-                    for index, target_entry in enumerate(staged_prices, start=1):
+
+                    for index, (target_entry, stage_lot) in enumerate(
+                        zip(staged_prices, stage_lots),
+                        start=1,
+                    ):
                         stages.append(
                             {
                                 "stage_name": f"FVG_STAGE_{index}",
@@ -13229,10 +13535,10 @@ def process_cycle(last_processed_candle_time):
                             "fvg_top": fvg_top,
                             "fvg_bottom": fvg_bottom,
                             "stages": stages,
-                            "original_lot": stage_lot,
-                            "stage_lot": stage_lot,
+                            "original_lot": original_lot,
+                            "stage_lots": stage_lots,
                             "total_planned_lot": total_planned_lot,
-                            "lot_mode": "FULL_LOT_PER_STAGE",
+                            "lot_mode": "TOTAL_LOT_SPLIT_ACROSS_STAGES",
                             "extra_sl_buffer": extra_sl_buffer,
                         },
                     )
@@ -13245,7 +13551,7 @@ def process_cycle(last_processed_candle_time):
                         f"Setup ID: {selected_signal_data.get('setup_id')}\n\n"
                         f"FVG Zone: {round(fvg_bottom, 2)} - {round(fvg_top, 2)}\n"
                         f"Stages: {', '.join(str(item) for item in staged_prices)}\n"
-                        f"Lot per Stage: {stage_lot}\n"
+                        f"Stage Lots: {stage_lots}\n"
                         f"Total Planned Lot: {total_planned_lot}\n"
                         f"SL with Buffer: {staged_trade_plan.get('stop_loss')}\n"
                         f"TP: {trade_plan.get('take_profit')}"
@@ -13778,6 +14084,96 @@ def main():
 
     try:
         while True:
+            funded_watch = (
+                evaluate_runtime_funded_account_watch(
+                    mt5_module=mt5,
+                    symbol=SYMBOL,
+                )
+            )
+
+            if funded_watch.get(
+                "should_block_cycle",
+                False,
+            ):
+                funded_reason = funded_watch.get(
+                    "reason",
+                    "funded_runtime_watch_blocked",
+                )
+                funded_snapshot = (
+                    funded_watch.get("snapshot")
+                    or {}
+                )
+
+                logger.critical(
+                    "[FUNDED RUNTIME WATCH] "
+                    f"bot cycle blocked | "
+                    f"reason={funded_reason} "
+                    f"balance={funded_snapshot.get('balance')} "
+                    f"equity={funded_snapshot.get('equity')} "
+                    f"effective_safe_floor="
+                    f"{funded_snapshot.get('effective_safe_floor')} "
+                    f"safety_margin="
+                    f"{funded_snapshot.get('equity_safety_margin')} "
+                    f"orders_sent=0"
+                )
+
+                if funded_watch.get(
+                    "should_close_positions",
+                    False,
+                ):
+                    funded_close_result = (
+                        close_all_positions(
+                            SYMBOL
+                        )
+                    )
+
+                    if funded_close_result.get(
+                        "all_closed",
+                        False,
+                    ):
+                        logger.critical(
+                            "[FUNDED RUNTIME WATCH] "
+                            "Funded safety floor reached and "
+                            "all positions are confirmed closed. "
+                            "Bot will shut down."
+                        )
+                        mt5.shutdown()
+                        sys.exit()
+
+                    if funded_close_result.get(
+                        "blocked",
+                        False,
+                    ):
+                        logger.critical(
+                            "[FUNDED RUNTIME WATCH] "
+                            "Emergency close blocked by "
+                            "restricted-news compliance. "
+                            "Bot remains active and will retry. "
+                            f"reason="
+                            f"{funded_close_result.get('reason')}"
+                        )
+                        time.sleep(30)
+                        continue
+
+                    logger.error(
+                        "[FUNDED RUNTIME WATCH] "
+                        "Funded safety floor reached, but "
+                        "not all positions were confirmed "
+                        "closed. Bot will retry. "
+                        f"result={funded_close_result}"
+                    )
+                    time.sleep(5)
+                    continue
+
+                logger.critical(
+                    "[FUNDED RUNTIME WATCH] "
+                    "Non-equity funded safety check failed. "
+                    "No position-close request was submitted. "
+                    "Bot remains blocked and will retry."
+                )
+                time.sleep(30)
+                continue
+
             if ENABLE_GLOBAL_DRAWDOWN_STOP:
                 exceeded, pnl = is_drawdown_exceeded(SYMBOL)
 
