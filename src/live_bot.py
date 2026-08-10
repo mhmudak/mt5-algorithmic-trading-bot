@@ -4014,38 +4014,141 @@ def build_intrabar_price_event_signal_data(df, tick, session_name, market_condit
             profile.get("target_rr", INTRABAR_PRICE_EVENT_DEFAULT_TARGET_RR)
         )
 
-        sl_buffer = max(float(atr) * 0.25, 2.0)
+        sl_range_pct = profile.get(
+            "sl_range_pct"
+        )
+
+        use_orb_percentage_sl = (
+            strategy in {"ORB", "ORB_V00"}
+            and sl_range_pct is not None
+        )
+
+        if use_orb_percentage_sl:
+            try:
+                sl_range_pct = max(
+                    float(sl_range_pct),
+                    0.0,
+                )
+            except (TypeError, ValueError):
+                continue
+
+            sl_buffer = (
+                float(range_width)
+                * sl_range_pct
+                / 100.0
+            )
+
+            if signal == "BUY":
+                sl_reference = round(
+                    float(upper_level)
+                    - sl_buffer,
+                    2,
+                )
+                stop_distance = (
+                    float(current_price)
+                    - sl_reference
+                )
+
+            else:
+                sl_reference = round(
+                    float(lower_level)
+                    + sl_buffer,
+                    2,
+                )
+                stop_distance = (
+                    sl_reference
+                    - float(current_price)
+                )
+
+            if stop_distance <= 0:
+                continue
+
+        else:
+            sl_buffer = max(
+                float(atr) * 0.25,
+                2.0,
+            )
+
+            if signal == "BUY":
+                raw_sl = (
+                    lower_level
+                    - sl_buffer
+                    - INTRABAR_PRICE_EVENT_EXTRA_SL_PRICE
+                )
+                raw_stop_distance = (
+                    current_price - raw_sl
+                )
+
+                stop_distance = min(
+                    max(
+                        raw_stop_distance,
+                        min_sl_distance,
+                    ),
+                    max_sl_distance,
+                )
+                sl_reference = round(
+                    current_price - stop_distance,
+                    2,
+                )
+
+            else:
+                raw_sl = (
+                    upper_level
+                    + sl_buffer
+                    + INTRABAR_PRICE_EVENT_EXTRA_SL_PRICE
+                )
+                raw_stop_distance = (
+                    raw_sl - current_price
+                )
+
+                stop_distance = min(
+                    max(
+                        raw_stop_distance,
+                        min_sl_distance,
+                    ),
+                    max_sl_distance,
+                )
+                sl_reference = round(
+                    current_price + stop_distance,
+                    2,
+                )
 
         if signal == "BUY":
-            raw_sl = lower_level - sl_buffer - INTRABAR_PRICE_EVENT_EXTRA_SL_PRICE
-            raw_stop_distance = current_price - raw_sl
-
-            stop_distance = min(max(raw_stop_distance, min_sl_distance), max_sl_distance)
-            sl_reference = round(current_price - stop_distance, 2)
-
             tp_distance = min(
-                max(stop_distance * target_rr, min_tp_distance),
+                max(
+                    stop_distance * target_rr,
+                    min_tp_distance,
+                ),
                 max_tp_distance,
             )
-            tp_reference = round(current_price + tp_distance, 2)
+            tp_reference = round(
+                current_price + tp_distance,
+                2,
+            )
 
-            if sl_reference >= current_price or tp_reference <= current_price:
+            if (
+                sl_reference >= current_price
+                or tp_reference <= current_price
+            ):
                 continue
-            
+
         else:
-            raw_sl = upper_level + sl_buffer + INTRABAR_PRICE_EVENT_EXTRA_SL_PRICE
-            raw_stop_distance = raw_sl - current_price
-
-            stop_distance = min(max(raw_stop_distance, min_sl_distance), max_sl_distance)
-            sl_reference = round(current_price + stop_distance, 2)
-
             tp_distance = min(
-                max(stop_distance * target_rr, min_tp_distance),
+                max(
+                    stop_distance * target_rr,
+                    min_tp_distance,
+                ),
                 max_tp_distance,
             )
-            tp_reference = round(current_price - tp_distance, 2)
+            tp_reference = round(
+                current_price - tp_distance,
+                2,
+            )
 
-            if sl_reference <= current_price or tp_reference >= current_price:
+            if (
+                sl_reference <= current_price
+                or tp_reference >= current_price
+            ):
                 continue
 
         setup_id = f"INTRABAR-{strategy}-{signal}-{str(current_candle_time)}"
@@ -4063,7 +4166,16 @@ def build_intrabar_price_event_signal_data(df, tick, session_name, market_condit
             "breakout_distance": round(breakout_distance, 2),
             "sweep_depth": round(sweep_depth, 2) if sweep_depth is not None else None,
             "sl_reference": sl_reference,
-            "intrabar_extra_sl_price": INTRABAR_PRICE_EVENT_EXTRA_SL_PRICE,
+            "intrabar_extra_sl_price": (
+                None
+                if use_orb_percentage_sl
+                else INTRABAR_PRICE_EVENT_EXTRA_SL_PRICE
+            ),
+            "intrabar_sl_range_pct": (
+                sl_range_pct
+                if use_orb_percentage_sl
+                else None
+            ),
             "tp_reference": tp_reference,
             "target_model": "INTRABAR_RANGE_EXTENSION",
             "momentum": momentum,
@@ -7220,15 +7332,37 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
             )
             continue
 
-        if ORB_TICK_BREAKOUT_REQUIRE_M5_CONFIRMATION:
-            m5_confirmed, m5_reason = extra_entry_confirmation_ok(signal)
+        require_orb_m5_confirmation = bool(
+            setup.get(
+                "orb_tick_require_m5_confirmation",
+                ORB_TICK_BREAKOUT_REQUIRE_M5_CONFIRMATION,
+            )
+        )
+
+        if require_orb_m5_confirmation:
+            m5_confirmed, m5_reason = (
+                extra_entry_confirmation_ok(
+                    signal
+                )
+            )
 
             if not m5_confirmed:
+                setup[
+                    "orb_tick_pending_m5_reason"
+                ] = m5_reason
+
                 logger.info(
-                    f"[ORB TICK WATCHER] M5 confirmation failed | "
-                    f"setup_id={setup_id} signal={signal} reason={m5_reason}"
+                    f"[ORB TICK WATCHER] "
+                    f"M5 confirmation pending | "
+                    f"setup_id={setup_id} "
+                    f"signal={signal} "
+                    f"reason={m5_reason}"
                 )
                 continue
+
+            setup[
+                "orb_tick_pending_m5_reason"
+            ] = None
 
         trade_plan = calculate_trade_plan(
             df=df,
@@ -13116,6 +13250,116 @@ def process_cycle(last_processed_candle_time):
             extra_confirmed, extra_confirm_reason = extra_entry_confirmation_ok(signal)
 
             if not extra_confirmed:
+                if (
+                    ENABLE_ORB_TICK_BREAKOUT_WATCHER
+                    and str(
+                        strategy_name or ""
+                    ).upper()
+                    in ORB_TICK_BREAKOUT_WATCH_STRATEGIES
+                    and "best_setup" in locals()
+                    and isinstance(
+                        selected_signal_data,
+                        dict,
+                    )
+                    and selected_signal_data.get(
+                        "orb_high"
+                    )
+                    is not None
+                    and selected_signal_data.get(
+                        "orb_low"
+                    )
+                    is not None
+                ):
+                    execution_engine.mark_wait_orb_tick_breakout(
+                        setup=best_setup,
+                        expiry_minutes=(
+                            ORB_TICK_BREAKOUT_EXPIRY_MINUTES
+                        ),
+                        min_rr=ORB_TICK_BREAKOUT_MIN_RR,
+                        min_distance=(
+                            ORB_TICK_BREAKOUT_MIN_DISTANCE
+                        ),
+                    )
+
+                    best_setup[
+                        "orb_tick_require_m5_confirmation"
+                    ] = True
+                    best_setup[
+                        "orb_tick_pending_m5_reason"
+                    ] = extra_confirm_reason
+                    best_setup["wait_reason"] = (
+                        "Waiting for ORB extra-entry "
+                        "M5 confirmation | "
+                        f"reason={extra_confirm_reason}"
+                    )
+
+                    logger.info(
+                        f"[ORB EXTRA M5 WATCH] "
+                        f"Setup preserved for retry | "
+                        f"strategy={strategy_name} "
+                        f"signal={signal} "
+                        f"reason={extra_confirm_reason}"
+                    )
+
+                    log_setup_event(
+                        setup_id=(
+                            selected_signal_data.get(
+                                "setup_id"
+                            )
+                        ),
+                        event="ORB_EXTRA_M5_WAITING",
+                        strategy=strategy_name,
+                        signal=signal,
+                        entry_model=(
+                            selected_signal_data.get(
+                                "entry_model"
+                            )
+                        ),
+                        score=score,
+                        session=session_name,
+                        market_condition=market_condition,
+                        entry=trade_plan.get(
+                            "entry_price"
+                        ),
+                        sl=trade_plan.get(
+                            "stop_loss"
+                        ),
+                        tp=trade_plan.get(
+                            "take_profit"
+                        ),
+                        rr=rr_value,
+                        required_rr=(
+                            ORB_TICK_BREAKOUT_MIN_RR
+                        ),
+                        reason=(
+                            "Extra ORB entry waiting "
+                            "for M5 confirmation"
+                        ),
+                        extra={
+                            "m5_reason": (
+                                extra_confirm_reason
+                            ),
+                            "watch_expiry_minutes": (
+                                ORB_TICK_BREAKOUT_EXPIRY_MINUTES
+                            ),
+                        },
+                    )
+
+                    send_telegram_message(
+                        f"⏳ Extra ORB Entry Waiting\n"
+                        f"Symbol: {SYMBOL}\n"
+                        f"Strategy: {strategy_name}\n"
+                        f"Signal: {signal}\n"
+                        f"Setup ID: "
+                        f"{selected_signal_data.get('setup_id', 'N/A')}\n\n"
+                        f"M5: {extra_confirm_reason}\n"
+                        f"Action: setup remains active and "
+                        f"will be rechecked by the ORB "
+                        f"tick watcher."
+                    )
+
+                    return current_candle_time
+
                 logger.info(
                     f"[EXTRA CONFIRMATION] Extra entry skipped | "
                     f"strategy={strategy_name} signal={signal} reason={extra_confirm_reason}"

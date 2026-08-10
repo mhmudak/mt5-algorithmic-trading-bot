@@ -1,5 +1,9 @@
 import hashlib
-from config.settings import ATR_MIN, ATR_MAX
+from config.settings import (
+    ATR_MIN,
+    ATR_MAX,
+    ORB_SL_RANGE_PCT_BY_ENTRY_MODEL,
+)
 
 
 PHASE6P3A_PRIORITY_LEGACY_STANDARDIZATION = True
@@ -16,20 +20,27 @@ ORB_FAST_BODY_ATR = 0.38
 ORB_CLOSE_STRENGTH = 0.65
 ORB_FAST_CLOSE_STRENGTH = 0.72
 
-ORB_SL_ATR_MULTIPLIER = 0.25
-ORB_MIN_SL_BUFFER = 1.5
-ORB_MAX_SL_BUFFER = 5.0
-
 ORB_TP_EXTENSION_MULTIPLIER = 0.75
 ORB_MIN_TP_ATR_MULTIPLIER = 1.2
 ORB_MAX_TP_ATR_MULTIPLIER = 3.0
 
 
-def _sl_buffer(atr, orb_width):
-    return min(
-        max(atr * ORB_SL_ATR_MULTIPLIER, orb_width * 0.08, ORB_MIN_SL_BUFFER),
-        ORB_MAX_SL_BUFFER,
+def _sl_buffer(orb_width, entry_model):
+    if orb_width is None or orb_width <= 0:
+        return 0.0
+
+    model = str(
+        entry_model or "BREAKOUT"
+    ).upper()
+
+    pct = float(
+        ORB_SL_RANGE_PCT_BY_ENTRY_MODEL.get(
+            model,
+            ORB_SL_RANGE_PCT_BY_ENTRY_MODEL["BREAKOUT"],
+        )
     )
+
+    return float(orb_width) * pct / 100.0
 
 
 def _target_distance(atr, orb_width):
@@ -108,7 +119,6 @@ def _phase6p3a_generate_signal_raw(df):
     close_from_low = (entry["close"] - entry["low"]) / candle_range
     close_from_high = (entry["high"] - entry["close"]) / candle_range
 
-    sl_buffer = _sl_buffer(atr, orb_width)
     target_distance = _target_distance(atr, orb_width)
 
     max_immediate = min(atr * 0.35, orb_width * 0.20)
@@ -144,7 +154,14 @@ def _phase6p3a_generate_signal_raw(df):
         else:
             entry_model = "WAIT_RETEST"
 
-        sl_reference = round(orb_high - sl_buffer, 2)
+        sl_buffer = _sl_buffer(
+            orb_width,
+            entry_model,
+        )
+        sl_reference = round(
+            orb_high - sl_buffer,
+            2,
+        )
         tp_reference = round(orb_high + target_distance, 2)
 
         if sl_reference >= price:
@@ -214,7 +231,14 @@ def _phase6p3a_generate_signal_raw(df):
         else:
             entry_model = "WAIT_RETEST"
 
-        sl_reference = round(orb_low + sl_buffer, 2)
+        sl_buffer = _sl_buffer(
+            orb_width,
+            entry_model,
+        )
+        sl_reference = round(
+            orb_low + sl_buffer,
+            2,
+        )
         tp_reference = round(orb_low - target_distance, 2)
 
         if sl_reference <= price:

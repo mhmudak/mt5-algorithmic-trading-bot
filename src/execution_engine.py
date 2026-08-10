@@ -10,7 +10,7 @@ from config.settings import (
     ENABLE_ORB_DIRECT_BREAKOUT,
     ORB_DIRECT_BREAKOUT_MIN_SCORE,
     ORB_DIRECT_BREAKOUT_REQUIRE_SMC,
-    ORB_DIRECT_BREAKOUT_EXTRA_SL_PRICE,
+    ORB_DIRECT_BREAKOUT_EXTRA_SL_RANGE_PCT,
 )
 
 def get_recent_invalidated_setups(strategy=None, max_age_minutes=30):
@@ -149,29 +149,67 @@ class ExecutionEngine:
 
         sl_reference = data.get("sl_reference")
         signal = data.get("signal")
+        orb_high = data.get("orb_high")
+        orb_low = data.get("orb_low")
 
-        if sl_reference is None:
+        if (
+            sl_reference is None
+            or orb_high is None
+            or orb_low is None
+        ):
             return
+
+        try:
+            orb_width = abs(
+                float(orb_high)
+                - float(orb_low)
+            )
+            extra_pct = float(
+                ORB_DIRECT_BREAKOUT_EXTRA_SL_RANGE_PCT
+            )
+        except (TypeError, ValueError):
+            return
+
+        if orb_width <= 0:
+            return
+
+        extra_sl_distance = (
+            orb_width
+            * max(extra_pct, 0.0)
+            / 100.0
+        )
 
         if signal == "BUY":
             data["sl_reference"] = round(
-                sl_reference - ORB_DIRECT_BREAKOUT_EXTRA_SL_PRICE,
+                float(sl_reference)
+                - extra_sl_distance,
                 2,
             )
 
         elif signal == "SELL":
             data["sl_reference"] = round(
-                sl_reference + ORB_DIRECT_BREAKOUT_EXTRA_SL_PRICE,
+                float(sl_reference)
+                + extra_sl_distance,
                 2,
             )
 
+        else:
+            return
+
         data["orb_direct_extra_sl_applied"] = True
-        data["orb_direct_extra_sl_price"] = ORB_DIRECT_BREAKOUT_EXTRA_SL_PRICE
+        data["orb_direct_extra_sl_range_pct"] = (
+            extra_pct
+        )
+        data["orb_direct_extra_sl_distance"] = round(
+            extra_sl_distance,
+            2,
+        )
 
         reason = data.get("reason", "N/A")
         data["reason"] = (
-            f"{reason} | ORB_DIRECT_BREAKOUT: extra SL "
-            f"{ORB_DIRECT_BREAKOUT_EXTRA_SL_PRICE}"
+            f"{reason} | ORB_DIRECT_BREAKOUT: "
+            f"extra SL {extra_pct}% of ORB range "
+            f"({round(extra_sl_distance, 2)})"
         )
 
     def process_setups(self, df, price, atr):

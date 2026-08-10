@@ -1,7 +1,29 @@
 import hashlib
-from config.settings import ATR_MIN, ATR_MAX
+from config.settings import (
+    ATR_MIN,
+    ATR_MAX,
+    ORB_V00_SL_RANGE_PCT_BY_ENTRY_MODEL,
+)
 
 ORB_WINDOW = 15
+
+
+def _sl_buffer(orb_width, entry_model):
+    if orb_width is None or orb_width <= 0:
+        return 0.0
+
+    model = str(
+        entry_model or "BREAKOUT"
+    ).upper()
+
+    pct = float(
+        ORB_V00_SL_RANGE_PCT_BY_ENTRY_MODEL.get(
+            model,
+            ORB_V00_SL_RANGE_PCT_BY_ENTRY_MODEL["BREAKOUT"],
+        )
+    )
+
+    return float(orb_width) * pct / 100.0
 
 
 PHASE6P3D_ORB_V00_STANDARDIZATION = True
@@ -49,7 +71,14 @@ def _phase6p3d_generate_signal_raw(df):
         else:
             return None  # ❌ too extended → skip
         
-        sl_reference = round(orb_high - max(atr * 0.25, 1.5), 2) # may delete this
+        sl_reference = round(
+            orb_high
+            - _sl_buffer(
+                orb_width,
+                entry_model,
+            ),
+            2,
+        )
         tp_reference = round(price + orb_width, 2)
 
         return {
@@ -84,7 +113,14 @@ def _phase6p3d_generate_signal_raw(df):
         else:
             return None  # ❌ too extended → skip
         
-        sl_reference = round(orb_low + max(atr * 0.25, 1.5), 2)
+        sl_reference = round(
+            orb_low
+            + _sl_buffer(
+                orb_width,
+                entry_model,
+            ),
+            2,
+        )
         tp_reference = round(price - orb_width, 2)
 
         return {

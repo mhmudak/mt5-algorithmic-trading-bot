@@ -997,7 +997,28 @@ VWAP_RANGE_SL_BUFFER_PRICE = 1.50
 ENABLE_ORB_DIRECT_BREAKOUT = True
 ORB_DIRECT_BREAKOUT_MIN_SCORE = 98
 ORB_DIRECT_BREAKOUT_REQUIRE_SMC = True
-ORB_DIRECT_BREAKOUT_EXTRA_SL_PRICE = 3.0
+
+# ORB risk is proportional to the opening range rather than
+# absolute XAUUSD price units.
+#
+# FAST_CONTINUATION / BREAKOUT need enough room for a normal
+# post-breakout throwback. WAIT_RETEST has already received a
+# retracement and therefore uses a smaller structural buffer.
+ORB_SL_RANGE_PCT_BY_ENTRY_MODEL = {
+    "FAST_CONTINUATION": 20.0,
+    "BREAKOUT": 20.0,
+    "WAIT_RETEST": 15.0,
+}
+
+ORB_V00_SL_RANGE_PCT_BY_ENTRY_MODEL = {
+    "FAST_CONTINUATION": 20.0,
+    "BREAKOUT": 20.0,
+    "WAIT_RETEST": 15.0,
+}
+
+# Very strong direct BREAKOUT setups receive an additional
+# percentage of the ORB range. No fixed-price SL widening.
+ORB_DIRECT_BREAKOUT_EXTRA_SL_RANGE_PCT = 2.0
 
 # WAVETREND_MOMENTUM_M5
 ENABLE_WAVETREND_MOMENTUM_M5 = True
@@ -1359,8 +1380,8 @@ INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = {
         "require_ema_alignment": True,
         "require_m5_confirmation": False,
 
-        "min_sl_distance": 3.50,
-        "max_sl_distance": 10.00,
+        # Percentage of the ORB range, not fixed price units.
+        "sl_range_pct": ORB_V00_SL_RANGE_PCT_BY_ENTRY_MODEL["BREAKOUT"],
         "min_tp_distance": 6.00,
         "max_tp_distance": 20.00,
     },
@@ -1381,8 +1402,8 @@ INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = {
         "require_ema_alignment": True,
         "require_m5_confirmation": False,
 
-        "min_sl_distance": 4.00,
-        "max_sl_distance": 12.00,
+        # Percentage of the ORB range, not fixed price units.
+        "sl_range_pct": ORB_SL_RANGE_PCT_BY_ENTRY_MODEL["BREAKOUT"],
         "min_tp_distance": 7.00,
         "max_tp_distance": 24.00,
     },
