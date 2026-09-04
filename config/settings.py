@@ -186,7 +186,7 @@ NEWS_CONTEXT_AFTER_MINUTES = 180
 # Execution / Risk Settings
 # =========================
 POSITION_MODE = "fixed"   # "fixed" or "risk"
-FIXED_LOT = 0.06
+FIXED_LOT = 0.25
 RISK_PER_TRADE_PCT = 0.25
 
 # =========================
@@ -2699,7 +2699,7 @@ ENABLE_INTRABAR_M15_DIRECTION_LOCK_ALIGNMENT_ANNOTATION = True
 # Phase 7A1 ? Funded Account Safe Mode
 # ============================================================
 
-ENABLE_PROP_FIRM_SAFE_MODE = True
+ENABLE_PROP_FIRM_SAFE_MODE = False
 PROP_FIRM_PROFILE = "GETLEVERAGED_TURBO_EVALUATION_50K"
 
 # Block new orders when account information or state cannot be verified.

@@ -106,6 +106,11 @@ from src.setup_outcome_tracker import (
     update_setup_outcomes,
 )
 
+from src.intrabar_context_observer import (
+    build_intrabar_context_snapshot,
+    log_intrabar_context_observation,
+)
+
 from config.settings import (
     SYMBOL,
     TIMEFRAME,
@@ -461,6 +466,118 @@ def send_telegram_message_async(message):
 
 
     threading.Thread(target=_worker, daemon=True).start()
+
+
+def _capture_intrabar_context_observation(
+    *,
+    df,
+    source,
+    event,
+    strategy,
+    setup_id,
+    signal,
+    entry_model,
+    session,
+    execution_market_condition,
+    signal_data,
+    trade_plan,
+    extra_context=None,
+):
+    """
+    Post-execution research instrumentation only.
+
+    This function must never participate in:
+    - setup selection
+    - trade blocking
+    - order sizing
+    - SL/TP generation
+    - order submission
+    """
+
+    observed_market_condition = (
+        execution_market_condition
+    )
+
+    try:
+        from src.market_condition import (
+            detect_market_condition
+            as _detect_market_condition,
+        )
+
+        observed_market_condition = (
+            _detect_market_condition(df)
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "[INTRABAR CONTEXT OBSERVER] "
+            f"market regime capture failed "
+            f"open: {exc}"
+        )
+
+    m15_bias = None
+
+    try:
+        m15_bias = get_mtf_bias()
+
+    except Exception as exc:
+        logger.warning(
+            "[INTRABAR CONTEXT OBSERVER] "
+            f"M15 bias capture failed "
+            f"open: {exc}"
+        )
+
+    htf_context = None
+
+    try:
+        htf_context = get_htf_context()
+
+    except Exception as exc:
+        logger.warning(
+            "[INTRABAR CONTEXT OBSERVER] "
+            f"HTF context capture failed "
+            f"open: {exc}"
+        )
+
+    try:
+        snapshot = (
+            build_intrabar_context_snapshot(
+                df=df,
+                source=source,
+                event=event,
+                strategy=strategy,
+                setup_id=setup_id,
+                signal=signal,
+                entry_model=entry_model,
+                session=session,
+                execution_market_condition=(
+                    execution_market_condition
+                ),
+                observed_market_condition=(
+                    observed_market_condition
+                ),
+                signal_data=signal_data,
+                trade_plan=trade_plan,
+                m15_bias=m15_bias,
+                htf_context=htf_context,
+                extra_context=extra_context,
+            )
+        )
+
+        return (
+            log_intrabar_context_observation(
+                snapshot
+            )
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "[INTRABAR CONTEXT OBSERVER] "
+            f"snapshot capture failed "
+            f"open: {exc}"
+        )
+
+        return False
 
 
 def _phase6s_pick(*values):
@@ -4658,6 +4775,28 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
     )
 
     if execution_result:
+        _capture_intrabar_context_observation(
+            df=df,
+            source="INTRABAR_PRICE_EVENT",
+            event="INTRABAR_PRICE_EVENT_EXECUTED",
+            strategy=strategy_name,
+            setup_id=setup_id,
+            signal=signal,
+            entry_model=signal_data.get("entry_model"),
+            session=session_name,
+            execution_market_condition=market_condition,
+            signal_data=signal_data,
+            trade_plan=trade_plan,
+            extra_context={
+                "rr": rr_value,
+                "required_rr": required_rr,
+                "m5_confirmation_reason": m5_reason,
+                "intrabar_trigger": signal_data.get(
+                    "intrabar_trigger"
+                ),
+            },
+        )
+
         news_context = attach_news_context_to_signal_data(signal_data)
 
         tracked = register_setup_outcome(
@@ -10196,6 +10335,33 @@ def process_cycle(last_processed_candle_time):
             execution_result = execute_trade(asls_signal, asls_trade_plan, SYMBOL)
 
             if execution_result:
+                _capture_intrabar_context_observation(
+                    df=df,
+                    source="PHASE6H3_ASLS",
+                    event="PHASE6H3_ASLS_EXECUTED",
+                    strategy=asls_strategy,
+                    setup_id=asls_setup_id,
+                    signal=asls_signal,
+                    entry_model=asls_entry_model,
+                    session=asls_signal_data.get("session"),
+                    execution_market_condition=(
+                        asls_signal_data.get(
+                            "market_condition"
+                        )
+                    ),
+                    signal_data=asls_signal_data,
+                    trade_plan=asls_trade_plan,
+                    extra_context={
+                        "structural_level": asls_level,
+                        "entry_distance": round(
+                            entry_distance,
+                            2,
+                        ),
+                        "rr": asls_rr,
+                        "intrabar_live_executor": True,
+                    },
+                )
+
                 log_setup_event(
                     setup_id=asls_setup_id,
                     event="PHASE6H3_ASLS_EXECUTED",
