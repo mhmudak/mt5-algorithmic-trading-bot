@@ -1,5 +1,5 @@
-
 from __future__ import annotations
+import ast
 
 import sys
 from pathlib import Path
@@ -15,27 +15,31 @@ from src.intrabar_strategy_allowlist import (
 )
 
 
-SETTINGS = Path("config/settings.py")
-LIVE_BOT = Path("src/live_bot.py")
+SETTINGS = ROOT / "config" / "settings.py"
+LIVE_BOT = ROOT / "src" / "live_bot.py"
+TARGET_ALLOWLIST = (
+    "AUTO_STRUCTURAL_LEVEL_SCALP",
+    "FAILED_FVG_REVERSAL",
+    "BREAKER_BLOCK",
+    "ORDER_BLOCK",
+)
 
 
-def test_phase6u1_allowlist_decision_allows_only_target_strategies():
-    allowlist = ("AUTO_STRUCTURAL_LEVEL_SCALP", "FAILED_FVG_REVERSAL")
-
-    allowed = explain_intrabar_strategy_allowlist_decision(
-        trade_plan={"strategy": "FAILED_FVG_REVERSAL", "source_bucket": "INTRABAR"},
-        enabled=True,
-        allowlist=allowlist,
-    )
+def test_phase6u1_allowlist_decision_allows_target_strategies_only():
+    for strategy in TARGET_ALLOWLIST:
+        allowed = explain_intrabar_strategy_allowlist_decision(
+            trade_plan={"strategy": strategy, "source_bucket": "INTRABAR"},
+            enabled=True,
+            allowlist=TARGET_ALLOWLIST,
+        )
+        assert allowed["allowed"] is True
+        assert allowed["reason"] == "allowed_strategy"
 
     blocked = explain_intrabar_strategy_allowlist_decision(
         trade_plan={"strategy": "MICRO_SR_SWEEP_RECLAIM", "source_bucket": "INTRABAR"},
         enabled=True,
-        allowlist=allowlist,
+        allowlist=TARGET_ALLOWLIST,
     )
-
-    assert allowed["allowed"] is True
-    assert allowed["reason"] == "allowed_strategy"
 
     assert blocked["allowed"] is False
     assert blocked["reason"] == "blocked_intrabar_strategy_not_in_allowlist"
@@ -48,35 +52,32 @@ def test_phase6u1_profile_filter_removes_non_allowed_intrabar_profiles():
     profiles = [
         {"strategy": "AUTO_STRUCTURAL_LEVEL_SCALP"},
         {"strategy": "FAILED_FVG_REVERSAL"},
+        {"strategy": "BREAKER_BLOCK"},
+        {"strategy": "ORDER_BLOCK"},
         {"strategy": "MICRO_SR_SWEEP_RECLAIM"},
         {"strategy": "RANGE_SWEEP_RECLAIM"},
-        {"strategy": "VWAP_RECLAIM"},
     ]
 
     filtered = filter_intrabar_strategy_profiles(
         profiles,
         enabled=True,
-        allowlist=("AUTO_STRUCTURAL_LEVEL_SCALP", "FAILED_FVG_REVERSAL"),
+        allowlist=TARGET_ALLOWLIST,
     )
 
-    assert [row["strategy"] for row in filtered] == [
-        "AUTO_STRUCTURAL_LEVEL_SCALP",
-        "FAILED_FVG_REVERSAL",
-    ]
+    assert [row["strategy"] for row in filtered] == list(TARGET_ALLOWLIST)
 
 
 def test_phase6u1_normalizes_allowlist():
-    assert normalize_intrabar_allowlist([" failed_fvg_reversal ", "FAILED_FVG_REVERSAL"]) == (
-        "FAILED_FVG_REVERSAL",
-    )
-
+    assert normalize_intrabar_allowlist(
+        [" failed_fvg_reversal ", "FAILED_FVG_REVERSAL"]
+    ) == ("FAILED_FVG_REVERSAL",)
 
 
 def test_phase6u1_non_intrabar_trade_is_not_blocked():
     decision = explain_intrabar_strategy_allowlist_decision(
         trade_plan={"strategy": "ORB_V00", "source_bucket": "NORMAL_OR_TRACKED"},
         enabled=True,
-        allowlist=("AUTO_STRUCTURAL_LEVEL_SCALP", "FAILED_FVG_REVERSAL"),
+        allowlist=TARGET_ALLOWLIST,
     )
 
     assert decision["allowed"] is True
@@ -84,40 +85,63 @@ def test_phase6u1_non_intrabar_trade_is_not_blocked():
     assert decision["scope"] == "NON_INTRABAR_SKIPPED"
     assert decision["can_block_trade"] is False
 
-def test_phase6u1_settings_flags_exist_and_are_enabled():
-    text = SETTINGS.read_text(encoding="utf-8")
 
-    assert "ENABLE_INTRABAR_STRATEGY_ALLOWLIST = True" in text
-    assert "ENABLE_INTRABAR_STRATEGY_DETECTION_ALLOWLIST = True" in text
-    assert '"AUTO_STRUCTURAL_LEVEL_SCALP"' in text
-    assert '"FAILED_FVG_REVERSAL"' in text
-    assert '"MICRO_SR_SWEEP_RECLAIM"' in text
+def test_settings_master_switch_and_single_canonical_list():
+    text = SETTINGS.read_text(encoding="utf-8-sig")
+
+    assert "ENABLE_INTRABAR_ENGINE = True" in text
+
+    tree = ast.parse(
+        text,
+        filename=str(SETTINGS),
+    )
+
+    canonical_values = []
+
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+
+        for target in node.targets:
+            if (
+                isinstance(target, ast.Name)
+                and target.id == "INTRABAR_STRATEGY_ALLOWLIST"
+            ):
+                canonical_values.append(
+                    tuple(ast.literal_eval(node.value))
+                )
+
+    assert len(canonical_values) == 1
+    assert canonical_values[0] == TARGET_ALLOWLIST
+
+    assert "INTRABAR_PRICE_EVENT_ALLOWED_STRATEGIES = tuple(" in text
+    assert "for strategy in INTRABAR_STRATEGY_ALLOWLIST" in text
 
 
-def test_phase6u1_live_bot_has_final_execution_guard():
-    text = LIVE_BOT.read_text(encoding="utf-8")
+def test_live_bot_has_generic_and_asls_canonical_guards():
+    text = LIVE_BOT.read_text(encoding="utf-8-sig")
 
-    assert "from src.intrabar_strategy_allowlist import (" in text
-    assert "ENABLE_INTRABAR_STRATEGY_ALLOWLIST" in text
-    assert "INTRABAR_STRATEGY_ALLOWLIST" in text
+    assert "ENABLE_INTRABAR_ENGINE and ENABLE_INTRABAR_PRICE_EVENT_DETECTOR" in text
+    assert "ENABLE_INTRABAR_ENGINE and ENABLE_AUTO_STRUCTURAL_LEVEL_SCALP" in text
     assert "phase6u_intrabar_allowlist_decision = explain_intrabar_strategy_allowlist_decision(" in text
-    module_text = Path("src/intrabar_strategy_allowlist.py").read_text(encoding="utf-8")
-    assert "blocked_intrabar_strategy_not_in_allowlist" in module_text
-    assert "execution_result = execute_trade(signal, trade_plan, SYMBOL)" in text
+    assert "asls_allowlist_decision = explain_intrabar_strategy_allowlist_decision(" in text
 
-    guard_index = text.find("phase6u_intrabar_allowlist_decision = explain_intrabar_strategy_allowlist_decision(")
-    execute_index = text.find("execution_result = execute_trade(signal, trade_plan, SYMBOL)")
+    generic_guard = text.index("phase6u_intrabar_allowlist_decision = explain_intrabar_strategy_allowlist_decision(")
+    generic_execute = text.index("execution_result = execute_trade(signal, trade_plan, SYMBOL)")
+    assert generic_guard < generic_execute
 
-    assert guard_index != -1
-    assert execute_index != -1
-    assert guard_index < execute_index
+    phase_start = text.index("PHASE 6H3 - INTRABAR STRUCTURAL LEVEL SCALP EXECUTION")
+    phase = text[phase_start:text.index("# NEW CANDLE CHECK", phase_start)]
+    assert phase.index("asls_allowlist_decision = explain_intrabar_strategy_allowlist_decision(") < phase.index(
+        "execution_result = execute_trade(asls_signal, asls_trade_plan, SYMBOL)"
+    )
 
 
 if __name__ == "__main__":
-    test_phase6u1_allowlist_decision_allows_only_target_strategies()
+    test_phase6u1_allowlist_decision_allows_target_strategies_only()
     test_phase6u1_profile_filter_removes_non_allowed_intrabar_profiles()
     test_phase6u1_normalizes_allowlist()
     test_phase6u1_non_intrabar_trade_is_not_blocked()
-    test_phase6u1_settings_flags_exist_and_are_enabled()
-    test_phase6u1_live_bot_has_final_execution_guard()
-    print("[PASS] Phase 6U1 intrabar strategy allowlist passed.")
+    test_settings_master_switch_and_single_canonical_list()
+    test_live_bot_has_generic_and_asls_canonical_guards()
+    print("[PASS] Canonical intrabar strategy allowlist regression passed.")

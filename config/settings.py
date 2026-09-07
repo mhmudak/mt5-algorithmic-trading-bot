@@ -1330,25 +1330,23 @@ ORB_TICK_BREAKOUT_MIN_RR = 2.0
 ORB_TICK_BREAKOUT_REQUIRE_M5_CONFIRMATION = False
 
 # =========================
-# Intrabar ORB / Liquidity Detector
+# Intrabar Execution Engine
 # =========================
-ENABLE_INTRABAR_PRICE_EVENT_DETECTOR = True
+# Master kill switch for the intrabar execution architecture.
+# Individual subsystem flags still apply underneath this switch.
+ENABLE_INTRABAR_ENGINE = True
 
-INTRABAR_PRICE_EVENT_ALLOWED_STRATEGIES = [
-    "ORB_V00",
-    "ORB",
-    "LIQUIDITY_SWEEP",
-    "LIQUIDITY_TRAP",
-    "RELIEF_RALLY",
-    "STRUCTURE_LIQUIDITY",
-    "MICRO_SR_SWEEP_RECLAIM",
-    "ORDER_BLOCK",
-    "EXTREME_SWEEP_RECLAIM",
-    "RANGE_SWEEP_RECLAIM",
-    "VWAP_RECLAIM",
-    "INTRABAR_VWAP_LIQUIDITY_RECLAIM",
+# Canonical intrabar execution permission list.
+# Generic detector permissions are derived from this tuple + available profiles.
+INTRABAR_STRATEGY_ALLOWLIST = (
+    "AUTO_STRUCTURAL_LEVEL_SCALP",
     "FAILED_FVG_REVERSAL",
-]
+    "BREAKER_BLOCK",
+    "ORDER_BLOCK",
+)
+
+# Generic intrabar price-event subsystem.
+ENABLE_INTRABAR_PRICE_EVENT_DETECTOR = True
 
 INTRABAR_PRICE_EVENT_MIN_SCORE = 95
 INTRABAR_PRICE_EVENT_MIN_RR = 1.5
@@ -1539,6 +1537,30 @@ INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = {
     },
 
     # ---------------------------------------------------------
+    # BREAKER BLOCK
+    # Uses the native breaker/retest detector intrabar.
+    # Generic intrabar code supplies orchestration only; native breaker
+    # zone, displacement, retest, SL and TP geometry stay authoritative.
+    # ---------------------------------------------------------
+    "BREAKER_BLOCK": {
+        "trigger": "NATIVE_BREAKER_RETEST",
+        "level_source": "NATIVE_BREAKER_BLOCK",
+        "lookback_bars": 40,
+
+        "min_score": 93,
+        "min_rr": 1.10,
+        "target_rr": 1.50,
+
+        "min_break_distance": 0.00,
+        "max_break_distance": 18.00,
+        "reclaim_buffer": 0.00,
+
+        "require_ema_alignment": True,
+        "require_m5_confirmation": True,
+        "preserve_native_sl_tp": True,
+    },
+
+    # ---------------------------------------------------------
     # ORDER BLOCK
     # The entry requires a reaction/reclaim from a recent structural
     # zone. M5 confirmation is used to avoid entering while price is
@@ -1711,8 +1733,9 @@ INTRABAR_PRICE_EVENT_MIN_TP_DISTANCE_PRICE = 5.0
 INTRABAR_PRICE_EVENT_MAX_TP_DISTANCE_PRICE = 28.0
 INTRABAR_PRICE_EVENT_DEFAULT_TARGET_RR = 1.35
 
-# Safety first: false means no M5 close confirmation required.
-INTRABAR_PRICE_EVENT_REQUIRE_M5_CONFIRMATION = True
+# Legacy global override. Profile-level M5 requirements are authoritative.
+# FAILED_FVG_REVERSAL, ORDER_BLOCK and BREAKER_BLOCK explicitly require M5.
+INTRABAR_PRICE_EVENT_REQUIRE_M5_CONFIRMATION = False
 
 INTRABAR_PRICE_EVENT_NOTIFY_TELEGRAM = True
 
@@ -1737,6 +1760,8 @@ INTRABAR_M5_CONFIRMATION_BARS = 80
 
 INTRABAR_M5_CONFIRMATION_STRATEGIES = [
     "FAILED_FVG_REVERSAL",
+    "ORDER_BLOCK",
+    "BREAKER_BLOCK",
     "RELIEF_RALLY",
     "STRUCTURE_LIQUIDITY",
     "VWAP_RECLAIM",
@@ -2252,6 +2277,12 @@ ASLS_MIN_BODY_PRICE = 0.50
 ASLS_BREAK_CONFIRM_DISTANCE = 0.50
 ASLS_BREAK_CONFIRM_TOLERANCE = 0.20
 ASLS_BREAK_BODY_ATR_RATIO = 0.18
+
+# Intrabar liquidity/context quality controls.
+# These are market-state qualifications, not BUY/SELL/session bans.
+ASLS_BREAK_HOLD_MIN_HOLD_DISTANCE = 0.30
+ASLS_CONTEXT_COUNTER_MIN_BODY_ATR = 0.45
+
 ASLS_SL_BUFFER = 2.50
 ASLS_TARGET_PRICE = 8.0
 ASLS_MIN_TARGET_PRICE = 5.0
@@ -2445,11 +2476,6 @@ PHASE6T_STRATEGY_EVIDENCE_DIGEST_SEND_TELEGRAM = False
 ENABLE_INTRABAR_STRATEGY_ALLOWLIST = True
 ENABLE_INTRABAR_STRATEGY_DETECTION_ALLOWLIST = True
 
-INTRABAR_STRATEGY_ALLOWLIST = (
-    "AUTO_STRUCTURAL_LEVEL_SCALP",
-    "FAILED_FVG_REVERSAL",
-)
-
 INTRABAR_STRATEGY_BLOCKED_EXAMPLES = (
     "MICRO_SR_SWEEP_RECLAIM",
     "RANGE_SWEEP_RECLAIM",
@@ -2459,79 +2485,18 @@ INTRABAR_STRATEGY_BLOCKED_EXAMPLES = (
 )
 
 
-def _phase6u_normalize_intrabar_strategy_name(value):
-    if value is None:
-        return ""
-
-    if isinstance(value, (list, tuple, set)):
-        value = next((item for item in value if item), "")
-
-    return str(value).strip().upper()
-
-
-def _phase6u_extract_profile_strategy_name(profile):
-    if isinstance(profile, dict):
-        for key in (
-            "strategy",
-            "strategy_name",
-            "name",
-            "setup_source",
-            "setup_type",
-            "profile_name",
-        ):
-            value = profile.get(key)
-            if value:
-                return _phase6u_normalize_intrabar_strategy_name(value)
-
-    return _phase6u_normalize_intrabar_strategy_name(profile)
-
-
-try:
+# Derived/internal generic detector strategy set.
+# This is not an independent permission list: a strategy must be present in
+# the canonical INTRABAR_STRATEGY_ALLOWLIST and have an available profile.
+INTRABAR_PRICE_EVENT_ALLOWED_STRATEGIES = tuple(
+    str(strategy).strip().upper()
+    for strategy in INTRABAR_STRATEGY_ALLOWLIST
     if (
-        ENABLE_INTRABAR_STRATEGY_DETECTION_ALLOWLIST
-        and "INTRABAR_PRICE_EVENT_STRATEGY_PROFILES" in globals()
-    ):
-        _PHASE6U_INTRABAR_ALLOWED_NORMALIZED = {
-            _phase6u_normalize_intrabar_strategy_name(strategy)
-            for strategy in INTRABAR_STRATEGY_ALLOWLIST
-        }
+        str(strategy).strip().upper()
+        in INTRABAR_PRICE_EVENT_STRATEGY_PROFILES
+    )
+)
 
-        if isinstance(INTRABAR_PRICE_EVENT_STRATEGY_PROFILES, dict):
-            INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = {
-                strategy_name: profile
-                for strategy_name, profile
-                in INTRABAR_PRICE_EVENT_STRATEGY_PROFILES.items()
-                if (
-                    _phase6u_normalize_intrabar_strategy_name(strategy_name)
-                    in _PHASE6U_INTRABAR_ALLOWED_NORMALIZED
-                )
-            }
-
-        elif isinstance(
-            INTRABAR_PRICE_EVENT_STRATEGY_PROFILES,
-            (list, tuple),
-        ):
-            INTRABAR_PRICE_EVENT_STRATEGY_PROFILES = [
-                profile
-                for profile in INTRABAR_PRICE_EVENT_STRATEGY_PROFILES
-                if (
-                    _phase6u_extract_profile_strategy_name(profile)
-                    in _PHASE6U_INTRABAR_ALLOWED_NORMALIZED
-                )
-            ]
-
-        if "INTRABAR_PRICE_EVENT_ALLOWED_STRATEGIES" in globals():
-            INTRABAR_PRICE_EVENT_ALLOWED_STRATEGIES = [
-                strategy
-                for strategy in INTRABAR_PRICE_EVENT_ALLOWED_STRATEGIES
-                if (
-                    _phase6u_normalize_intrabar_strategy_name(strategy)
-                    in _PHASE6U_INTRABAR_ALLOWED_NORMALIZED
-                )
-            ]
-except Exception:
-    # Never break settings import because of profile-shape differences.
-    pass
 
 # ============================================================
 # Phase 6U Intrabar JSON Optimization Report
@@ -2546,6 +2511,8 @@ PHASE6U_INTRABAR_JSON_OPTIMIZATION_OUTPUT_DIR = "data/reports/intrabar_json_opti
 PHASE6U_INTRABAR_JSON_OPTIMIZATION_ALLOWED_STRATEGIES = (
     "AUTO_STRUCTURAL_LEVEL_SCALP",
     "FAILED_FVG_REVERSAL",
+    "BREAKER_BLOCK",
+    "ORDER_BLOCK",
 )
 PHASE6U_INTRABAR_JSON_OPTIMIZATION_BLOCK_OTHERS = True
 

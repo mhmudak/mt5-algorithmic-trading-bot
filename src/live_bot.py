@@ -293,6 +293,7 @@ from config.settings import (
     TICK_SNIPER_NOTIFY_TELEGRAM,
     TICK_SNIPER_REQUIRE_M5_CONFIRMATION,
     TICK_SNIPER_STRATEGY_PROFILES,
+    ENABLE_INTRABAR_ENGINE,
     ENABLE_INTRABAR_PRICE_EVENT_DETECTOR,
     INTRABAR_PRICE_EVENT_ALLOWED_STRATEGIES,
     INTRABAR_PRICE_EVENT_MIN_SCORE,
@@ -468,7 +469,43 @@ def send_telegram_message_async(message):
     threading.Thread(target=_worker, daemon=True).start()
 
 
-def _capture_intrabar_context_observation(
+def _derive_intrabar_m15_direction(df):
+    """Derive a research-only direction from the last closed M15 candle."""
+
+    try:
+        if df is None or len(df) < 3:
+            return None
+
+        last_closed = df.iloc[-2]
+        previous_closed = df.iloc[-3]
+
+        close = float(last_closed.get("close"))
+        previous_close = float(previous_closed.get("close"))
+        ema = last_closed.get("ema_20")
+        ema = float(ema) if ema is not None else None
+
+        if ema is not None:
+            if close > ema and close >= previous_close:
+                return "BUY"
+            if close < ema and close <= previous_close:
+                return "SELL"
+            if close > ema:
+                return "BUY"
+            if close < ema:
+                return "SELL"
+
+        if close > previous_close:
+            return "BUY"
+        if close < previous_close:
+            return "SELL"
+
+    except Exception:
+        return None
+
+    return None
+
+
+def _freeze_intrabar_context_observation(
     *,
     df,
     source,
@@ -484,101 +521,95 @@ def _capture_intrabar_context_observation(
     extra_context=None,
 ):
     """
-    Post-execution research instrumentation only.
+    Freeze causal T0 research context immediately before execute_trade().
 
-    This function must never participate in:
-    - setup selection
-    - trade blocking
-    - order sizing
-    - SL/TP generation
-    - order submission
+    Fail-open guarantee: any observer error returns None and must never
+    participate in execution, sizing, SL/TP, strategy selection, or memory.
     """
 
-    observed_market_condition = (
-        execution_market_condition
-    )
-
     try:
-        from src.market_condition import (
-            detect_market_condition
-            as _detect_market_condition,
-        )
+        observed_market_condition = execution_market_condition
 
-        observed_market_condition = (
-            _detect_market_condition(df)
-        )
-
-    except Exception as exc:
-        logger.warning(
-            "[INTRABAR CONTEXT OBSERVER] "
-            f"market regime capture failed "
-            f"open: {exc}"
-        )
-
-    m15_bias = None
-
-    try:
-        m15_bias = get_mtf_bias()
-
-    except Exception as exc:
-        logger.warning(
-            "[INTRABAR CONTEXT OBSERVER] "
-            f"M15 bias capture failed "
-            f"open: {exc}"
-        )
-
-    htf_context = None
-
-    try:
-        htf_context = get_htf_context()
-
-    except Exception as exc:
-        logger.warning(
-            "[INTRABAR CONTEXT OBSERVER] "
-            f"HTF context capture failed "
-            f"open: {exc}"
-        )
-
-    try:
-        snapshot = (
-            build_intrabar_context_snapshot(
-                df=df,
-                source=source,
-                event=event,
-                strategy=strategy,
-                setup_id=setup_id,
-                signal=signal,
-                entry_model=entry_model,
-                session=session,
-                execution_market_condition=(
-                    execution_market_condition
-                ),
-                observed_market_condition=(
-                    observed_market_condition
-                ),
-                signal_data=signal_data,
-                trade_plan=trade_plan,
-                m15_bias=m15_bias,
-                htf_context=htf_context,
-                extra_context=extra_context,
+        try:
+            from src.market_condition import (
+                detect_market_condition as _detect_market_condition,
             )
-        )
 
-        return (
-            log_intrabar_context_observation(
-                snapshot
+            observed_market_condition = _detect_market_condition(df)
+        except Exception as exc:
+            logger.warning(
+                "[INTRABAR CONTEXT OBSERVER] "
+                f"market regime T0 capture failed open: {exc}"
             )
+
+        m15_direction = None
+        if isinstance(signal_data, dict):
+            m15_direction = signal_data.get("m15_context_direction")
+
+        if not m15_direction:
+            m15_direction = _derive_intrabar_m15_direction(df)
+
+        configured_mtf_bias = None
+        try:
+            # get_mtf_bias() intentionally represents the configured MTF
+            # timeframe (currently H1), not the actual M15 direction above.
+            configured_mtf_bias = get_mtf_bias()
+        except Exception as exc:
+            logger.warning(
+                "[INTRABAR CONTEXT OBSERVER] "
+                f"configured MTF bias T0 capture failed open: {exc}"
+            )
+
+        htf_context = None
+        try:
+            htf_context = get_htf_context()
+        except Exception as exc:
+            logger.warning(
+                "[INTRABAR CONTEXT OBSERVER] "
+                f"HTF context T0 capture failed open: {exc}"
+            )
+
+        return build_intrabar_context_snapshot(
+            df=df,
+            source=source,
+            event=event,
+            strategy=strategy,
+            setup_id=setup_id,
+            signal=signal,
+            entry_model=entry_model,
+            session=session,
+            execution_market_condition=execution_market_condition,
+            observed_market_condition=observed_market_condition,
+            signal_data=signal_data,
+            trade_plan=trade_plan,
+            m15_direction=m15_direction,
+            mtf_bias=configured_mtf_bias,
+            htf_context=htf_context,
+            extra_context=extra_context,
         )
 
     except Exception as exc:
         logger.warning(
             "[INTRABAR CONTEXT OBSERVER] "
-            f"snapshot capture failed "
-            f"open: {exc}"
+            f"T0 snapshot freeze failed open: {exc}"
         )
+        return None
 
+
+def _persist_intrabar_context_observation(snapshot):
+    """Persist a previously frozen T0 snapshot after successful execution."""
+
+    if not snapshot:
         return False
 
+    try:
+        return log_intrabar_context_observation(snapshot)
+    except Exception as exc:
+        logger.warning(
+            "[INTRABAR CONTEXT OBSERVER] "
+            f"T0 snapshot persistence failed open: {exc}"
+        )
+        return False
 
 def _phase6s_pick(*values):
     for value in values:
@@ -3649,44 +3680,43 @@ def tick_sniper_ready(signal, tick, setup_data, setup):
     return move >= min_move, current_price, move
 
 def get_intrabar_detector_profiles():
-    allowed = {
-        str(strategy or "").upper()
-        for strategy in INTRABAR_PRICE_EVENT_ALLOWED_STRATEGIES
-    }
+    """
+    Return the active generic intrabar profiles.
+
+    Execution permission comes only from the canonical allowlist-derived
+    INTRABAR_PRICE_EVENT_ALLOWED_STRATEGIES. Profiles describe behavior and
+    retain their full strategy-specific shape.
+    """
 
     profiles = []
 
     for strategy in INTRABAR_PRICE_EVENT_ALLOWED_STRATEGIES:
-        strategy_key = str(strategy or "").upper()
-
-        if strategy_key not in allowed:
-            continue
-
+        strategy_key = str(strategy or "").strip().upper()
         profile = INTRABAR_PRICE_EVENT_STRATEGY_PROFILES.get(strategy_key)
 
-        if not profile:
+        if not isinstance(profile, dict):
             continue
 
-        profiles.append({
-            "strategy": strategy_key,
-            "trigger": profile.get("trigger", "DIRECT_BREAKOUT"),
-            "level_source": profile.get("level_source", "RECENT_RANGE"),
-            "lookback_bars": int(profile.get("lookback_bars", 15)),
-            "min_score": profile.get("min_score", INTRABAR_PRICE_EVENT_MIN_SCORE),
-            "min_rr": profile.get("min_rr", INTRABAR_PRICE_EVENT_MIN_RR),
-            "min_break_distance": profile.get(
-                "min_break_distance",
-                INTRABAR_PRICE_EVENT_BREAK_DISTANCE_PRICE,
-            ),
-            "max_break_distance": profile.get(
-                "max_break_distance",
-                INTRABAR_PRICE_EVENT_MAX_BREAK_DISTANCE_PRICE,
-            ),
-            "reclaim_buffer": profile.get(
-                "reclaim_buffer",
-                INTRABAR_PRICE_EVENT_RECLAIM_BUFFER_PRICE,
-            ),
-        })
+        normalized = dict(profile)
+        normalized["strategy"] = strategy_key
+        normalized.setdefault("trigger", "DIRECT_BREAKOUT")
+        normalized.setdefault("level_source", "RECENT_RANGE")
+        normalized.setdefault("lookback_bars", 15)
+        normalized.setdefault("min_score", INTRABAR_PRICE_EVENT_MIN_SCORE)
+        normalized.setdefault("min_rr", INTRABAR_PRICE_EVENT_MIN_RR)
+        normalized.setdefault(
+            "min_break_distance",
+            INTRABAR_PRICE_EVENT_BREAK_DISTANCE_PRICE,
+        )
+        normalized.setdefault(
+            "max_break_distance",
+            INTRABAR_PRICE_EVENT_MAX_BREAK_DISTANCE_PRICE,
+        )
+        normalized.setdefault(
+            "reclaim_buffer",
+            INTRABAR_PRICE_EVENT_RECLAIM_BUFFER_PRICE,
+        )
+        profiles.append(normalized)
 
     return profiles
 
@@ -4014,8 +4044,167 @@ def evaluate_intrabar_price_event_trigger(
         "direction_context": direction_context,
     }
 
+def build_native_breaker_intrabar_signal_data(
+    df,
+    tick,
+    session_name,
+    market_condition,
+    current_candle_time,
+    profile,
+):
+    """
+    Reuse the native BREAKER_BLOCK geometry on the live M15 candle.
+
+    The native strategy intentionally reads df.iloc[-2] as its entry candle.
+    Appending one duplicate sentinel shifts the current forming candle into
+    that slot without modifying native breaker/retest logic.
+    """
+
+    try:
+        if df is None or len(df) < int(profile.get("lookback_bars", 40)):
+            return None
+
+        from src.strategies.strategy_breaker_block import (
+            generate_signal as _native_breaker_signal,
+        )
+
+        sentinel = df.iloc[[-1]].copy()
+        breaker_df = pd.concat([df, sentinel], ignore_index=True)
+        native = _native_breaker_signal(breaker_df)
+
+        if not isinstance(native, dict):
+            return None
+
+        if str(native.get("strategy") or "").upper() != "BREAKER_BLOCK":
+            return None
+
+        signal = str(native.get("signal") or "").upper()
+        if signal not in {"BUY", "SELL"}:
+            return None
+
+        score = float(native.get("score") or 0.0)
+        if score < float(profile.get("min_score", INTRABAR_PRICE_EVENT_MIN_SCORE)):
+            return None
+
+        current_price = float(tick.ask if signal == "BUY" else tick.bid)
+        sl_reference = float(native.get("sl_reference"))
+        tp_reference = float(native.get("tp_reference"))
+
+        if signal == "BUY":
+            if not (sl_reference < current_price < tp_reference):
+                return None
+            stop_distance = current_price - sl_reference
+            tp_distance = tp_reference - current_price
+        else:
+            if not (tp_reference < current_price < sl_reference):
+                return None
+            stop_distance = sl_reference - current_price
+            tp_distance = current_price - tp_reference
+
+        if stop_distance <= 0 or tp_distance <= 0:
+            return None
+
+        # Preserve the native breaker's own dynamic risk ceiling after
+        # replacing the native confirmation-candle close with the live tick.
+        # A drifting tick must never widen the stop beyond native strategy risk.
+        try:
+            native_max_risk = float(native.get("max_allowed_risk"))
+        except (TypeError, ValueError):
+            return None
+
+        if native_max_risk <= 0 or stop_distance > native_max_risk:
+            return None
+
+        zone_high = native.get("zone_high")
+        zone_low = native.get("zone_low")
+        current = df.iloc[-1]
+
+        if signal == "BUY":
+            sweep_depth = (
+                max(float(zone_high) - float(current.get("low")), 0.0)
+                if zone_high is not None
+                else None
+            )
+            retest_distance = (
+                current_price - float(zone_high)
+                if zone_high is not None
+                else None
+            )
+        else:
+            sweep_depth = (
+                max(float(current.get("high")) - float(zone_low), 0.0)
+                if zone_low is not None
+                else None
+            )
+            retest_distance = (
+                float(zone_low) - current_price
+                if zone_low is not None
+                else None
+            )
+
+        setup_id = (
+            f"INTRABAR-BREAKER_BLOCK-{signal}-{str(current_candle_time)}"
+        )
+
+        return {
+            "signal": signal,
+            "score": score,
+            "strategy": "BREAKER_BLOCK",
+            "entry_model": native.get("entry_model"),
+            "entry_reference": current_price,
+            "pattern_height": native.get("pattern_height"),
+            "zone_high": zone_high,
+            "zone_low": zone_low,
+            "recent_high": native.get("recent_high"),
+            "recent_low": native.get("recent_low"),
+            "sl_reference": round(sl_reference, 2),
+            "sl_model": native.get("sl_model"),
+            "sl_risk": native.get("sl_risk"),
+            "max_allowed_risk": round(native_max_risk, 2),
+            "tp_reference": round(tp_reference, 2),
+            "target_model": native.get("target_model"),
+            "momentum": native.get("momentum"),
+            "direction_context": native.get("direction_context"),
+            "session": session_name,
+            "market_condition": market_condition,
+            "setup_id": setup_id,
+            "native_setup_id": native.get("setup_id"),
+            "intrabar_trigger": "NATIVE_BREAKER_RETEST",
+            "intrabar_profile": profile,
+            "intrabar_stop_distance": round(stop_distance, 2),
+            "intrabar_tp_distance": round(tp_distance, 2),
+            "intrabar_target_rr": round(tp_distance / stop_distance, 4),
+            "intrabar_max_sl_distance": profile.get("max_sl_distance"),
+            "intrabar_max_tp_distance": profile.get("max_tp_distance"),
+            "require_m5_confirmation": bool(
+                profile.get("require_m5_confirmation", False)
+            ),
+            "required_rr": float(
+                profile.get("min_rr", INTRABAR_PRICE_EVENT_MIN_RR)
+            ),
+            "liquidity_interaction": "NATIVE_BREAKER_RETEST",
+            "liquidity_sweep_depth": (
+                round(sweep_depth, 4) if sweep_depth is not None else None
+            ),
+            "liquidity_reclaim_distance": (
+                round(retest_distance, 4) if retest_distance is not None else None
+            ),
+            "reason": (
+                f"Intrabar native breaker {signal} before M15 close -> "
+                f"{native.get('reason', 'native breaker retest confirmed')}"
+            ),
+        }
+
+    except Exception as exc:
+        logger.warning(
+            "[INTRABAR BREAKER] native adapter failed open: "
+            f"{exc}"
+        )
+        return None
+
+
 def build_intrabar_price_event_signal_data(df, tick, session_name, market_condition, current_candle_time):
-    if not ENABLE_INTRABAR_PRICE_EVENT_DETECTOR:
+    if not ENABLE_INTRABAR_ENGINE or not ENABLE_INTRABAR_PRICE_EVENT_DETECTOR:
         return None
 
     if len(df) < 20:
@@ -4044,7 +4233,22 @@ def build_intrabar_price_event_signal_data(df, tick, session_name, market_condit
     for profile in get_intrabar_detector_profiles():
         strategy = profile["strategy"]
         trigger = profile["trigger"]
-        lookback_bars = profile["lookback_bars"]
+        lookback_bars = int(profile["lookback_bars"])
+
+        if trigger == "NATIVE_BREAKER_RETEST":
+            breaker_signal_data = build_native_breaker_intrabar_signal_data(
+                df=df,
+                tick=tick,
+                session_name=session_name,
+                market_condition=market_condition,
+                current_candle_time=current_candle_time,
+                profile=profile,
+            )
+
+            if breaker_signal_data:
+                return breaker_signal_data
+
+            continue
 
         if len(df) < lookback_bars + 2:
             continue
@@ -4325,6 +4529,9 @@ def build_intrabar_price_event_signal_data(df, tick, session_name, market_condit
     return None
     
 def process_intrabar_price_event_detector(df, tick, account_info, session_name, market_condition, current_candle_time):
+    if not ENABLE_INTRABAR_ENGINE:
+        return False
+
     signal_data = build_intrabar_price_event_signal_data(
         df=df,
         tick=tick,
@@ -4342,6 +4549,7 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
     
     strategy_name = signal_data.get("strategy")
     signal = signal_data.get("signal")
+    signal_data["execution_bucket"] = "INTRABAR"
     
     duplicate, duplicate_key = is_intrabar_price_event_duplicate(
         signal_data,
@@ -4354,20 +4562,6 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
                 f"[INTRABAR PRICE EVENT] Duplicate skipped | "
                 f"setup_id={setup_id} key={duplicate_key}"
             )
-
-        return False
-
-    m5_ok, m5_reason = intrabar_m5_confirmation_ok(
-        signal,
-        strategy_name,
-    )
-
-    if not m5_ok:
-        logger.info(
-            f"[INTRABAR PRICE EVENT] M5 confirmation rejected | "
-            f"setup_id={setup_id} strategy={strategy_name} "
-            f"signal={signal} reason={m5_reason}"
-        )
 
         return False
 
@@ -4438,6 +4632,9 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
 
     trade_plan["strategy"] = strategy_name
     trade_plan["signal"] = signal
+    trade_plan["entry_model"] = signal_data.get("entry_model")
+    trade_plan["source_bucket"] = "INTRABAR"
+    trade_plan["execution_bucket"] = "INTRABAR"
     trade_plan["score"] = signal_data.get("score")
     trade_plan["session"] = session_name
     trade_plan["market_condition"] = market_condition
@@ -4730,9 +4927,9 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
     )
 
     phase6u_intrabar_allowlist_decision = explain_intrabar_strategy_allowlist_decision(
-        signal_payload=signal if isinstance(signal, dict) else {"signal": signal},
+        signal_payload=signal_data,
         trade_plan=trade_plan,
-        enabled=ENABLE_INTRABAR_STRATEGY_ALLOWLIST,
+        enabled=True,
         allowlist=INTRABAR_STRATEGY_ALLOWLIST,
     )
 
@@ -4759,6 +4956,26 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
         trigger_context="before_execute_trade",
     )
 
+    intrabar_t0_snapshot = _freeze_intrabar_context_observation(
+        df=df,
+        source="INTRABAR_PRICE_EVENT",
+        event="INTRABAR_PRICE_EVENT_EXECUTED",
+        strategy=strategy_name,
+        setup_id=setup_id,
+        signal=signal,
+        entry_model=signal_data.get("entry_model"),
+        session=session_name,
+        execution_market_condition=market_condition,
+        signal_data=signal_data,
+        trade_plan=trade_plan,
+        extra_context={
+            "rr": rr_value,
+            "required_rr": required_rr,
+            "m5_confirmation_reason": m5_reason,
+            "intrabar_trigger": signal_data.get("intrabar_trigger"),
+        },
+    )
+
     execution_result = execute_trade(signal, trade_plan, SYMBOL)
 
     maybe_record_phase6s_runtime_outlook_execution_annotation(
@@ -4775,27 +4992,7 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
     )
 
     if execution_result:
-        _capture_intrabar_context_observation(
-            df=df,
-            source="INTRABAR_PRICE_EVENT",
-            event="INTRABAR_PRICE_EVENT_EXECUTED",
-            strategy=strategy_name,
-            setup_id=setup_id,
-            signal=signal,
-            entry_model=signal_data.get("entry_model"),
-            session=session_name,
-            execution_market_condition=market_condition,
-            signal_data=signal_data,
-            trade_plan=trade_plan,
-            extra_context={
-                "rr": rr_value,
-                "required_rr": required_rr,
-                "m5_confirmation_reason": m5_reason,
-                "intrabar_trigger": signal_data.get(
-                    "intrabar_trigger"
-                ),
-            },
-        )
+        _persist_intrabar_context_observation(intrabar_t0_snapshot)
 
         news_context = attach_news_context_to_signal_data(signal_data)
 
@@ -10121,7 +10318,7 @@ def process_cycle(last_processed_candle_time):
     # INTRABAR ORB DETECTOR
     # Runs before the M15 new-candle gate.
     # =========================
-    if ENABLE_INTRABAR_PRICE_EVENT_DETECTOR:
+    if ENABLE_INTRABAR_ENGINE and ENABLE_INTRABAR_PRICE_EVENT_DETECTOR:
         from src.session_engine import detect_session
 
         intrabar_session_name = detect_session(current_candle_time)
@@ -10142,7 +10339,7 @@ def process_cycle(last_processed_candle_time):
     # PHASE 6H3 - INTRABAR STRUCTURAL LEVEL SCALP EXECUTION
     # Runs every loop before the M15 new-candle gate.
     # =========================
-    if ENABLE_AUTO_STRUCTURAL_LEVEL_SCALP:
+    if ENABLE_INTRABAR_ENGINE and ENABLE_AUTO_STRUCTURAL_LEVEL_SCALP:
         from config.settings import (
             ASLS_INTRABAR_DUPLICATE_SECONDS,
             ASLS_INTRABAR_ENTRY_TOLERANCE,
@@ -10172,6 +10369,7 @@ def process_cycle(last_processed_candle_time):
             asls_signal_data["setup_id"] = asls_setup_id
             asls_signal_data["session"] = detect_session(current_candle_time)
             asls_signal_data["market_condition"] = "INTRABAR_STRUCTURAL_LEVEL_SCALP"
+            asls_signal_data["execution_bucket"] = "INTRABAR"
             asls_signal_data["intrabar_live_executor"] = True
 
             current_execution_price = tick.ask if asls_signal == "BUY" else tick.bid
@@ -10228,6 +10426,8 @@ def process_cycle(last_processed_candle_time):
             asls_trade_plan["setup_id"] = asls_setup_id
             asls_trade_plan["session"] = asls_signal_data.get("session")
             asls_trade_plan["market_condition"] = asls_signal_data.get("market_condition")
+            asls_trade_plan["source_bucket"] = "INTRABAR"
+            asls_trade_plan["execution_bucket"] = "INTRABAR"
             asls_trade_plan["reason"] = asls_signal_data.get("reason", "Phase 6H3 intrabar structural scalp")
             asls_trade_plan["intrabar_live_executor"] = True
             asls_trade_plan["structural_level"] = asls_level
@@ -10235,6 +10435,21 @@ def process_cycle(last_processed_candle_time):
             asls_trade_plan["risk_reward"] = asls_signal_data.get("rr")
 
             asls_rr = calculate_rr_value(asls_trade_plan)
+
+            asls_allowlist_decision = explain_intrabar_strategy_allowlist_decision(
+                signal_payload=asls_signal_data,
+                trade_plan=asls_trade_plan,
+                enabled=True,
+                allowlist=INTRABAR_STRATEGY_ALLOWLIST,
+            )
+
+            if not asls_allowlist_decision.get("allowed", True):
+                logger.info(
+                    "[PHASE 6H3 ASLS ALLOWLIST] "
+                    f"blocked=True strategy={asls_strategy} "
+                    f"reason={asls_allowlist_decision.get('reason')}"
+                )
+                return current_candle_time
 
             asls_allowed, asls_guard_reason = check_trade_guard(asls_signal, tick)
 
@@ -10332,35 +10547,30 @@ def process_cycle(last_processed_candle_time):
                 f"Action: attempting execution before M15 close"
             )
 
+            asls_t0_snapshot = _freeze_intrabar_context_observation(
+                df=df,
+                source="PHASE6H3_ASLS",
+                event="PHASE6H3_ASLS_EXECUTED",
+                strategy=asls_strategy,
+                setup_id=asls_setup_id,
+                signal=asls_signal,
+                entry_model=asls_entry_model,
+                session=asls_signal_data.get("session"),
+                execution_market_condition=asls_signal_data.get("market_condition"),
+                signal_data=asls_signal_data,
+                trade_plan=asls_trade_plan,
+                extra_context={
+                    "structural_level": asls_level,
+                    "entry_distance": round(entry_distance, 2),
+                    "rr": asls_rr,
+                    "intrabar_live_executor": True,
+                },
+            )
+
             execution_result = execute_trade(asls_signal, asls_trade_plan, SYMBOL)
 
             if execution_result:
-                _capture_intrabar_context_observation(
-                    df=df,
-                    source="PHASE6H3_ASLS",
-                    event="PHASE6H3_ASLS_EXECUTED",
-                    strategy=asls_strategy,
-                    setup_id=asls_setup_id,
-                    signal=asls_signal,
-                    entry_model=asls_entry_model,
-                    session=asls_signal_data.get("session"),
-                    execution_market_condition=(
-                        asls_signal_data.get(
-                            "market_condition"
-                        )
-                    ),
-                    signal_data=asls_signal_data,
-                    trade_plan=asls_trade_plan,
-                    extra_context={
-                        "structural_level": asls_level,
-                        "entry_distance": round(
-                            entry_distance,
-                            2,
-                        ),
-                        "rr": asls_rr,
-                        "intrabar_live_executor": True,
-                    },
-                )
+                _persist_intrabar_context_observation(asls_t0_snapshot)
 
                 log_setup_event(
                     setup_id=asls_setup_id,

@@ -16,9 +16,11 @@ OBSERVATION_FILENAME = (
 INTRABAR_CONTEXT_OBSERVER_STRATEGIES = {
     "AUTO_STRUCTURAL_LEVEL_SCALP",
     "FAILED_FVG_REVERSAL",
+    "BREAKER_BLOCK",
+    "ORDER_BLOCK",
 }
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 TREND_REGIMES = {
@@ -495,6 +497,10 @@ def _price_features(
             momentum_shape
         ),
 
+        "momentum_direction": (
+            momentum_direction
+        ),
+
         "momentum_relation": (
             momentum_relation
         ),
@@ -515,9 +521,11 @@ def build_intrabar_context_snapshot(
     observed_market_condition=None,
     signal_data=None,
     trade_plan=None,
-    m15_bias=None,
+    m15_direction=None,
+    mtf_bias=None,
     htf_context=None,
     extra_context=None,
+    m15_bias=None,
 ):
     strategy = _safe_text(
         strategy
@@ -561,9 +569,19 @@ def build_intrabar_context_snapshot(
         signal
     )
 
+    if m15_direction is None:
+        # Backward-compatible alias for older research callers.
+        m15_direction = m15_bias
+
     normalized_m15 = (
         _normalize_direction(
-            m15_bias
+            m15_direction
+        )
+    )
+
+    normalized_mtf = (
+        _normalize_direction(
+            mtf_bias
         )
     )
 
@@ -601,6 +619,15 @@ def build_intrabar_context_snapshot(
             and entry != sl
         )
         else None
+    )
+
+    lot = _safe_float(
+        trade_plan.get(
+            "lot",
+            trade_plan.get(
+                "volume"
+            ),
+        )
     )
 
     planned_rr = (
@@ -644,7 +671,11 @@ def build_intrabar_context_snapshot(
         ),
 
         "record_type": (
-            "INTRABAR_EXECUTION_CONTEXT"
+            "INTRABAR_EXECUTION_CONTEXT_T0"
+        ),
+
+        "capture_phase": (
+            "T0_PRE_EXECUTION"
         ),
 
         "source": (
@@ -696,12 +727,22 @@ def build_intrabar_context_snapshot(
             market_condition
         ),
 
+        "market_regime": (
+            market_condition
+        ),
+
         "regime_family": (
             _regime_family(
                 market_condition
             )
         ),
 
+        "m15_direction": (
+            normalized_m15
+        ),
+
+        # Compatibility alias. In schema V2 this is the actual M15 direction,
+        # not the configured MTF timeframe.
         "m15_bias": (
             normalized_m15
         ),
@@ -715,6 +756,23 @@ def build_intrabar_context_snapshot(
                 ),
                 counter_label=(
                     "COUNTER_M15"
+                ),
+            )
+        ),
+
+        "mtf_bias": (
+            normalized_mtf
+        ),
+
+        "mtf_relation": (
+            _direction_relation(
+                signal,
+                normalized_mtf,
+                aligned_label=(
+                    "WITH_MTF"
+                ),
+                counter_label=(
+                    "COUNTER_MTF"
                 ),
             )
         ),
@@ -739,7 +797,13 @@ def build_intrabar_context_snapshot(
         "entry": entry,
         "sl": sl,
         "tp": tp,
+        "lot": lot,
 
+        "initial_price_risk": (
+            risk_distance
+        ),
+
+        # Compatibility alias used by the V1 audit/reporting scripts.
         "risk_distance": (
             risk_distance
         ),
@@ -757,6 +821,96 @@ def build_intrabar_context_snapshot(
         "price_features": (
             price_features
         ),
+
+        "momentum": {
+            "strategy_label": (
+                _json_safe(
+                    signal_data.get(
+                        "momentum"
+                    )
+                )
+            ),
+            "price_shape": (
+                price_features.get(
+                    "momentum_shape"
+                )
+            ),
+            "price_direction": (
+                price_features.get(
+                    "momentum_direction"
+                )
+            ),
+            "relation": (
+                price_features.get(
+                    "momentum_relation"
+                )
+            ),
+        },
+
+        "liquidity_context": {
+            "interaction": (
+                _json_safe(
+                    signal_data.get(
+                        "liquidity_interaction"
+                    )
+                    or signal_data.get(
+                        "intrabar_trigger"
+                    )
+                )
+            ),
+            "sweep_depth": (
+                _safe_float(
+                    signal_data.get(
+                        "liquidity_sweep_depth",
+                        signal_data.get(
+                            "sweep_depth"
+                        ),
+                    )
+                )
+            ),
+            "reclaim_distance": (
+                _safe_float(
+                    signal_data.get(
+                        "liquidity_reclaim_distance"
+                    )
+                )
+            ),
+            "break_hold_distance": (
+                _safe_float(
+                    signal_data.get(
+                        "break_hold_distance"
+                    )
+                )
+            ),
+            "structural_level": (
+                _safe_float(
+                    signal_data.get(
+                        "structural_level"
+                    )
+                )
+            ),
+            "zone_high": (
+                _safe_float(
+                    signal_data.get(
+                        "zone_high"
+                    )
+                )
+            ),
+            "zone_low": (
+                _safe_float(
+                    signal_data.get(
+                        "zone_low"
+                    )
+                )
+            ),
+            "direction_context": (
+                _json_safe(
+                    signal_data.get(
+                        "direction_context"
+                    )
+                )
+            ),
+        },
 
         "strategy_context": {
             "momentum": (

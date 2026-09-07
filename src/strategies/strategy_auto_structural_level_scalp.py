@@ -357,6 +357,177 @@ def _score(
     return min(score, 99)
 
 
+def _closed_m15_context(
+    rows: list[dict[str, Any]],
+    signal: str,
+) -> dict[str, Any]:
+    """
+    Closed-M15 directional context for ASLS quality control.
+
+    This is intentionally state-based rather than a permanent BUY/SELL or
+    session rule. A counter-M15 setup may still qualify when the live
+    liquidity/rejection candle is sufficiently strong.
+    """
+    if len(rows) < 10:
+        return {
+            "direction": "UNKNOWN",
+            "relation": "UNKNOWN",
+            "delta_3": None,
+            "delta_8": None,
+        }
+
+    reference_close = safe_float(rows[-2].get("close"))
+    close_3 = safe_float(rows[-5].get("close"))
+    close_8 = safe_float(rows[-10].get("close"))
+
+    delta_3 = reference_close - close_3
+    delta_8 = reference_close - close_8
+
+    if delta_3 > 0 and delta_8 > 0:
+        direction = "BUY"
+    elif delta_3 < 0 and delta_8 < 0:
+        direction = "SELL"
+    else:
+        direction = "TRANSITION"
+
+    if direction == signal:
+        relation = "WITH_M15"
+    elif direction in {"BUY", "SELL"}:
+        relation = "COUNTER_M15"
+    else:
+        relation = "M15_TRANSITION"
+
+    return {
+        "direction": direction,
+        "relation": relation,
+        "delta_3": round(delta_3, 4),
+        "delta_8": round(delta_8, 4),
+    }
+
+
+def _asls_quality_context(
+    *,
+    rows: list[dict[str, Any]],
+    signal: str,
+    mode: str,
+    level_price: float,
+    open_price: float,
+    high: float,
+    low: float,
+    close: float,
+    body_atr_ratio: float,
+    upper_wick_confirmed: bool,
+    lower_wick_confirmed: bool,
+) -> dict[str, Any]:
+    from config.settings import (
+        ASLS_BREAK_HOLD_MIN_HOLD_DISTANCE,
+        ASLS_CONTEXT_COUNTER_MIN_BODY_ATR,
+        ASLS_ENTRY_PROXIMITY,
+        ASLS_MIN_RECLAIM_DISTANCE,
+    )
+
+    m15_context = _closed_m15_context(
+        rows,
+        signal,
+    )
+
+    momentum_confirmed = (
+        (signal == "BUY" and close > open_price)
+        or (signal == "SELL" and close < open_price)
+    )
+
+    liquidity_interaction = "UNKNOWN"
+    liquidity_sweep_depth = 0.0
+    liquidity_reclaim_distance = 0.0
+    break_hold_distance = 0.0
+    liquidity_confirmed = False
+
+    if mode == "SUPPORT_BOUNCE_SCALP":
+        liquidity_interaction = "SELL_SIDE_SUPPORT_REJECTION_RECLAIM"
+        liquidity_sweep_depth = max(level_price - low, 0.0)
+        liquidity_reclaim_distance = max(close - level_price, 0.0)
+        liquidity_confirmed = (
+            low <= level_price + ASLS_ENTRY_PROXIMITY
+            and liquidity_reclaim_distance >= ASLS_MIN_RECLAIM_DISTANCE
+            and lower_wick_confirmed
+        )
+
+    elif mode == "RESISTANCE_BOUNCE_SCALP":
+        liquidity_interaction = "BUY_SIDE_RESISTANCE_REJECTION_RECLAIM"
+        liquidity_sweep_depth = max(high - level_price, 0.0)
+        liquidity_reclaim_distance = max(level_price - close, 0.0)
+        liquidity_confirmed = (
+            high >= level_price - ASLS_ENTRY_PROXIMITY
+            and liquidity_reclaim_distance >= ASLS_MIN_RECLAIM_DISTANCE
+            and upper_wick_confirmed
+        )
+
+    elif mode == "SUPPORT_BREAK_HOLD_SCALP":
+        liquidity_interaction = "SUPPORT_BREAK_HOLD"
+        break_hold_distance = max(level_price - close, 0.0)
+        liquidity_confirmed = (
+            high >= level_price - ASLS_ENTRY_PROXIMITY
+            and break_hold_distance >= ASLS_BREAK_HOLD_MIN_HOLD_DISTANCE
+        )
+
+    elif mode == "RESISTANCE_BREAK_HOLD_SCALP":
+        liquidity_interaction = "RESISTANCE_BREAK_HOLD"
+        break_hold_distance = max(close - level_price, 0.0)
+        liquidity_confirmed = (
+            low <= level_price + ASLS_ENTRY_PROXIMITY
+            and break_hold_distance >= ASLS_BREAK_HOLD_MIN_HOLD_DISTANCE
+        )
+
+    counter_m15 = (
+        m15_context.get("relation")
+        == "COUNTER_M15"
+    )
+
+    counter_m15_override = (
+        counter_m15
+        and body_atr_ratio
+        >= ASLS_CONTEXT_COUNTER_MIN_BODY_ATR
+        and liquidity_confirmed
+    )
+
+    context_confirmed = (
+        not counter_m15
+        or counter_m15_override
+    )
+
+    qualified = (
+        liquidity_confirmed
+        and momentum_confirmed
+        and context_confirmed
+    )
+
+    momentum_label = (
+        f"{signal.lower()}_asls_"
+        f"{mode.lower()}"
+    )
+
+    return {
+        "asls_context_qualified": bool(qualified),
+        "liquidity_interaction": liquidity_interaction,
+        "liquidity_sweep_depth": round(liquidity_sweep_depth, 4),
+        "liquidity_reclaim_distance": round(liquidity_reclaim_distance, 4),
+        "break_hold_distance": round(break_hold_distance, 4),
+        "liquidity_confirmed": bool(liquidity_confirmed),
+        "momentum": momentum_label,
+        "momentum_confirmed": bool(momentum_confirmed),
+        "m15_context_direction": m15_context.get("direction"),
+        "m15_context_relation": m15_context.get("relation"),
+        "m15_delta_3": m15_context.get("delta_3"),
+        "m15_delta_8": m15_context.get("delta_8"),
+        "counter_m15_override": bool(counter_m15_override),
+        "direction_context": (
+            f"{m15_context.get('relation')} "
+            f"liquidity={liquidity_interaction} "
+            f"momentum_confirmed={momentum_confirmed}"
+        ),
+    }
+
+
 def _build_signal(
     *,
     signal: str,
@@ -370,7 +541,14 @@ def _build_signal(
     atr: float,
     target_model: str,
     trigger_reason: str,
+    quality_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    quality_context = (
+        quality_context
+        if isinstance(quality_context, dict)
+        else {}
+    )
+
     return {
         "phase": PHASE,
         "signal": signal,
@@ -393,6 +571,20 @@ def _build_signal(
         "structural_level_sources": level.get("sources"),
         "round_confluence": bool(level.get("round_confluence")),
         "target_model": target_model,
+        "liquidity_interaction": quality_context.get("liquidity_interaction"),
+        "liquidity_sweep_depth": quality_context.get("liquidity_sweep_depth"),
+        "liquidity_reclaim_distance": quality_context.get("liquidity_reclaim_distance"),
+        "break_hold_distance": quality_context.get("break_hold_distance"),
+        "liquidity_confirmed": quality_context.get("liquidity_confirmed"),
+        "momentum": quality_context.get("momentum"),
+        "momentum_confirmed": quality_context.get("momentum_confirmed"),
+        "m15_context_direction": quality_context.get("m15_context_direction"),
+        "m15_context_relation": quality_context.get("m15_context_relation"),
+        "m15_delta_3": quality_context.get("m15_delta_3"),
+        "m15_delta_8": quality_context.get("m15_delta_8"),
+        "counter_m15_override": quality_context.get("counter_m15_override"),
+        "asls_context_qualified": quality_context.get("asls_context_qualified"),
+        "direction_context": quality_context.get("direction_context"),
         "intrabar_mode": True,
         "orderflow_status": "NOT_CONNECTED_MT5_ONLY",
         "funded_suitable": True,
@@ -517,6 +709,19 @@ def _phase6p1_generate_signal_raw(df):
         support_touched = low <= level_price + ASLS_ENTRY_PROXIMITY
         support_reclaimed = close >= level_price + ASLS_MIN_RECLAIM_DISTANCE
         entry_distance_from_level = abs(close - level_price)
+        quality_context = _asls_quality_context(
+            rows=rows,
+            signal="BUY",
+            mode="SUPPORT_BOUNCE_SCALP",
+            level_price=level_price,
+            open_price=open_price,
+            high=high,
+            low=low,
+            close=close,
+            body_atr_ratio=body_atr_ratio,
+            upper_wick_confirmed=upper_wick_confirmed,
+            lower_wick_confirmed=lower_wick_confirmed,
+        )
 
         if (
             support_touched
@@ -525,6 +730,7 @@ def _phase6p1_generate_signal_raw(df):
             and lower_wick_confirmed
             and body_confirmed
             and close_position >= 0.55
+            and quality_context["asls_context_qualified"]
         ):
             entry = round(level_price + ASLS_BOUNCE_ENTRY_OFFSET, 2)
             sl = round(level_price - ASLS_SL_BUFFER, 2)
@@ -560,8 +766,10 @@ def _phase6p1_generate_signal_raw(df):
                         f"entry_distance={round(entry_distance_from_level, 2)} "
                         f"body={round(body, 2)} "
                         f"lower_wick={round(lower_wick, 2)} "
-                        f"lower_wick_atr={round(lower_wick_atr_ratio, 3)}"
+                        f"lower_wick_atr={round(lower_wick_atr_ratio, 3)} "
+                        f"m15={quality_context.get('m15_context_relation')}"
                     ),
+                    quality_context=quality_context,
                 )
 
     # 2) Resistance bounce SELL scalp.
@@ -571,6 +779,19 @@ def _phase6p1_generate_signal_raw(df):
         resistance_touched = high >= level_price - ASLS_ENTRY_PROXIMITY
         resistance_rejected = close <= level_price - ASLS_MIN_RECLAIM_DISTANCE
         entry_distance_from_level = abs(close - level_price)
+        quality_context = _asls_quality_context(
+            rows=rows,
+            signal="SELL",
+            mode="RESISTANCE_BOUNCE_SCALP",
+            level_price=level_price,
+            open_price=open_price,
+            high=high,
+            low=low,
+            close=close,
+            body_atr_ratio=body_atr_ratio,
+            upper_wick_confirmed=upper_wick_confirmed,
+            lower_wick_confirmed=lower_wick_confirmed,
+        )
 
         if (
             resistance_touched
@@ -579,6 +800,7 @@ def _phase6p1_generate_signal_raw(df):
             and upper_wick_confirmed
             and body_confirmed
             and close_position <= 0.45
+            and quality_context["asls_context_qualified"]
         ):
             entry = round(level_price - ASLS_BOUNCE_ENTRY_OFFSET, 2)
             sl = round(level_price + ASLS_SL_BUFFER, 2)
@@ -614,8 +836,10 @@ def _phase6p1_generate_signal_raw(df):
                         f"entry_distance={round(entry_distance_from_level, 2)} "
                         f"body={round(body, 2)} "
                         f"upper_wick={round(upper_wick, 2)} "
-                        f"upper_wick_atr={round(upper_wick_atr_ratio, 3)}"
+                        f"upper_wick_atr={round(upper_wick_atr_ratio, 3)} "
+                        f"m15={quality_context.get('m15_context_relation')}"
                     ),
+                    quality_context=quality_context,
                 )
 
     # 3) Support break-hold SELL scalp.
@@ -629,6 +853,19 @@ def _phase6p1_generate_signal_raw(df):
             abs(close - target_break_entry)
             <= ASLS_MAX_BREAK_ENTRY_LATE_DISTANCE + ASLS_BREAK_CONFIRM_TOLERANCE
         )
+        quality_context = _asls_quality_context(
+            rows=rows,
+            signal="SELL",
+            mode="SUPPORT_BREAK_HOLD_SCALP",
+            level_price=level_price,
+            open_price=open_price,
+            high=high,
+            low=low,
+            close=close,
+            body_atr_ratio=body_atr_ratio,
+            upper_wick_confirmed=upper_wick_confirmed,
+            lower_wick_confirmed=lower_wick_confirmed,
+        )
 
         if (
             was_above_or_touching
@@ -636,6 +873,7 @@ def _phase6p1_generate_signal_raw(df):
             and not_late_break_entry
             and close < open_price
             and body_atr_ratio >= ASLS_BREAK_BODY_ATR_RATIO
+            and quality_context["asls_context_qualified"]
         ):
             entry = target_break_entry
             sl = round(level_price + ASLS_SL_BUFFER, 2)
@@ -669,8 +907,10 @@ def _phase6p1_generate_signal_raw(df):
                         f"line_break_scalp was_above_or_touching={was_above_or_touching} "
                         f"break_entry={target_break_entry} "
                         f"not_late={not_late_break_entry} "
-                        f"broke_below={broke_below} body_atr={round(body_atr_ratio, 3)}"
+                        f"broke_below={broke_below} body_atr={round(body_atr_ratio, 3)} "
+                        f"m15={quality_context.get('m15_context_relation')}"
                     ),
+                    quality_context=quality_context,
                 )
 
     # 4) Resistance break-hold BUY scalp.
@@ -684,6 +924,19 @@ def _phase6p1_generate_signal_raw(df):
             abs(close - target_break_entry)
             <= ASLS_MAX_BREAK_ENTRY_LATE_DISTANCE + ASLS_BREAK_CONFIRM_TOLERANCE
         )
+        quality_context = _asls_quality_context(
+            rows=rows,
+            signal="BUY",
+            mode="RESISTANCE_BREAK_HOLD_SCALP",
+            level_price=level_price,
+            open_price=open_price,
+            high=high,
+            low=low,
+            close=close,
+            body_atr_ratio=body_atr_ratio,
+            upper_wick_confirmed=upper_wick_confirmed,
+            lower_wick_confirmed=lower_wick_confirmed,
+        )
 
         if (
             was_below_or_touching
@@ -691,6 +944,7 @@ def _phase6p1_generate_signal_raw(df):
             and not_late_break_entry
             and close > open_price
             and body_atr_ratio >= ASLS_BREAK_BODY_ATR_RATIO
+            and quality_context["asls_context_qualified"]
         ):
             entry = target_break_entry
             sl = round(level_price - ASLS_SL_BUFFER, 2)
@@ -724,8 +978,10 @@ def _phase6p1_generate_signal_raw(df):
                         f"line_break_scalp was_below_or_touching={was_below_or_touching} "
                         f"break_entry={target_break_entry} "
                         f"not_late={not_late_break_entry} "
-                        f"broke_above={broke_above} body_atr={round(body_atr_ratio, 3)}"
+                        f"broke_above={broke_above} body_atr={round(body_atr_ratio, 3)} "
+                        f"m15={quality_context.get('m15_context_relation')}"
                     ),
+                    quality_context=quality_context,
                 )
 
     return None
