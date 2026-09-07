@@ -709,7 +709,10 @@ class RithmicRollingStateCache:
                 "warnings": warnings,
                 "safe_for_live_decision": False,
                 "safe_for_execution": False,
-                "reason": "Observe-only Phase 5C cache. DOM and validation not complete.",
+                "reason": (
+                    "Observe-only Phase 5E real-time cache with DOM. "
+                    "Decision influence remains disabled pending validation."
+                ),
             },
         }
 

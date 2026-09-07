@@ -110,6 +110,13 @@ from src.intrabar_context_observer import (
     build_intrabar_context_snapshot,
     log_intrabar_context_observation,
 )
+from src.market_participation_context import (
+    build_market_participation_context,
+    build_market_participation_observation,
+    log_market_participation_observation,
+    record_mt5_tick,
+    refresh_rithmic_participation_context,
+)
 
 from config.settings import (
     SYMBOL,
@@ -505,6 +512,115 @@ def _derive_intrabar_m15_direction(df):
     return None
 
 
+def _capture_market_participation_context(
+    *,
+    signal,
+    symbol=SYMBOL,
+    tick=None,
+):
+    try:
+        return build_market_participation_context(
+            symbol=symbol,
+            signal=signal,
+            tick=tick,
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "[MARKET PARTICIPATION] "
+            "context capture failed open: "
+            f"{exc}"
+        )
+
+        return {
+            "available": False,
+            "record_type": (
+                "MARKET_PARTICIPATION_CONTEXT"
+            ),
+            "decision_impact": "NONE",
+            "can_influence_decision": False,
+            "safe_for_execution": False,
+            "status": "CAPTURE_FAILED_OPEN",
+            "error": str(exc),
+        }
+
+
+def _freeze_market_participation_observation(
+    *,
+    signal,
+    symbol,
+    strategy=None,
+    setup_id=None,
+    entry_model=None,
+    session=None,
+    market_condition=None,
+    trade_plan=None,
+    capture_phase="T0_PRE_EXECUTION",
+    event="EXECUTION_T0",
+    tick=None,
+):
+    try:
+        context = (
+            _capture_market_participation_context(
+                signal=signal,
+                symbol=symbol,
+                tick=tick,
+            )
+        )
+
+        return (
+            build_market_participation_observation(
+                context=context,
+                capture_phase=capture_phase,
+                event=event,
+                strategy=strategy,
+                setup_id=setup_id,
+                signal=signal,
+                entry_model=entry_model,
+                session=session,
+                market_condition=(
+                    market_condition
+                ),
+                trade_plan=trade_plan,
+            )
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "[MARKET PARTICIPATION] "
+            "T0 freeze failed open: "
+            f"{exc}"
+        )
+
+        return None
+
+
+def _persist_market_participation_observation(
+    observation,
+):
+    try:
+        if not isinstance(
+            observation,
+            dict,
+        ):
+            return False
+
+        return (
+            log_market_participation_observation(
+                observation
+            )
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "[MARKET PARTICIPATION] "
+            "persistence failed open: "
+            f"{exc}"
+        )
+
+        return False
+
+
 def _freeze_intrabar_context_observation(
     *,
     df,
@@ -528,6 +644,20 @@ def _freeze_intrabar_context_observation(
     """
 
     try:
+        merged_extra_context = (
+            dict(extra_context)
+            if isinstance(extra_context, dict)
+            else {}
+        )
+
+        merged_extra_context[
+            "market_participation_context"
+        ] = (
+            _capture_market_participation_context(
+                signal=signal,
+                symbol=SYMBOL,
+            )
+        )
         observed_market_condition = execution_market_condition
 
         try:
@@ -585,7 +715,7 @@ def _freeze_intrabar_context_observation(
             m15_direction=m15_direction,
             mtf_bias=configured_mtf_bias,
             htf_context=htf_context,
-            extra_context=extra_context,
+            extra_context=merged_extra_context,
         )
 
     except Exception as exc:
@@ -10127,7 +10257,47 @@ def execute_trade(signal, trade_plan, symbol):
             )
             return False
 
-    return _raw_execute_trade(signal, trade_plan, symbol)
+    participation_t0_observation = (
+        _freeze_market_participation_observation(
+            signal=signal,
+            symbol=symbol,
+            strategy=plan.get(
+                "strategy"
+            ),
+            setup_id=plan.get(
+                "setup_id"
+            ),
+            entry_model=plan.get(
+                "entry_model"
+            ),
+            session=plan.get(
+                "session"
+            ),
+            market_condition=plan.get(
+                "market_condition"
+            ),
+            trade_plan=plan,
+            capture_phase=(
+                "T0_PRE_EXECUTION"
+            ),
+            event="EXECUTION_T0",
+        )
+    )
+
+    execution_result = (
+        _raw_execute_trade(
+            signal,
+            trade_plan,
+            symbol,
+        )
+    )
+
+    if execution_result:
+        _persist_market_participation_observation(
+            participation_t0_observation
+        )
+
+    return execution_result
 
 
 PHASE6W_M15_DIRECTION_LOCK = {}
@@ -10152,6 +10322,24 @@ def process_cycle(last_processed_candle_time):
     if tick is None:
         logger.error(f"Failed to fetch current tick: {mt5.last_error()}")
         return last_processed_candle_time
+    # Universal research tape.
+    # MT5 is a bot-loop quote proxy.
+    # Rithmic remains observe-only.
+    try:
+        record_mt5_tick(
+            tick
+        )
+
+        refresh_rithmic_participation_context(
+            symbol=SYMBOL,
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "[MARKET PARTICIPATION] "
+            "cycle refresh failed open: "
+            f"{exc}"
+        )
 
     logger.info(f"MT5 time: {tick.time}")
 
@@ -12037,6 +12225,58 @@ def process_cycle(last_processed_candle_time):
             # 📡 DETECTED SIGNAL
             # =========================
             if signal in ["BUY", "SELL"]:
+                setup_participation_context = (
+                    _capture_market_participation_context(
+                        signal=signal,
+                        symbol=SYMBOL,
+                        tick=tick,
+                    )
+                )
+
+                selected_signal_data[
+                    "market_participation_context"
+                ] = setup_participation_context
+
+                setup_participation_observation = (
+                    _freeze_market_participation_observation(
+                        signal=signal,
+                        symbol=SYMBOL,
+                        strategy=strategy_name,
+                        setup_id=selected_signal_data.get(
+                            "setup_id"
+                        ),
+                        entry_model=selected_signal_data.get(
+                            "entry_model"
+                        ),
+                        session=session_name,
+                        market_condition=market_condition,
+                        trade_plan={
+                            "entry_price": close_price,
+                            "stop_loss": (
+                                selected_signal_data.get(
+                                    "sl_reference"
+                                )
+                            ),
+                            "take_profit": (
+                                selected_signal_data.get(
+                                    "tp_reference"
+                                )
+                                or selected_signal_data.get(
+                                    "pivot_target_level"
+                                )
+                            ),
+                        },
+                        capture_phase=(
+                            "SETUP_DETECTED_CLOSED_M15"
+                        ),
+                        event="SETUP_DETECTED",
+                        tick=tick,
+                    )
+                )
+
+                _persist_market_participation_observation(
+                    setup_participation_observation
+                )
                 from src.notifier import build_trade_message
 
                 detected_data = {

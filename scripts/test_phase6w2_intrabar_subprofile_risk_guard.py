@@ -127,7 +127,15 @@ def test_live_bot_markers_exist():
     assert "INTRABAR_SUBPROFILE_RISK_BLOCKED" in text
     assert "Intrabar Sub-Profile Blocked" in text
     assert "[INTRABAR SUBPROFILE GUARD] failed open" in text
-    assert "return _raw_execute_trade(signal, trade_plan, symbol)" in text
+    # Universal participation V3 now wraps the raw executor.
+    # Phase6W2 verifies the executor path still exists;
+    # the dedicated participation regression verifies causal
+    # T0 ordering and success-only persistence semantically.
+    assert "_raw_execute_trade(" in text
+    assert "participation_t0_observation" in text
+    assert "_freeze_market_participation_observation(" in text
+    assert "_persist_market_participation_observation(" in text
+    assert "return execution_result" in text
 
 
 def test_settings_default_disabled_and_rules_exist():

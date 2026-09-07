@@ -36,7 +36,7 @@ def load_rithmic_config() -> RithmicConfig:
         username=os.getenv("RITHMIC_USERNAME", ""),
         password=os.getenv("RITHMIC_PASSWORD", ""),
         exchange=os.getenv("RITHMIC_EXCHANGE", "COMEX"),
-        symbol=os.getenv("RITHMIC_SYMBOL", "GCQ6"),
+        symbol=os.getenv("RITHMIC_SYMBOL", "").strip(),
         sdk_path=os.getenv(
             "RITHMIC_SDK_PATH",
             "vendor_private/rithmic_protocol/0.89.0.0/samples/samples.py",
@@ -214,6 +214,13 @@ class RithmicMarketDataClient:
     """
 
     def __init__(self, config: RithmicConfig):
+        if not str(config.symbol or "").strip():
+            raise ValueError(
+                "RITHMIC_SYMBOL must be explicitly "
+                "configured to the active CME contract "
+                "before starting the Rithmic client."
+            )
+
         self.config = config
         self.sdk_dir = pathlib.Path(config.sdk_path).resolve()
         self.pb = _load_sdk_modules(config.sdk_path)
@@ -364,8 +371,29 @@ class RithmicMarketDataClient:
             msg = self.pb["last_trade_pb2"].LastTrade()
             msg.ParseFromString(raw)
 
-            buy_value = self.pb["last_trade_pb2"].LastTrade.TransactionType.BUY
-            aggressor = "BUY" if msg.aggressor == buy_value else "SELL"
+            transaction_type = (
+                self.pb["last_trade_pb2"]
+                .LastTrade.TransactionType
+            )
+
+            buy_value = transaction_type.BUY
+            sell_value = getattr(
+                transaction_type,
+                "SELL",
+                None,
+            )
+
+            # Unknown/undefined aggressor values are neutral.
+            # Never manufacture SELL delta from an unknown code.
+            aggressor = "UNKNOWN"
+
+            if msg.aggressor == buy_value:
+                aggressor = "BUY"
+            elif (
+                sell_value is not None
+                and msg.aggressor == sell_value
+            ):
+                aggressor = "SELL"
 
             return {
                 "event_type": "last_trade",
