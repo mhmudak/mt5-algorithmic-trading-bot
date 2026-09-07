@@ -7483,8 +7483,285 @@ def validate_candidate_pre_execution(
 
     return True, candidate, "passed"
 
+def _log_better_entry_lifecycle_event_fail_open(
+    *,
+    setup,
+    setup_data,
+    trade_plan,
+    event,
+    reason,
+    rr_value,
+    required_rr,
+    session_name,
+    market_condition,
+    execution_result=None,
+):
+    """
+    Observation only.
+
+    Better-entry lifecycle auditing must never
+    influence eligibility, RR, risk, order size,
+    SL/TP, or execution.
+    """
+    try:
+        observed_setup = (
+            setup
+            if isinstance(
+                setup,
+                dict,
+            )
+            else {}
+        )
+
+        observed_data = (
+            setup_data
+            if isinstance(
+                setup_data,
+                dict,
+            )
+            else {}
+        )
+
+        observed_plan = (
+            trade_plan
+            if isinstance(
+                trade_plan,
+                dict,
+            )
+            else {}
+        )
+
+        def iso_or_value(value):
+            try:
+                return value.isoformat()
+            except Exception:
+                return value
+
+        setup_id = (
+            observed_data.get(
+                "setup_id"
+            )
+            or observed_plan.get(
+                "setup_id"
+            )
+            or "N/A"
+        )
+
+        entry = (
+            observed_plan.get(
+                "entry_price"
+            )
+            or observed_data.get(
+                "entry_price"
+            )
+            or observed_data.get(
+                "entry"
+            )
+        )
+
+        sl = (
+            observed_plan.get(
+                "stop_loss"
+            )
+            or observed_data.get(
+                "stop_loss"
+            )
+            or observed_data.get(
+                "sl"
+            )
+        )
+
+        tp = (
+            observed_plan.get(
+                "take_profit"
+            )
+            or observed_data.get(
+                "take_profit"
+            )
+            or observed_data.get(
+                "tp"
+            )
+        )
+
+        extra = {
+            "observer_only": True,
+            "decision_impact": "NONE",
+            "can_influence_decision": False,
+            "source": (
+                "better_entry_lifecycle"
+            ),
+            "setup_state": (
+                observed_setup.get(
+                    "state"
+                )
+            ),
+            "wait_reason": (
+                observed_setup.get(
+                    "wait_reason"
+                )
+            ),
+            "retry_source": (
+                observed_setup.get(
+                    "retry_source"
+                )
+            ),
+            "retry_reason": (
+                observed_setup.get(
+                    "retry_reason"
+                )
+            ),
+            "retry_expected_entry": (
+                observed_setup.get(
+                    "retry_expected_entry"
+                )
+            ),
+            "better_entry_initial_rr": (
+                observed_setup.get(
+                    "better_entry_initial_rr"
+                )
+            ),
+            "better_entry_started_at": (
+                iso_or_value(
+                    observed_setup.get(
+                        "better_entry_started_at"
+                    )
+                )
+            ),
+            "expires_at": (
+                iso_or_value(
+                    observed_setup.get(
+                        "expires_at"
+                    )
+                )
+            ),
+        }
+
+        if execution_result is not None:
+            extra[
+                "execution_success"
+            ] = bool(
+                execution_result
+            )
+
+        log_setup_event(
+            setup_id=setup_id,
+            event=event,
+            strategy=observed_data.get(
+                "strategy"
+            ),
+            signal=observed_data.get(
+                "signal"
+            ),
+            entry_model=observed_data.get(
+                "entry_model"
+            ),
+            score=observed_data.get(
+                "score"
+            ),
+            session=(
+                observed_data.get(
+                    "session"
+                )
+                or session_name
+            ),
+            market_condition=(
+                observed_plan.get(
+                    "market_condition"
+                )
+                or market_condition
+            ),
+            entry=entry,
+            sl=sl,
+            tp=tp,
+            rr=rr_value,
+            required_rr=required_rr,
+            reason=reason,
+            extra=extra,
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "[BETTER ENTRY AUDIT] "
+            "Lifecycle observation failed "
+            f"open | event={event} "
+            f"error={exc}"
+        )
+
 def process_wait_better_entry_setups(df, tick, account_info, market_condition, session_name):
+    # Capture the waiting objects before the existing
+    # getter performs its normal expiration transition.
+    # This is observation only; the getter remains the
+    # sole authority that changes WAIT_BETTER_ENTRY
+    # to EXPIRED.
+    try:
+        wait_candidates_before_refresh = [
+            setup
+            for setup in execution_engine.active_setups
+            if (
+                isinstance(
+                    setup,
+                    dict,
+                )
+                and setup.get("state")
+                == "WAIT_BETTER_ENTRY"
+            )
+        ]
+
+    except Exception as exc:
+        # Observation only. Failure to snapshot
+        # the pre-expiry lifecycle must never
+        # interrupt Better Entry processing.
+        wait_candidates_before_refresh = []
+
+        logger.warning(
+            "[BETTER ENTRY AUDIT] "
+            "Pre-expiry lifecycle snapshot "
+            "failed open "
+            f"| error={exc}"
+        )
+
     wait_setups = execution_engine.get_wait_better_entry_setups()
+
+    expired_wait_setups = [
+        setup
+        for setup in wait_candidates_before_refresh
+        if (
+            setup.get("state")
+            == "EXPIRED"
+            and setup.get("wait_reason")
+            == "Better-entry setup expired"
+        )
+    ]
+
+    for expired_setup in expired_wait_setups:
+        expired_data = (
+            expired_setup.get(
+                "data",
+                {},
+            )
+            or {}
+        )
+
+        _log_better_entry_lifecycle_event_fail_open(
+            setup=expired_setup,
+            setup_data=expired_data,
+            trade_plan=(
+                expired_setup.get(
+                    "retry_trade_plan"
+                )
+                or {}
+            ),
+            event="BETTER_ENTRY_EXPIRED",
+            reason="better_entry_wait_expired",
+            rr_value=expired_setup.get(
+                "better_entry_initial_rr"
+            ),
+            required_rr=expired_setup.get(
+                "better_entry_min_rr"
+            ),
+            session_name=session_name,
+            market_condition=market_condition,
+        )
 
     if not wait_setups:
         return False
@@ -7659,6 +7936,17 @@ def process_wait_better_entry_setups(df, tick, account_info, market_condition, s
                 "wait_reason": setup.get("wait_reason"),
             },
         )
+        _log_better_entry_lifecycle_event_fail_open(
+            setup=setup,
+            setup_data=setup_data,
+            trade_plan=trade_plan,
+            event="BETTER_ENTRY_EXECUTION_ATTEMPT",
+            reason="better_entry_rr_ready",
+            rr_value=rr_value,
+            required_rr=required_rr,
+            session_name=session_name,
+            market_condition=market_condition,
+        )
         
         observe_universal_confirmation_for_setup(
             selected_signal_data=setup_data,
@@ -7711,6 +7999,18 @@ def process_wait_better_entry_setups(df, tick, account_info, market_condition, s
                     "wait_reason": setup.get("wait_reason"),
                 },
             )
+            _log_better_entry_lifecycle_event_fail_open(
+                setup=setup,
+                setup_data=setup_data,
+                trade_plan=trade_plan,
+                event="BETTER_ENTRY_EXECUTED",
+                reason="better_entry_execution_success",
+                rr_value=rr_value,
+                required_rr=required_rr,
+                session_name=session_name,
+                market_condition=market_condition,
+                execution_result=execution_result,
+            )
 
             execution_engine.mark_executed(setup)
             return True
@@ -7733,6 +8033,18 @@ def process_wait_better_entry_setups(df, tick, account_info, market_condition, s
                 "setup_state": setup.get("state"),
                 "wait_reason": setup.get("wait_reason"),
             },
+        )
+        _log_better_entry_lifecycle_event_fail_open(
+            setup=setup,
+            setup_data=setup_data,
+            trade_plan=trade_plan,
+            event="BETTER_ENTRY_EXECUTION_FAILED",
+            reason="better_entry_execution_failed",
+            rr_value=rr_value,
+            required_rr=required_rr,
+            session_name=session_name,
+            market_condition=market_condition,
+            execution_result=execution_result,
         )
 
         if hasattr(execution_engine, "mark_execution_failed"):
