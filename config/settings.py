@@ -70,6 +70,32 @@ EMA_PERIOD = 20
 ATR_PERIOD = 14
 ATR_MIN = 2.0
 ATR_MAX = 40.0
+
+# =========================
+# Post-Shock Context Observer
+# =========================
+# Research-only V1.
+# This observer cannot approve, block,
+# resize, reroute or modify any trade.
+ENABLE_POST_SHOCK_CONTEXT_OBSERVER = True
+
+# Shock requires both an absolute M15 expansion
+# and an ATR-normalized expansion.
+POST_SHOCK_M15_ABS_RANGE_PRICE = 30.0
+POST_SHOCK_M15_RANGE_ATR_RATIO = 2.5
+POST_SHOCK_M15_BODY_ATR_RATIO = 1.8
+POST_SHOCK_LOOKBACK_M15_BARS = 5
+
+# Maximum research-state lifetime only.
+# This is NOT a mandatory waiting period.
+POST_SHOCK_MAX_AGE_MINUTES = 60
+
+# Normalization research criteria.
+POST_SHOCK_M5_MIN_CLOSED_BARS = 3
+POST_SHOCK_M5_NORMALIZED_BARS = 2
+POST_SHOCK_M5_MAX_RANGE_ATR_RATIO = 1.6
+POST_SHOCK_M5_MAX_BODY_ATR_RATIO = 1.0
+
 BREAKOUT_LOOKBACK = 10
 BREAKOUT_BUFFER = 0.20
 

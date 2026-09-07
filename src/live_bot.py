@@ -15,6 +15,22 @@ from src.order_executor import execute_trade as _raw_execute_trade
 from src.position_manager import manage_positions
 from src.risk import calculate_trade_plan
 from src.setup_audit import log_setup_event
+from src.post_shock_context import (
+    build_post_shock_context,
+)
+
+from config.settings import (
+    ENABLE_POST_SHOCK_CONTEXT_OBSERVER,
+    POST_SHOCK_M15_ABS_RANGE_PRICE,
+    POST_SHOCK_M15_RANGE_ATR_RATIO,
+    POST_SHOCK_M15_BODY_ATR_RATIO,
+    POST_SHOCK_LOOKBACK_M15_BARS,
+    POST_SHOCK_MAX_AGE_MINUTES,
+    POST_SHOCK_M5_MIN_CLOSED_BARS,
+    POST_SHOCK_M5_NORMALIZED_BARS,
+    POST_SHOCK_M5_MAX_RANGE_ATR_RATIO,
+    POST_SHOCK_M5_MAX_BODY_ATR_RATIO,
+)
 from src.trade_tracker import (
     update_trade_lifecycle,
     sync_open_positions,
@@ -510,6 +526,177 @@ def _derive_intrabar_m15_direction(df):
         return None
 
     return None
+
+
+def _capture_post_shock_context_fail_open(
+    *,
+    df,
+    tick,
+    signal_data,
+):
+    """
+    Research observer only.
+
+    This function must never influence
+    eligibility, RR, SL/TP, sizing or execution.
+    """
+    try:
+        m5_df = (
+            fetch_delayed_confirmation_data()
+        )
+
+        tick_time = getattr(
+            tick,
+            "time",
+            None,
+        )
+
+        now_value = None
+
+        if tick_time is not None:
+            now_value = pd.to_datetime(
+                tick_time,
+                unit="s",
+                errors="coerce",
+            )
+
+        return build_post_shock_context(
+            m15_df=df,
+            m5_df=m5_df,
+            setup=signal_data,
+            now=now_value,
+            enabled=(
+                ENABLE_POST_SHOCK_CONTEXT_OBSERVER
+            ),
+            m15_abs_range_price=(
+                POST_SHOCK_M15_ABS_RANGE_PRICE
+            ),
+            m15_range_atr_ratio=(
+                POST_SHOCK_M15_RANGE_ATR_RATIO
+            ),
+            m15_body_atr_ratio=(
+                POST_SHOCK_M15_BODY_ATR_RATIO
+            ),
+            lookback_m15_bars=(
+                POST_SHOCK_LOOKBACK_M15_BARS
+            ),
+            max_age_minutes=(
+                POST_SHOCK_MAX_AGE_MINUTES
+            ),
+            m5_min_closed_bars=(
+                POST_SHOCK_M5_MIN_CLOSED_BARS
+            ),
+            m5_normalized_bars=(
+                POST_SHOCK_M5_NORMALIZED_BARS
+            ),
+            m5_max_range_atr_ratio=(
+                POST_SHOCK_M5_MAX_RANGE_ATR_RATIO
+            ),
+            m5_max_body_atr_ratio=(
+                POST_SHOCK_M5_MAX_BODY_ATR_RATIO
+            ),
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "[POST SHOCK OBSERVER] "
+            "context capture failed open "
+            f"| error={exc}"
+        )
+
+        return {
+            "observer_version": (
+                "post_shock_context_observer_v1"
+            ),
+            "observer_only": True,
+            "decision_impact": "NONE",
+            "can_influence_decision": False,
+            "safe_for_execution": False,
+            "available": False,
+            "state": "OBSERVER_ERROR",
+            "active_post_shock_mode": False,
+            "exit_ready": False,
+            "reason": (
+                "observer_failed_open"
+            ),
+        }
+
+
+def _log_post_shock_context_fail_open(
+    *,
+    signal_data,
+    strategy_name,
+    signal,
+    score,
+    session_name,
+    market_condition,
+    close_price,
+):
+    try:
+        context = (
+            signal_data.get(
+                "post_shock_context"
+            )
+            if isinstance(
+                signal_data,
+                dict,
+            )
+            else None
+        )
+
+        if not isinstance(
+            context,
+            dict,
+        ):
+            return False
+
+        log_setup_event(
+            setup_id=signal_data.get(
+                "setup_id"
+            ),
+            event=(
+                "POST_SHOCK_CONTEXT_OBSERVATION"
+            ),
+            strategy=strategy_name,
+            signal=signal,
+            entry_model=(
+                signal_data.get(
+                    "entry_model"
+                )
+            ),
+            score=score,
+            session=session_name,
+            market_condition=(
+                market_condition
+            ),
+            entry=close_price,
+            sl=signal_data.get(
+                "sl_reference"
+            ),
+            tp=(
+                signal_data.get(
+                    "tp_reference"
+                )
+                or signal_data.get(
+                    "pivot_target_level"
+                )
+            ),
+            reason=context.get(
+                "reason"
+            ),
+            extra=context,
+        )
+
+        return True
+
+    except Exception as exc:
+        logger.warning(
+            "[POST SHOCK OBSERVER] "
+            "audit persistence failed open "
+            f"| error={exc}"
+        )
+
+        return False
 
 
 def _capture_market_participation_context(
@@ -12537,6 +12724,18 @@ def process_cycle(last_processed_candle_time):
             # 📡 DETECTED SIGNAL
             # =========================
             if signal in ["BUY", "SELL"]:
+                selected_signal_data[
+                    "post_shock_context"
+                ] = (
+                    _capture_post_shock_context_fail_open(
+                        df=df,
+                        tick=tick,
+                        signal_data=(
+                            selected_signal_data
+                        ),
+                    )
+                )
+
                 setup_participation_context = (
                     _capture_market_participation_context(
                         signal=signal,
@@ -12631,6 +12830,16 @@ def process_cycle(last_processed_candle_time):
                     },
                 )
                 
+                _log_post_shock_context_fail_open(
+                    signal_data=selected_signal_data,
+                    strategy_name=strategy_name,
+                    signal=signal,
+                    score=score,
+                    session_name=session_name,
+                    market_condition=market_condition,
+                    close_price=close_price,
+                )
+
                 news_context = attach_news_context_to_signal_data(selected_signal_data)
                 
                 tracked = register_setup_outcome(
