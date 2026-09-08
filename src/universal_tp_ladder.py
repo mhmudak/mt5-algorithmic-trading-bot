@@ -582,20 +582,11 @@ def format_tp_ladder(
             else "N/A"
         )
 
-        name = item.get(
-            "name"
-        )
-
-        suffix = (
-            f" | {name}"
-            if name
-            else ""
-        )
-
+        # Internal ladder names remain stored in metadata,
+        # but Telegram/output should stay human-readable.
         lines.append(
             f"TP{index}: {price} "
             f"| RR {rr_text}"
-            f"{suffix}"
         )
 
     return "\n".join(
