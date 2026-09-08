@@ -6,6 +6,8 @@ from src.trade_tracker import load_trades
 from src.logger import logger
 
 
+from src.market_outlook_engine import load_latest_market_outlook
+
 LAST_HEARTBEAT = None
 
 
@@ -87,6 +89,83 @@ def _get_heartbeat_trade_snapshot(symbol: str):
     }
 
 
+def _get_heartbeat_market_context(symbol: str):
+    """
+    Read-only heartbeat market context.
+
+    Price is the live MT5 bid/ask midpoint.
+    Bias reuses the latest saved Phase 6S combined HTF bias.
+
+    This function is display-only and cannot affect trading.
+    """
+    price = None
+    price_source = "UNAVAILABLE"
+
+    try:
+        tick = mt5.symbol_info_tick(symbol)
+    except Exception as exc:
+        logger.warning(
+            f"[HEARTBEAT] symbol_info_tick failed | "
+            f"symbol={symbol} error={exc}"
+        )
+        tick = None
+
+    if tick is not None:
+        try:
+            bid = float(getattr(tick, "bid", 0.0) or 0.0)
+            ask = float(getattr(tick, "ask", 0.0) or 0.0)
+        except Exception:
+            bid = 0.0
+            ask = 0.0
+
+        if bid > 0 and ask > 0:
+            price = round(
+                (bid + ask) / 2.0,
+                2,
+            )
+            price_source = "MT5_BID_ASK_MID"
+
+        elif bid > 0:
+            price = round(bid, 2)
+            price_source = "MT5_BID"
+
+        elif ask > 0:
+            price = round(ask, 2)
+            price_source = "MT5_ASK"
+
+    bias = "UNKNOWN"
+
+    try:
+        outlook = load_latest_market_outlook(
+            symbol,
+            "scenario_update",
+        )
+    except Exception as exc:
+        logger.warning(
+            f"[HEARTBEAT] market outlook load failed | "
+            f"symbol={symbol} error={exc}"
+        )
+        outlook = None
+
+    if isinstance(outlook, dict):
+        candidate = str(
+            outlook.get(
+                "combined_htf_bias",
+                "",
+            )
+            or ""
+        ).upper()
+
+        if candidate:
+            bias = candidate
+
+    return {
+        "price": price,
+        "price_source": price_source,
+        "bias": bias,
+    }
+
+
 def send_heartbeat(symbol: str, force=False):
     global LAST_HEARTBEAT
 
@@ -99,20 +178,24 @@ def send_heartbeat(symbol: str, force=False):
 
     LAST_HEARTBEAT = now
 
-    snapshot = _get_heartbeat_trade_snapshot(
+    trade_snapshot = _get_heartbeat_trade_snapshot(
         symbol
     )
 
-    physical_open_count = snapshot.get(
+    market_context = _get_heartbeat_market_context(
+        symbol
+    )
+
+    physical_open_count = trade_snapshot.get(
         "physical_open_count"
     )
 
-    tracked_open_count = snapshot.get(
+    tracked_open_count = trade_snapshot.get(
         "tracked_open_count",
         0,
     )
 
-    pending_reconciliation_count = snapshot.get(
+    pending_reconciliation_count = trade_snapshot.get(
         "pending_reconciliation_count"
     )
 
@@ -122,10 +205,22 @@ def send_heartbeat(symbol: str, force=False):
         else "UNKNOWN"
     )
 
-    pending_text = (
-        str(pending_reconciliation_count)
-        if pending_reconciliation_count is not None
+    price = market_context.get(
+        "price"
+    )
+
+    price_text = (
+        str(price)
+        if price is not None
         else "UNKNOWN"
+    )
+
+    bias = str(
+        market_context.get(
+            "bias",
+            "UNKNOWN",
+        )
+        or "UNKNOWN"
     )
 
     try:
@@ -139,9 +234,9 @@ def send_heartbeat(symbol: str, force=False):
     message = (
         f"🟢 Bot Alive\n"
         f"Symbol: {symbol}\n"
+        f"Price: {price_text}\n"
+        f"Bias: {bias}\n"
         f"Open Trades: {open_trades_text}\n"
-        f"Tracked Open: {tracked_open_count}\n"
-        f"Pending Reconciliation: {pending_text}\n"
         f"MT5: {'Connected' if mt5_connected else 'Disconnected'}\n"
         f"Time: {now.strftime('%H:%M:%S')}"
     )
@@ -150,12 +245,16 @@ def send_heartbeat(symbol: str, force=False):
         message
     )
 
+    # Tracker diagnostics stay internal.
     logger.info(
         "[HEARTBEAT] Sent bot alive status | "
         f"symbol={symbol} "
+        f"price={price_text} "
+        f"price_source={market_context.get('price_source')} "
+        f"bias={bias} "
         f"physical_open={open_trades_text} "
         f"tracked_open={tracked_open_count} "
-        f"pending_reconciliation={pending_text}"
+        f"pending_reconciliation={pending_reconciliation_count}"
     )
 
 
