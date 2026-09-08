@@ -1,5 +1,6 @@
 import requests
 from config.settings import TELEGRAM_ENABLED, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+from src.universal_tp_ladder import format_tp_plan_from_levels
 
 
 def send_telegram_message(text: str) -> bool:
@@ -110,10 +111,21 @@ def build_trade_message(data: dict) -> str:
         message += f"\n🛑 SL: {sl}"
 
     if has_value(tp):
-        message += f"\n🎯 TP: {tp}"
+        tp_plan_text = format_tp_plan_from_levels(
+            signal=signal,
+            entry=entry,
+            sl=sl,
+            tp=tp,
+        )
+
+        message += (
+            f"\n🎯 {tp_plan_text}"
+        )
 
     if has_value(rr):
-        message += f"\n📊 RR: {rr}"
+        message += (
+            f"\n📊 Full RR (TP3): {rr}"
+        )
 
     if pivot_support is not None:
         message += f"\n🟢 Support: {round(pivot_support, 2)}"

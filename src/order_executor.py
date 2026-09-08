@@ -42,8 +42,13 @@ from config.settings import (
     MAIN_STAGE_2_CLOSE_PCT,
     MAIN_STAGE_3_CLOSE_PCT,
     MAIN_RUNNER_REMAINING_PCT,
+    EXTRA_ENTRY_TAKE_PROFIT_PRICE,
 )
 from src.notifier import send_telegram_message
+from src.universal_tp_ladder import (
+    ensure_universal_tp_ladder,
+    format_tp_plan_from_trade_plan,
+)
 from src.trade_tracker import register_executed_trade
 from src.execution_block_memory import remember_blocked_setup
 
@@ -1152,12 +1157,24 @@ def prepare_main_tp_ladder_execution(
         )
     ).upper()
 
+    ladder_geometry_phase = str(
+        adjusted.get(
+            "tp_ladder_geometry_phase",
+            "",
+        )
+        or ""
+    ).upper()
+
     if (
-        "HIGH_SLIPPAGE_RETRACEMENT"
-        in reason_upper
-        or
-        "MOMENTUM_CONTINUATION_AFTER_PRICE_DRIFT"
-        in reason_upper
+        (
+            "HIGH_SLIPPAGE_RETRACEMENT"
+            in reason_upper
+            or
+            "MOMENTUM_CONTINUATION_AFTER_PRICE_DRIFT"
+            in reason_upper
+        )
+        and ladder_geometry_phase
+        != "FINAL_EXECUTION"
     ):
         adjusted[
             "main_tp_ladder_managed"
@@ -1405,6 +1422,158 @@ def _execute_tp_ladder_split_orders(signal, trade_plan, symbol):
     )
 
     return success_count > 0
+
+
+def _format_execution_tp_management(
+    signal,
+    trade_plan,
+):
+    """
+    Describe the TP behavior that will ACTUALLY manage
+    the successfully executed physical position.
+
+    Planned ladder metadata may remain attached for audit,
+    but it must not be advertised as active execution
+    management when the position is an EXTRA or when MAIN
+    ladder activation failed safe.
+    """
+    if not isinstance(
+        trade_plan,
+        dict,
+    ):
+        return (
+            "Execution Role: UNKNOWN\n"
+            "TP Management: unavailable"
+        )
+
+    role = str(
+        trade_plan.get(
+            "execution_trade_role",
+            "",
+        )
+        or ""
+    ).upper()
+
+    managed_main = bool(
+        trade_plan.get(
+            "main_tp_ladder_managed",
+            False,
+        )
+    )
+
+    full_rr = trade_plan.get(
+        "original_rr",
+        trade_plan.get(
+            "rr",
+            trade_plan.get(
+                "risk_reward"
+            ),
+        ),
+    )
+
+    broker_tp = trade_plan.get(
+        "broker_take_profit",
+        trade_plan.get(
+            "take_profit"
+        ),
+    )
+
+    # Genuine EXTRAs retain their existing independent
+    # +price-profit manager. TP ladder metadata is only
+    # planning/audit context here.
+    if role == "EXTRA":
+        return "\n".join(
+            [
+                "Execution Role: EXTRA",
+                (
+                    f"Broker TP: "
+                    f"{broker_tp}"
+                ),
+                (
+                    "Strategy RR "
+                    f"(original target): "
+                    f"{full_rr}"
+                ),
+                (
+                    "TP Management: "
+                    "EXTRA +"
+                    f"{EXTRA_ENTRY_TAKE_PROFIT_PRICE} "
+                    "price-profit"
+                ),
+                (
+                    "Runner After TP3: "
+                    "False"
+                ),
+            ]
+        )
+
+    # Only a successfully frozen managed MAIN may claim
+    # TP1/TP2/TP3 + runner as active execution behavior.
+    if managed_main:
+        return "\n".join(
+            [
+                "Execution Role: MAIN",
+                (
+                    format_tp_plan_from_trade_plan(
+                        signal,
+                        trade_plan,
+                    )
+                ),
+                (
+                    f"Full RR (TP3): "
+                    f"{full_rr}"
+                ),
+                (
+                    "TP Management: "
+                    f"{trade_plan.get('tp_management_mode', 'MAIN_TP1_TP2_TP3_PLUS_RUNNER')}"
+                ),
+                (
+                    "Runner After TP3: "
+                    f"{bool(trade_plan.get('main_runner_after_tp3', False))}"
+                ),
+            ]
+        )
+
+    # MAIN/unknown fallback:
+    # preserve the actual single broker TP presentation.
+    # Any generated ladder remains metadata only.
+    lines = [
+        (
+            "Execution Role: "
+            f"{role or 'UNLOCKED'}"
+        ),
+        (
+            f"Broker TP: "
+            f"{broker_tp}"
+        ),
+        (
+            "Strategy RR "
+            f"(original target): "
+            f"{full_rr}"
+        ),
+        (
+            "TP Management: "
+            f"{trade_plan.get('tp_management_mode', 'standard')}"
+        ),
+    ]
+
+    skip_reason = trade_plan.get(
+        "main_tp_ladder_skip_reason"
+    )
+
+    if skip_reason:
+        lines.append(
+            "TP Ladder Skip: "
+            f"{skip_reason}"
+        )
+
+    lines.append(
+        "Runner After TP3: False"
+    )
+
+    return "\n".join(
+        lines
+    )
 
 
 def execute_trade(signal, trade_plan, symbol):
@@ -1779,6 +1948,22 @@ def execute_trade(signal, trade_plan, symbol):
         send_telegram_message(error_message)
         return False
     
+    # Build a fallback ladder from FINAL execution geometry.
+    #
+    # Existing structural/key-level ladders are preserved.
+    # The helper is metadata-only: TP3/RR eligibility is not
+    # changed here.
+    trade_plan = ensure_universal_tp_ladder(
+        signal,
+        trade_plan,
+        source=(
+            "ORDER_EXECUTOR_FINAL_GEOMETRY"
+        ),
+        geometry_phase=(
+            "FINAL_EXECUTION"
+        ),
+    )
+
     # Freeze MAIN TP1/TP2/TP3/runner only after all
     # execution-time entry/SL transformations and
     # symbol validation are complete.
@@ -2193,10 +2378,7 @@ def execute_trade(signal, trade_plan, symbol):
         f"Expected: {expected_price}\n"
         f"Executed: {executed_price}\n"
         f"SL: {trade_plan['stop_loss']}\n"
-        f"TP: {trade_plan['take_profit']}\n"
-        f"TP Stage: {trade_plan.get('tp_stage', 'standard')}\n"
-        f"Original TP: {trade_plan.get('original_take_profit', trade_plan['take_profit'])}\n"
-
+        f"{_format_execution_tp_management(signal, trade_plan)}\n"
         f"Lot: {trade_plan['lot']}\n"
         f"Adverse Slippage: {round(adverse_slippage or 0.0, 2)}\n"
         f"Favorable Slippage: {round(favorable_slippage or 0.0, 2)}\n"

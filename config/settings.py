@@ -2299,6 +2299,28 @@ ENABLE_MAIN_TP_LADDER_MANAGEMENT = True
 # policy may remove the broker TP.
 MAIN_TP_LADDER_RUNNER_EMERGENCY_MULTIPLIER = 1.25
 
+# =========================
+# UNIVERSAL TP1 / TP2 / TP3
+# =========================
+# TP3 always remains the original strategy target and
+# therefore remains the authoritative RR / eligibility target.
+#
+# TP1 and TP2 are management-only profit realization stages.
+# They must never qualify an otherwise low-RR setup.
+ENABLE_UNIVERSAL_TP_LADDER = True
+
+# For high-RR trades:
+#   TP1 is capped at 1R
+#   TP2 is capped at 2R
+#
+# For lower-RR trades the reward fractions keep all stages
+# strictly inside the original TP3 path.
+UNIVERSAL_TP1_MAX_RR = 1.00
+UNIVERSAL_TP1_REWARD_FRACTION = 0.50
+
+UNIVERSAL_TP2_MAX_RR = 2.00
+UNIVERSAL_TP2_REWARD_FRACTION = 0.75
+
 
 # =========================
 # PHASE 6G - AUTO STRUCTURAL LEVEL SCALP

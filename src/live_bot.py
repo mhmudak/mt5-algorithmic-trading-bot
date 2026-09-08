@@ -11,6 +11,10 @@ from src.execution import check_trade_guard
 from src.indicators import calculate_ema, calculate_atr
 from src.logger import logger
 from src.notifier import send_telegram_message
+from src.universal_tp_ladder import (
+    format_tp_plan_from_levels as _format_universal_tp_plan_from_levels,
+    format_tp_plan_from_trade_plan as _format_universal_tp_plan_from_trade_plan,
+)
 from src.order_executor import execute_trade as _raw_execute_trade
 from src.position_manager import manage_positions
 from src.risk import calculate_trade_plan
@@ -2383,63 +2387,34 @@ def _telegram_tp123_round(value, digits=2):
     return round(numeric, digits)
 
 
-def _format_telegram_tp123_from_levels(signal, entry, sl, tp):
-    entry_value = _telegram_tp123_float(entry)
-    sl_value = _telegram_tp123_float(sl)
-    tp_value = _telegram_tp123_float(tp)
-
-    if entry_value is None or sl_value is None or tp_value is None:
-        return f"TP: {_telegram_tp123_round(tp)}"
-
-    risk = abs(entry_value - sl_value)
-
-    if risk <= 0:
-        return f"TP: {_telegram_tp123_round(tp_value)}"
-
-    # Visual TP plan only. This does not change execution.
-    tp1 = entry_value + ((tp_value - entry_value) * 0.50)
-    tp2 = entry_value + ((tp_value - entry_value) * 0.75)
-    tp3 = tp_value
-
-    def stage_rr(price):
-        return round(abs(entry_value - price) / risk, 2)
-
-    return "\n".join(
-        [
-            "TP Plan:",
-            f"TP1: {_telegram_tp123_round(tp1)} | RR {stage_rr(tp1)}",
-            f"TP2: {_telegram_tp123_round(tp2)} | RR {stage_rr(tp2)}",
-            f"TP3: {_telegram_tp123_round(tp3)} | RR {stage_rr(tp3)}",
-        ]
+def _format_telegram_tp123_from_levels(
+    signal,
+    entry,
+    sl,
+    tp,
+):
+    return (
+        _format_universal_tp_plan_from_levels(
+            signal=signal,
+            entry=entry,
+            sl=sl,
+            tp=tp,
+        )
     )
 
 
-def _format_telegram_tp123_from_trade_plan(signal, trade_plan):
-    trade_plan = trade_plan or {}
 
-    ladder = trade_plan.get("tp_ladder")
-
-    if isinstance(ladder, list) and ladder:
-        lines = ["TP Plan:"]
-
-        for index, item in enumerate(ladder, start=1):
-            price = item.get("price") or item.get("take_profit")
-            stage_rr = item.get("rr") or item.get("execution_tp_stage_rr")
-            name = item.get("name")
-            suffix = f" | {name}" if name else ""
-
-            lines.append(
-                f"TP{index}: {_telegram_tp123_round(price)} | RR {stage_rr}{suffix}"
-            )
-
-        return "\n".join(lines)
-
-    return _format_telegram_tp123_from_levels(
-        signal=signal,
-        entry=trade_plan.get("entry_price"),
-        sl=trade_plan.get("stop_loss"),
-        tp=trade_plan.get("take_profit"),
+def _format_telegram_tp123_from_trade_plan(
+    signal,
+    trade_plan,
+):
+    return (
+        _format_universal_tp_plan_from_trade_plan(
+            signal,
+            trade_plan or {},
+        )
     )
+
 
 
 def notify_rejected_candidate_if_relevant(
@@ -6871,8 +6846,8 @@ def process_mtf_conflict_candidate(
                     f"Telegram Trigger: {'GOOD_RR' if good_rr_mtf_candidate else 'HIGH_SCORE'}\n"
                     f"Entry: {shadow_trade_plan.get('entry_price') if shadow_trade_plan else None}\n"
                     f"SL: {shadow_trade_plan.get('stop_loss') if shadow_trade_plan else None}\n"
-                    f"TP: {shadow_trade_plan.get('take_profit') if shadow_trade_plan else None}\n"
-                    f"RR: {shadow_rr}\n"
+                    f"{_format_telegram_tp123_from_trade_plan(signal, shadow_trade_plan or {})}\n"
+                    f"Full RR (TP3): {shadow_rr}\n"
                     f"Required RR: {required_rr}\n\n"
                     "Action: tracked for promotion ? execution only if RR and confirmation gate pass; low RR waits for better entry."
                 )
@@ -7150,8 +7125,8 @@ def process_mtf_conflict_candidate(
         f"Setup ID: {setup_id}\n\n"
         f"Entry: {mtf_trade_plan['entry_price']}\n"
         f"SL: {mtf_trade_plan['stop_loss']}\n"
-        f"TP: {mtf_trade_plan['take_profit']}\n"
-        f"RR: {mtf_rr}\n"
+        f"{_format_telegram_tp123_from_trade_plan(signal, mtf_trade_plan)}\n"
+        f"Full RR (TP3): {mtf_rr}\n"
         f"Lot: {mtf_trade_plan['lot']}"
     )
 
