@@ -34,6 +34,14 @@ from config.settings import (
     TP_LADDER_SPLIT_MAX_PARTS,
     TP_LADDER_SPLIT_MIN_PARTS,
     TP_LADDER_SPLIT_COMMENT_PREFIX,
+    ENABLE_MAIN_TP_LADDER_MANAGEMENT,
+    MAIN_TP_LADDER_RUNNER_EMERGENCY_MULTIPLIER,
+    MAIN_RUNNER_EMERGENCY_TP_PRICE,
+    ENABLE_MAIN_STAGE_MANAGEMENT,
+    MAIN_STAGE_1_CLOSE_PCT,
+    MAIN_STAGE_2_CLOSE_PCT,
+    MAIN_STAGE_3_CLOSE_PCT,
+    MAIN_RUNNER_REMAINING_PCT,
 )
 from src.notifier import send_telegram_message
 from src.trade_tracker import register_executed_trade
@@ -655,6 +663,711 @@ def _format_tp_ladder_lines(children):
     return "\\n".join(lines)
 
 
+def _main_tp_ladder_prices(
+    trade_plan,
+):
+    if not isinstance(
+        trade_plan,
+        dict,
+    ):
+        return []
+
+    ladder = trade_plan.get(
+        "tp_ladder"
+    )
+
+    if (
+        not isinstance(
+            ladder,
+            list,
+        )
+        or len(ladder) < 3
+    ):
+        return []
+
+    prices = []
+
+    for item in ladder[:3]:
+        if not isinstance(
+            item,
+            dict,
+        ):
+            return []
+
+        try:
+            price = float(
+                item.get(
+                    "price",
+                    item.get(
+                        "take_profit"
+                    ),
+                )
+            )
+
+        except Exception:
+            return []
+
+        prices.append(
+            round(
+                price,
+                2,
+            )
+        )
+
+    return prices
+
+
+def _main_tp_ladder_volume_supported(
+    total_lot,
+    symbol_info,
+):
+    """
+    Prove that TP1 + TP2 + TP3 + RUNNER can all be
+    represented by the broker's real lot minimum/step.
+
+    This is intentionally stricter than merely checking
+    total_lot >= 4 * volume_min.
+    """
+    if symbol_info is None:
+        return False
+
+    try:
+        total_lot = float(
+            total_lot
+        )
+
+        volume_min = float(
+            getattr(
+                symbol_info,
+                "volume_min",
+                0.0,
+            )
+            or 0.0
+        )
+
+        volume_step = float(
+            getattr(
+                symbol_info,
+                "volume_step",
+                0.0,
+            )
+            or 0.0
+        )
+
+        volume_max = float(
+            getattr(
+                symbol_info,
+                "volume_max",
+                0.0,
+            )
+            or 0.0
+        )
+
+    except Exception:
+        return False
+
+    if (
+        total_lot <= 0
+        or volume_min <= 0
+        or volume_step <= 0
+    ):
+        return False
+
+    if (
+        volume_max > 0
+        and total_lot > volume_max + 1e-9
+    ):
+        return False
+
+    # The submitted lot itself must be representable.
+    lot_units = round(
+        total_lot / volume_step
+    )
+
+    normalized_lot = (
+        lot_units
+        * volume_step
+    )
+
+    if abs(
+        normalized_lot
+        - total_lot
+    ) > 1e-8:
+        return False
+
+    def floor_step(value):
+        units = int(
+            (
+                float(value)
+                + 1e-10
+            )
+            / volume_step
+        )
+
+        return (
+            units
+            * volume_step
+        )
+
+    def ceil_step(value):
+        value = float(value)
+
+        units = int(
+            value / volume_step
+        )
+
+        result = (
+            units
+            * volume_step
+        )
+
+        if result + 1e-10 < value:
+            units += 1
+
+        return (
+            units
+            * volume_step
+        )
+
+    stage_pcts = (
+        float(
+            MAIN_STAGE_1_CLOSE_PCT
+        ),
+        float(
+            MAIN_STAGE_2_CLOSE_PCT
+        ),
+        float(
+            MAIN_STAGE_3_CLOSE_PCT
+        ),
+    )
+
+    runner_pct = float(
+        MAIN_RUNNER_REMAINING_PCT
+    )
+
+    if (
+        min(
+            *stage_pcts,
+            runner_pct,
+        )
+        <= 0
+    ):
+        return False
+
+    if (
+        sum(stage_pcts)
+        + runner_pct
+        > 1.0000001
+    ):
+        return False
+
+    close_volumes = [
+        floor_step(
+            total_lot * pct
+        )
+        for pct in stage_pcts
+    ]
+
+    if any(
+        volume
+        < volume_min - 1e-9
+        for volume in close_volumes
+    ):
+        return False
+
+    runner_volume = (
+        total_lot
+        - sum(close_volumes)
+    )
+
+    runner_floor = max(
+        volume_min,
+        ceil_step(
+            total_lot
+            * runner_pct
+        ),
+    )
+
+    if (
+        runner_volume
+        < runner_floor - 1e-9
+    ):
+        return False
+
+    runner_units = round(
+        runner_volume
+        / volume_step
+    )
+
+    normalized_runner = (
+        runner_units
+        * volume_step
+    )
+
+    if abs(
+        normalized_runner
+        - runner_volume
+    ) > 1e-8:
+        return False
+
+    return True
+
+
+
+def _main_runner_emergency_tp(
+    *,
+    signal,
+    entry,
+    tp3,
+):
+    try:
+        entry = float(entry)
+        tp3 = float(tp3)
+
+    except Exception:
+        return tp3
+
+    original_reward = abs(
+        tp3 - entry
+    )
+
+    emergency_distance = max(
+        float(
+            MAIN_RUNNER_EMERGENCY_TP_PRICE
+        ),
+        original_reward
+        * float(
+            MAIN_TP_LADDER_RUNNER_EMERGENCY_MULTIPLIER
+        ),
+    )
+
+    if signal == "BUY":
+        return round(
+            entry
+            + emergency_distance,
+            2,
+        )
+
+    if signal == "SELL":
+        return round(
+            entry
+            - emergency_distance,
+            2,
+        )
+
+    return tp3
+
+
+def prepare_main_tp_ladder_execution(
+    signal,
+    trade_plan,
+    symbol,
+    *,
+    same_direction_count=None,
+    symbol_info=None,
+):
+    """
+    Freeze execution-time MAIN/EXTRA identity from real
+    physical MT5 state and, when a valid ladder exists,
+    prepare one physical MAIN for TP1/TP2/TP3 + runner.
+
+    Role authority:
+      0 same-direction positions -> MAIN
+      1+ same-direction positions -> EXTRA
+
+    Existing tracker state is not allowed to override
+    that T0 physical role for newly executed trades.
+    """
+    if not isinstance(
+        trade_plan,
+        dict,
+    ):
+        return trade_plan
+
+    adjusted = dict(
+        trade_plan
+    )
+
+    # --------------------------------------------------------
+    # Execution-time role authority
+    # --------------------------------------------------------
+
+    if same_direction_count is None:
+        positions = mt5.positions_get(
+            symbol=symbol
+        )
+
+        if positions is None:
+            logger.warning(
+                "[EXECUTION ROLE] "
+                "MT5 positions query unavailable; "
+                "leaving role unlocked and "
+                "disabling managed TP ladder"
+            )
+
+            adjusted[
+                "execution_role_authority"
+            ] = (
+                "MT5_PHYSICAL_POSITION_QUERY_UNAVAILABLE"
+            )
+
+            adjusted[
+                "main_tp_ladder_managed"
+            ] = False
+
+            adjusted[
+                "main_tp_ladder_skip_reason"
+            ] = (
+                "execution_role_unresolved"
+            )
+
+            return adjusted
+
+        count = 0
+
+        for position in positions:
+            direction = (
+                "BUY"
+                if position.type
+                == mt5.POSITION_TYPE_BUY
+                else "SELL"
+            )
+
+            if direction == signal:
+                count += 1
+
+        same_direction_count = count
+
+    try:
+        same_direction_count = int(
+            same_direction_count
+        )
+
+    except Exception:
+        adjusted[
+            "execution_role_authority"
+        ] = (
+            "INVALID_SAME_DIRECTION_COUNT"
+        )
+
+        adjusted[
+            "main_tp_ladder_managed"
+        ] = False
+
+        adjusted[
+            "main_tp_ladder_skip_reason"
+        ] = (
+            "execution_role_unresolved"
+        )
+
+        return adjusted
+
+    if same_direction_count < 0:
+        adjusted[
+            "execution_role_authority"
+        ] = (
+            "INVALID_SAME_DIRECTION_COUNT"
+        )
+
+        adjusted[
+            "main_tp_ladder_managed"
+        ] = False
+
+        adjusted[
+            "main_tp_ladder_skip_reason"
+        ] = (
+            "execution_role_unresolved"
+        )
+
+        return adjusted
+
+    execution_role = (
+        "MAIN"
+        if same_direction_count == 0
+        else "EXTRA"
+    )
+
+    adjusted[
+        "execution_trade_role"
+    ] = execution_role
+
+    adjusted[
+        "execution_same_direction_count"
+    ] = same_direction_count
+
+    adjusted[
+        "execution_role_authority"
+    ] = (
+        "MT5_PHYSICAL_SAME_DIRECTION_COUNT_AT_T0"
+    )
+
+    # Role locking is useful for every newly executed
+    # trade, even when it has no TP ladder.
+    if not ENABLE_MAIN_TP_LADDER_MANAGEMENT:
+        return adjusted
+
+    ladder_prices = (
+        _main_tp_ladder_prices(
+            adjusted
+        )
+    )
+
+    if len(ladder_prices) < 3:
+        return adjusted
+
+    # Genuine EXTRAs never receive MAIN stage management.
+    if execution_role == "EXTRA":
+        adjusted[
+            "main_tp_ladder_managed"
+        ] = False
+
+        adjusted[
+            "main_tp_ladder_role"
+        ] = "EXTRA"
+
+        return adjusted
+
+    # A broker emergency TP beyond TP3 is only safe if
+    # the client-side MAIN stage manager is operational.
+    if not ENABLE_MAIN_STAGE_MANAGEMENT:
+        adjusted[
+            "main_tp_ladder_managed"
+        ] = False
+
+        adjusted[
+            "main_tp_ladder_skip_reason"
+        ] = (
+            "main_stage_management_disabled"
+        )
+
+        return adjusted
+
+    # Existing ladder metadata was generated before
+    # execution-time entry rebasing. Do not silently
+    # manage stale levels after such a rebase.
+    reason_upper = str(
+        adjusted.get(
+            "reason",
+            "",
+        )
+    ).upper()
+
+    if (
+        "HIGH_SLIPPAGE_RETRACEMENT"
+        in reason_upper
+        or
+        "MOMENTUM_CONTINUATION_AFTER_PRICE_DRIFT"
+        in reason_upper
+    ):
+        adjusted[
+            "main_tp_ladder_managed"
+        ] = False
+
+        adjusted[
+            "main_tp_ladder_skip_reason"
+        ] = (
+            "execution_entry_rebased_"
+            "ladder_not_refrozen"
+        )
+
+        return adjusted
+
+    if symbol_info is None:
+        symbol_info = mt5.symbol_info(
+            symbol
+        )
+
+    if not (
+        _main_tp_ladder_volume_supported(
+            adjusted.get("lot"),
+            symbol_info,
+        )
+    ):
+        adjusted[
+            "main_tp_ladder_managed"
+        ] = False
+
+        adjusted[
+            "main_tp_ladder_skip_reason"
+        ] = (
+            "unsupported_broker_volume_geometry"
+        )
+
+        return adjusted
+
+    try:
+        entry = float(
+            adjusted[
+                "entry_price"
+            ]
+        )
+
+        current_tp = float(
+            adjusted[
+                "take_profit"
+            ]
+        )
+
+        tp1 = float(
+            ladder_prices[0]
+        )
+
+        tp2 = float(
+            ladder_prices[1]
+        )
+
+        tp3 = float(
+            ladder_prices[2]
+        )
+
+        original_tp = float(
+            adjusted.get(
+                "original_take_profit",
+                tp3,
+            )
+        )
+
+    except Exception:
+        adjusted[
+            "main_tp_ladder_managed"
+        ] = False
+
+        adjusted[
+            "main_tp_ladder_skip_reason"
+        ] = (
+            "invalid_ladder_geometry"
+        )
+
+        return adjusted
+
+    if signal == "BUY":
+        directional_valid = (
+            entry
+            < tp1
+            < tp2
+            < tp3
+        )
+
+    elif signal == "SELL":
+        directional_valid = (
+            entry
+            > tp1
+            > tp2
+            > tp3
+        )
+
+    else:
+        directional_valid = False
+
+    if not directional_valid:
+        adjusted[
+            "main_tp_ladder_managed"
+        ] = False
+
+        adjusted[
+            "main_tp_ladder_skip_reason"
+        ] = (
+            "invalid_directional_ladder"
+        )
+
+        return adjusted
+
+    # TP3 must remain exactly the original strategy
+    # target. TP1/TP2 never gain RR eligibility authority.
+    if abs(
+        original_tp
+        - tp3
+    ) > 0.05:
+        adjusted[
+            "main_tp_ladder_managed"
+        ] = False
+
+        adjusted[
+            "main_tp_ladder_skip_reason"
+        ] = (
+            "tp3_original_target_mismatch"
+        )
+
+        return adjusted
+
+    adjusted[
+        "pre_main_ladder_take_profit"
+    ] = current_tp
+
+    adjusted[
+        "take_profit"
+    ] = round(
+        tp3,
+        2,
+    )
+
+    adjusted[
+        "decision_take_profit"
+    ] = round(
+        tp3,
+        2,
+    )
+
+    adjusted[
+        "original_take_profit"
+    ] = round(
+        tp3,
+        2,
+    )
+
+    adjusted[
+        "main_tp1"
+    ] = round(
+        tp1,
+        2,
+    )
+
+    adjusted[
+        "main_tp2"
+    ] = round(
+        tp2,
+        2,
+    )
+
+    adjusted[
+        "main_tp3"
+    ] = round(
+        tp3,
+        2,
+    )
+
+    adjusted[
+        "main_tp_ladder_managed"
+    ] = True
+
+    adjusted[
+        "main_tp_ladder_role"
+    ] = "MAIN"
+
+    adjusted[
+        "main_runner_after_tp3"
+    ] = True
+
+    adjusted[
+        "broker_take_profit"
+    ] = (
+        _main_runner_emergency_tp(
+            signal=signal,
+            entry=entry,
+            tp3=tp3,
+        )
+    )
+
+    adjusted[
+        "tp_management_mode"
+    ] = (
+        "MAIN_TP1_TP2_TP3_PLUS_RUNNER"
+    )
+
+    return adjusted
+
+
+
 def _execute_tp_ladder_split_orders(signal, trade_plan, symbol):
     children = _build_tp_ladder_split_children(signal, trade_plan, symbol)
 
@@ -893,8 +1606,20 @@ def execute_trade(signal, trade_plan, symbol):
             )
             return False
 
-    if isinstance(trade_plan, dict) and not trade_plan.get("tp_ladder_child_order"):
-        split_result = _execute_tp_ladder_split_orders(signal, trade_plan, symbol)
+    if (
+        isinstance(trade_plan, dict)
+        and not trade_plan.get(
+            "tp_ladder_child_order"
+        )
+        and not ENABLE_MAIN_TP_LADDER_MANAGEMENT
+    ):
+        split_result = (
+            _execute_tp_ladder_split_orders(
+                signal,
+                trade_plan,
+                symbol,
+            )
+        )
 
         if split_result is not None:
             return split_result
@@ -1054,6 +1779,16 @@ def execute_trade(signal, trade_plan, symbol):
         send_telegram_message(error_message)
         return False
     
+    # Freeze MAIN TP1/TP2/TP3/runner only after all
+    # execution-time entry/SL transformations and
+    # symbol validation are complete.
+    trade_plan = prepare_main_tp_ladder_execution(
+        signal,
+        trade_plan,
+        symbol,
+        symbol_info=symbol_info,
+    )
+
     deviation_points = max(1, int(round(MAX_SLIPPAGE / symbol_info.point)))
 
     base_request = {
@@ -1063,7 +1798,10 @@ def execute_trade(signal, trade_plan, symbol):
         "type": mt5.ORDER_TYPE_BUY if signal == "BUY" else mt5.ORDER_TYPE_SELL,
         "price": request_price,
         "sl": trade_plan["stop_loss"],
-        "tp": trade_plan["take_profit"],
+        "tp": trade_plan.get(
+            "broker_take_profit",
+            trade_plan["take_profit"],
+        ),
         "deviation": deviation_points,
         "magic": 123456,
         "comment": trade_plan.get("comment", "MhMudBot")[:31],

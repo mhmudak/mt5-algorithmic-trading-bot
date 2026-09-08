@@ -2278,6 +2278,27 @@ TP_LADDER_SPLIT_MAX_PARTS = 3
 TP_LADDER_SPLIT_MIN_PARTS = 2
 TP_LADDER_SPLIT_COMMENT_PREFIX = "TPLadder"
 
+# =========================
+# MAIN TP1 / TP2 / TP3 + RUNNER
+# =========================
+# When enabled, central live execution does NOT create
+# three TP-ladder child positions.
+#
+# One physical MAIN position is managed as:
+#   TP1 = partial
+#   TP2 = partial
+#   TP3 = partial at original strategy target
+#   RUNNER = remaining volume
+#
+# Genuine same-direction EXTRAs retain their existing
+# independent +price-profit management.
+ENABLE_MAIN_TP_LADDER_MANAGEMENT = True
+
+# Before TP3 is reached, keep a broker-side emergency TP
+# beyond the strategy's TP3. After TP3, existing runner
+# policy may remove the broker TP.
+MAIN_TP_LADDER_RUNNER_EMERGENCY_MULTIPLIER = 1.25
+
 
 # =========================
 # PHASE 6G - AUTO STRUCTURAL LEVEL SCALP

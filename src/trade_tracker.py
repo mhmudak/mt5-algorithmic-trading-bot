@@ -280,6 +280,69 @@ def _find_open_main_trade_id(trades, symbol, signal):
     return None
 
 
+def _resolve_execution_trade_role(
+    trades,
+    symbol,
+    signal,
+    position_id,
+    trade_plan,
+):
+    """
+    New trades may carry an explicit role frozen from
+    physical MT5 state immediately before execution.
+
+    Explicit role wins over stale tracker state.
+
+    Legacy trades without the contract retain the old
+    tracker-based MAIN/EXTRA behavior.
+    """
+    existing_main_id = (
+        _find_open_main_trade_id(
+            trades,
+            symbol,
+            signal,
+        )
+    )
+
+    explicit_role = str(
+        trade_plan.get(
+            "execution_trade_role",
+            "",
+        )
+        or ""
+    ).upper()
+
+    if explicit_role == "MAIN":
+        return (
+            "MAIN",
+            position_id,
+            True,
+        )
+
+    if explicit_role == "EXTRA":
+        return (
+            "EXTRA",
+            (
+                existing_main_id
+                or "UNTRACKED_PHYSICAL_MAIN"
+            ),
+            True,
+        )
+
+    if existing_main_id is None:
+        return (
+            "MAIN",
+            position_id,
+            False,
+        )
+
+    return (
+        "EXTRA",
+        existing_main_id,
+        False,
+    )
+
+
 def register_executed_trade(symbol, signal, trade_plan, result):
     trades = load_trades()
 
@@ -290,14 +353,17 @@ def register_executed_trade(symbol, signal, trade_plan, result):
         result=result,
     )
 
-    existing_main_id = _find_open_main_trade_id(trades, symbol, signal)
-
-    if existing_main_id is None:
-        trade_role = "MAIN"
-        main_position_id = position_id
-    else:
-        trade_role = "EXTRA"
-        main_position_id = existing_main_id
+    (
+        trade_role,
+        main_position_id,
+        role_locked,
+    ) = _resolve_execution_trade_role(
+        trades,
+        symbol,
+        signal,
+        position_id,
+        trade_plan,
+    )
 
     trades[position_id] = _build_trade_record(
         position_id=position_id,
@@ -322,6 +388,109 @@ def register_executed_trade(symbol, signal, trade_plan, result):
         reason=trade_plan.get("reason", "N/A"),
         tp_buffer=trade_plan.get("tp_buffer", 0.0),
     )
+
+    tracked_trade = trades[
+        position_id
+    ]
+
+    tracked_trade[
+        "main_tp_ladder_managed"
+    ] = bool(
+        trade_plan.get(
+            "main_tp_ladder_managed",
+            False,
+        )
+    )
+
+    tracked_trade[
+        "main_tp_ladder_role"
+    ] = trade_plan.get(
+        "main_tp_ladder_role"
+    )
+
+    tracked_trade[
+        "trade_role_locked"
+    ] = bool(
+        role_locked
+    )
+
+    tracked_trade[
+        "execution_role_authority"
+    ] = trade_plan.get(
+        "execution_role_authority",
+        "TRACKER_OPEN_MAIN_FALLBACK",
+    )
+
+    tracked_trade[
+        "execution_same_direction_count"
+    ] = trade_plan.get(
+        "execution_same_direction_count"
+    )
+
+    tracked_trade[
+        "main_tp1"
+    ] = trade_plan.get(
+        "main_tp1"
+    )
+
+    tracked_trade[
+        "main_tp2"
+    ] = trade_plan.get(
+        "main_tp2"
+    )
+
+    tracked_trade[
+        "main_tp3"
+    ] = trade_plan.get(
+        "main_tp3"
+    )
+
+    tracked_trade[
+        "tp_ladder"
+    ] = trade_plan.get(
+        "tp_ladder"
+    )
+
+    tracked_trade[
+        "decision_take_profit"
+    ] = trade_plan.get(
+        "decision_take_profit",
+        trade_plan.get(
+            "take_profit"
+        ),
+    )
+
+    tracked_trade[
+        "broker_take_profit"
+    ] = trade_plan.get(
+        "broker_take_profit",
+        trade_plan.get(
+            "take_profit"
+        ),
+    )
+
+    tracked_trade[
+        "main_runner_after_tp3"
+    ] = bool(
+        trade_plan.get(
+            "main_runner_after_tp3",
+            False,
+        )
+    )
+
+    tracked_trade[
+        "tp_management_mode"
+    ] = trade_plan.get(
+        "tp_management_mode"
+    )
+
+    tracked_trade[
+        "runner_tp2_lock_done"
+    ] = False
+
+    tracked_trade[
+        "runner_tp3_lock_done"
+    ] = False
 
     save_trades(trades)
 
