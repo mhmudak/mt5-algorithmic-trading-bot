@@ -1,4 +1,5 @@
 import json
+import time
 from datetime import datetime, timedelta
 
 import MetaTrader5 as mt5
@@ -46,80 +47,314 @@ def save_trades(trades):
     except Exception as e:
         logger.error(f"[TRACKER] Failed to save trades: {e}")
 
-def resolve_position_id_after_execution(symbol, signal, trade_plan, result):
-    """
-    Resolve real MT5 position ticket after order_send.
+def _first_mt5_item(items):
+    if not items:
+        return None
 
-    result.order / result.deal is not always the open position ticket.
-    The tracker must track the real position.ticket.
-    """
-    order_id = getattr(result, "order", None)
-    deal_id = getattr(result, "deal", None)
+    try:
+        return items[0]
+    except Exception:
+        return None
 
-    # 1) Try direct position by order id
-    if order_id:
+
+def _safe_ticket_int(value):
+    try:
+        value = int(value)
+    except Exception:
+        return None
+
+    if value <= 0:
+        return None
+
+    return value
+
+
+def resolve_trade_position_id_from_history(
+    position_id,
+    trade,
+):
+    """
+    Resolve the real MT5 position identifier from
+    authoritative stored execution deal/order tickets.
+
+    This never guesses from side, volume, entry price,
+    recency, or another open position.
+    """
+    if not isinstance(
+        trade,
+        dict,
+    ):
+        return str(position_id), None
+
+    seen = set()
+
+    for field in (
+        "raw_deal_id",
+        "deal_id",
+    ):
+        ticket = _safe_ticket_int(
+            trade.get(field)
+        )
+
+        key = (
+            "DEAL",
+            ticket,
+        )
+
+        if (
+            ticket is None
+            or key in seen
+        ):
+            continue
+
+        seen.add(key)
+
         try:
-            positions = mt5.positions_get(ticket=order_id)
-            if positions:
-                return str(positions[0].ticket)
-        except Exception as exc:
-            logger.warning(f"[TRACKER] position lookup by order failed: {exc}")
-
-    # 2) Try position_id from the execution deal
-    now = datetime.now()
-    start = now - timedelta(days=1)
-
-    try:
-        deals = mt5.history_deals_get(start, now)
-    except Exception as exc:
-        logger.warning(f"[TRACKER] history_deals_get failed during position resolve: {exc}")
-        deals = None
-
-    if deals:
-        for deal in deals:
-            if str(getattr(deal, "ticket", "")) == str(deal_id):
-                position_id = getattr(deal, "position_id", None)
-                if position_id:
-                    return str(position_id)
-
-    # 3) Fallback: newest open position with same symbol / side / volume
-    try:
-        positions = mt5.positions_get(symbol=symbol)
-    except Exception as exc:
-        logger.warning(f"[TRACKER] positions_get failed during fallback resolve: {exc}")
-        positions = None
-
-    if positions:
-        signal = str(signal or "").upper()
-        expected_type = mt5.POSITION_TYPE_BUY if signal == "BUY" else mt5.POSITION_TYPE_SELL
-        expected_volume = round(float(trade_plan.get("lot", 0.0)), 2)
-
-        candidates = []
-
-        for position in positions:
-            if getattr(position, "type", None) != expected_type:
-                continue
-
-            position_volume = round(float(getattr(position, "volume", 0.0)), 2)
-
-            if expected_volume and position_volume != expected_volume:
-                continue
-
-            candidates.append(position)
-
-        if candidates:
-            newest = max(
-                candidates,
-                key=lambda p: getattr(p, "time_msc", getattr(p, "time", 0)),
+            deal = _first_mt5_item(
+                mt5.history_deals_get(
+                    ticket=ticket
+                )
             )
-            return str(newest.ticket)
+        except Exception as exc:
+            logger.warning(
+                "[TRACKER] direct deal identity "
+                f"lookup failed | ticket={ticket} "
+                f"error={exc}"
+            )
+            deal = None
 
-    # Final fallback: old behavior, but log it
-    fallback_id = order_id if order_id else deal_id
-    logger.warning(
-        f"[TRACKER] Could not resolve real MT5 position id. "
-        f"Using fallback={fallback_id} order={order_id} deal={deal_id}"
+        if deal is not None:
+            real_position_id = getattr(
+                deal,
+                "position_id",
+                None,
+            )
+
+            if real_position_id:
+                return (
+                    str(real_position_id),
+                    f"DIRECT_{field.upper()}",
+                )
+
+    for field in (
+        "raw_order_id",
+        "order_id",
+    ):
+        ticket = _safe_ticket_int(
+            trade.get(field)
+        )
+
+        key = (
+            "ORDER",
+            ticket,
+        )
+
+        if (
+            ticket is None
+            or key in seen
+        ):
+            continue
+
+        seen.add(key)
+
+        try:
+            order = _first_mt5_item(
+                mt5.history_orders_get(
+                    ticket=ticket
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "[TRACKER] direct order identity "
+                f"lookup failed | ticket={ticket} "
+                f"error={exc}"
+            )
+            order = None
+
+        if order is not None:
+            real_position_id = getattr(
+                order,
+                "position_id",
+                None,
+            )
+
+            if real_position_id:
+                return (
+                    str(real_position_id),
+                    f"DIRECT_{field.upper()}",
+                )
+
+    return str(position_id), None
+
+
+def resolve_position_id_after_execution(
+    symbol,
+    signal,
+    trade_plan,
+    result,
+):
+    """
+    Resolve the real MT5 position ticket after order_send.
+
+    Identity authority, in order:
+      1. exact physical position ticket
+      2. exact execution deal -> position_id
+      3. exact execution order -> position_id
+      4. open position whose MT5 identifier matches order id
+
+    MT5 history can lag briefly after order_send, so the
+    exact checks are retried for a short bounded period.
+
+    Never select the "newest same-side/same-volume" position:
+    that can attach a new execution to an unrelated trade.
+    """
+    order_id = getattr(
+        result,
+        "order",
+        None,
     )
+
+    deal_id = getattr(
+        result,
+        "deal",
+        None,
+    )
+
+    order_ticket = _safe_ticket_int(
+        order_id
+    )
+
+    identity_trade = {
+        "deal_id": deal_id,
+        "raw_deal_id": deal_id,
+        "order_id": order_id,
+        "raw_order_id": order_id,
+    }
+
+    max_attempts = 4
+
+    for attempt in range(
+        max_attempts
+    ):
+        # Exact physical ticket lookup.
+        if order_ticket is not None:
+            try:
+                positions = mt5.positions_get(
+                    ticket=order_ticket
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[TRACKER] exact physical "
+                    "position lookup failed | "
+                    f"order={order_id} error={exc}"
+                )
+                positions = None
+
+            position = _first_mt5_item(
+                positions
+            )
+
+            if position is not None:
+                return str(
+                    position.ticket
+                )
+
+        # Exact deal/order history identity.
+        (
+            history_position_id,
+            history_source,
+        ) = (
+            resolve_trade_position_id_from_history(
+                position_id=(
+                    order_id
+                    if order_id
+                    else deal_id
+                ),
+                trade=identity_trade,
+            )
+        )
+
+        if history_source:
+            logger.info(
+                "[TRACKER] execution position "
+                "resolved from authoritative history | "
+                f"position={history_position_id} "
+                f"source={history_source}"
+            )
+
+            return history_position_id
+
+        # Exact MT5 position identifier match.
+        # This is not a side/volume/recency guess.
+        try:
+            open_positions = (
+                mt5.positions_get(
+                    symbol=symbol
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "[TRACKER] execution open-position "
+                f"identity scan failed | "
+                f"symbol={symbol} error={exc}"
+            )
+            open_positions = None
+
+        if (
+            open_positions
+            and order_ticket is not None
+        ):
+            for position in open_positions:
+                try:
+                    ticket = int(
+                        getattr(
+                            position,
+                            "ticket",
+                            0,
+                        )
+                        or 0
+                    )
+
+                    identifier = int(
+                        getattr(
+                            position,
+                            "identifier",
+                            0,
+                        )
+                        or 0
+                    )
+                except Exception:
+                    continue
+
+                if (
+                    ticket == order_ticket
+                    or identifier
+                    == order_ticket
+                ):
+                    return str(ticket)
+
+        if attempt < (
+            max_attempts - 1
+        ):
+            time.sleep(0.05)
+
+    # Fail-safe identity fallback:
+    # keep the execution's own order/deal identity rather
+    # than attaching it to an unrelated physical position.
+    fallback_id = (
+        order_id
+        if order_id
+        else deal_id
+    )
+
+    logger.warning(
+        "[TRACKER] Real MT5 position id was not "
+        "confirmed during bounded execution retry | "
+        f"fallback={fallback_id} "
+        f"order={order_id} deal={deal_id} | "
+        "NO side/volume/recency position guess used"
+    )
+
     return str(fallback_id)
 
 def relink_trade_position_if_needed(position_id, trade, open_positions_map):
@@ -582,92 +817,244 @@ def infer_close_reason_from_trade(trade, close_price, realized_profit):
 
     return "BREAKEVEN"
 
-def detect_close_details(position_id: str, trade=None):
-    now = datetime.now()
-    start = now - timedelta(days=7)
+def detect_close_details(
+    position_id: str,
+    trade=None,
+):
+    """
+    Resolve closing deals from the authoritative MT5
+    position identifier.
 
-    deals = mt5.history_deals_get(start, now)
-    if deals is None:
-        return {
-            "found_close_deal": False,
-            "close_reason": None,
-            "realized_profit": 0.0,
-            "close_price": 0.0,
-        }
+    Direct position history is preferred because broad
+    date-range history queries can omit deals that MT5
+    returns correctly through history_deals_get(position=).
+    """
+    empty = {
+        "found_close_deal": False,
+        "close_reason": None,
+        "realized_profit": 0.0,
+        "close_price": 0.0,
+        "close_time": None,
+    }
+
+    position_id_int = _safe_ticket_int(
+        position_id
+    )
+
+    if position_id_int is None:
+        return empty
+
+    closing_entry_types = {
+        mt5.DEAL_ENTRY_OUT,
+    }
+
+    deal_entry_inout = getattr(
+        mt5,
+        "DEAL_ENTRY_INOUT",
+        None,
+    )
+
+    if deal_entry_inout is not None:
+        closing_entry_types.add(
+            deal_entry_inout
+        )
+
+    deal_entry_out_by = getattr(
+        mt5,
+        "DEAL_ENTRY_OUT_BY",
+        None,
+    )
+
+    if deal_entry_out_by is not None:
+        closing_entry_types.add(
+            deal_entry_out_by
+        )
+
+    # --------------------------------------------------------
+    # Primary authority: direct MT5 position history
+    # --------------------------------------------------------
 
     try:
-        position_id_int = int(position_id)
-    except ValueError:
-        return {
-            "found_close_deal": False,
-            "close_reason": None,
-            "realized_profit": 0.0,
-            "close_price": 0.0,
-        }
+        direct_deals = (
+            mt5.history_deals_get(
+                position=position_id_int
+            )
+        )
+    except Exception as exc:
+        logger.warning(
+            "[TRACKER] direct position history "
+            f"lookup failed | "
+            f"position={position_id} error={exc}"
+        )
+        direct_deals = None
 
-    matching_deals = [
-        deal for deal in deals
-        if getattr(deal, "position_id", None) == position_id_int
-    ]
-
-    if not matching_deals:
-        return {
-            "found_close_deal": False,
-            "close_reason": None,
-            "realized_profit": 0.0,
-            "close_price": 0.0,
-        }
-
-    closing_entry_types = {mt5.DEAL_ENTRY_OUT}
-
-    deal_entry_inout = getattr(mt5, "DEAL_ENTRY_INOUT", None)
-    if deal_entry_inout is not None:
-        closing_entry_types.add(deal_entry_inout)
-
-    deal_entry_out_by = getattr(mt5, "DEAL_ENTRY_OUT_BY", None)
-    if deal_entry_out_by is not None:
-        closing_entry_types.add(deal_entry_out_by)
+    matching_deals = (
+        list(direct_deals)
+        if direct_deals
+        else []
+    )
 
     closing_deals = [
-        deal for deal in matching_deals
-        if getattr(deal, "entry", None) in closing_entry_types
+        deal
+        for deal in matching_deals
+        if getattr(
+            deal,
+            "entry",
+            None,
+        )
+        in closing_entry_types
     ]
 
+    # --------------------------------------------------------
+    # Legacy fallback only if direct position history did
+    # not expose a closing deal.
+    # --------------------------------------------------------
+
     if not closing_deals:
-        return {
-            "found_close_deal": False,
-            "close_reason": None,
-            "realized_profit": 0.0,
-            "close_price": 0.0,
-        }
+        now = datetime.now()
+        start = now - timedelta(
+            days=7
+        )
 
-    latest_deal = max(closing_deals, key=lambda d: getattr(d, "time", 0))
+        try:
+            broad_deals = (
+                mt5.history_deals_get(
+                    start,
+                    now,
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "[TRACKER] fallback broad history "
+                f"lookup failed | "
+                f"position={position_id} error={exc}"
+            )
+            broad_deals = None
 
-    reason = getattr(latest_deal, "reason", None)
-    close_price = float(getattr(latest_deal, "price", 0.0))
+        broad_matching = [
+            deal
+            for deal in (
+                broad_deals
+                or []
+            )
+            if getattr(
+                deal,
+                "position_id",
+                None,
+            )
+            == position_id_int
+        ]
+
+        broad_closes = [
+            deal
+            for deal in broad_matching
+            if getattr(
+                deal,
+                "entry",
+                None,
+            )
+            in closing_entry_types
+        ]
+
+        if broad_closes:
+            matching_deals = (
+                broad_matching
+            )
+
+            closing_deals = (
+                broad_closes
+            )
+
+    if not closing_deals:
+        return empty
+
+    latest_deal = max(
+        closing_deals,
+        key=lambda d: getattr(
+            d,
+            "time",
+            0,
+        ),
+    )
+
+    reason = getattr(
+        latest_deal,
+        "reason",
+        None,
+    )
+
+    close_price = float(
+        getattr(
+            latest_deal,
+            "price",
+            0.0,
+        )
+    )
+
     realized_profit = sum(
-        float(getattr(deal, "profit", 0.0))
+        float(
+            getattr(
+                deal,
+                "profit",
+                0.0,
+            )
+        )
         for deal in closing_deals
     )
 
     if reason == mt5.DEAL_REASON_SL:
-        close_reason = classify_stop_trigger_result(realized_profit, prefix="SL")
+        close_reason = (
+            classify_stop_trigger_result(
+                realized_profit,
+                prefix="SL",
+            )
+        )
+
     elif reason == mt5.DEAL_REASON_TP:
         close_reason = "TP"
+
     elif reason == mt5.DEAL_REASON_SO:
         close_reason = "STOP_OUT"
+
     else:
-        close_reason = infer_close_reason_from_trade(
-            trade=trade,
-            close_price=close_price,
-            realized_profit=realized_profit,
+        close_reason = (
+            infer_close_reason_from_trade(
+                trade=trade,
+                close_price=close_price,
+                realized_profit=realized_profit,
+            )
         )
+
+    close_timestamp = getattr(
+        latest_deal,
+        "time",
+        None,
+    )
+
+    close_time = None
+
+    if close_timestamp:
+        try:
+            close_time = (
+                datetime.fromtimestamp(
+                    close_timestamp
+                ).isoformat()
+            )
+        except Exception:
+            close_time = None
 
     return {
         "found_close_deal": True,
         "close_reason": close_reason,
-        "realized_profit": round(realized_profit, 2),
-        "close_price": round(close_price, 2),
+        "realized_profit": round(
+            realized_profit,
+            2,
+        ),
+        "close_price": round(
+            close_price,
+            2,
+        ),
+        "close_time": close_time,
     }
 
 
@@ -701,24 +1088,166 @@ def update_trade_lifecycle(symbol: str):
         current_position = open_positions_map.get(position_id)
 
         if current_position is None:
-            relinked_position_id = relink_trade_position_if_needed(
-                position_id=position_id,
-                trade=trade,
-                open_positions_map=open_positions_map,
+            (
+                history_position_id,
+                history_source,
+            ) = (
+                resolve_trade_position_id_from_history(
+                    position_id=position_id,
+                    trade=trade,
+                )
             )
 
-            if relinked_position_id != position_id:
-                trades[relinked_position_id] = trade
-                trades[relinked_position_id]["position_id"] = relinked_position_id
+            # Authoritative MT5 execution history wins.
+            if history_source:
+                if (
+                    history_position_id
+                    != position_id
+                ):
+                    if history_position_id in trades:
+                        trade[
+                            "position_relink_collision"
+                        ] = history_position_id
 
-                if trades[relinked_position_id].get("main_position_id") == position_id:
-                    trades[relinked_position_id]["main_position_id"] = relinked_position_id
+                        logger.error(
+                            "[TRACKER] Historical position "
+                            "identity collision; relink skipped | "
+                            f"old={position_id} "
+                            f"resolved={history_position_id} "
+                            f"source={history_source}"
+                        )
 
-                del trades[position_id]
+                        changed = True
 
-                position_id = relinked_position_id
-                current_position = open_positions_map.get(position_id)
-                changed = True
+                    else:
+                        old_position_id = (
+                            position_id
+                        )
+
+                        trades[
+                            history_position_id
+                        ] = trade
+
+                        trade[
+                            "position_id"
+                        ] = history_position_id
+
+                        trade[
+                            "position_id_relinked_from"
+                        ] = old_position_id
+
+                        trade[
+                            "position_id_relinked_source"
+                        ] = history_source
+
+                        trade[
+                            "position_id_relinked_at"
+                        ] = (
+                            datetime.now()
+                            .isoformat()
+                        )
+
+                        for other_trade in (
+                            trades.values()
+                        ):
+                            if not isinstance(
+                                other_trade,
+                                dict,
+                            ):
+                                continue
+
+                            if str(
+                                other_trade.get(
+                                    "main_position_id",
+                                    "",
+                                )
+                            ) == str(
+                                old_position_id
+                            ):
+                                other_trade[
+                                    "main_position_id"
+                                ] = history_position_id
+
+                        del trades[
+                            old_position_id
+                        ]
+
+                        position_id = (
+                            history_position_id
+                        )
+
+                        changed = True
+
+                        logger.warning(
+                            "[TRACKER] Relinked tracker "
+                            "identity from authoritative "
+                            "MT5 execution history | "
+                            f"old={old_position_id} "
+                            f"new={position_id} "
+                            f"source={history_source}"
+                        )
+
+                current_position = (
+                    open_positions_map.get(
+                        position_id
+                    )
+                )
+
+            # Only manual / legacy records without a
+            # resolvable execution deal/order may use the
+            # older physical-position relink heuristic.
+            else:
+                relinked_position_id = (
+                    relink_trade_position_if_needed(
+                        position_id=position_id,
+                        trade=trade,
+                        open_positions_map=open_positions_map,
+                    )
+                )
+
+                if (
+                    relinked_position_id
+                    != position_id
+                ):
+                    trades[
+                        relinked_position_id
+                    ] = trade
+
+                    trades[
+                        relinked_position_id
+                    ][
+                        "position_id"
+                    ] = relinked_position_id
+
+                    if (
+                        trades[
+                            relinked_position_id
+                        ].get(
+                            "main_position_id"
+                        )
+                        == position_id
+                    ):
+                        trades[
+                            relinked_position_id
+                        ][
+                            "main_position_id"
+                        ] = relinked_position_id
+
+                    del trades[
+                        position_id
+                    ]
+
+                    position_id = (
+                        relinked_position_id
+                    )
+
+                    current_position = (
+                        open_positions_map.get(
+                            position_id
+                        )
+                    )
+
+                    changed = True
 
         # Fully closed / missing from open positions.
         # Phase 2AC:
@@ -749,7 +1278,10 @@ def update_trade_lifecycle(symbol: str):
                 trade["closed_volume"] = round(float(trade.get("closed_volume", 0.0)) + closed_now, 2)
                 trade["remaining_volume"] = 0.0
                 trade["status"] = "CLOSED"
-                trade["close_time"] = datetime.now().isoformat()
+                trade["close_time"] = (
+                    close_details.get("close_time")
+                    or datetime.now().isoformat()
+                )
                 trade["close_reconciliation_pending"] = False
 
                 close_reason = close_details["close_reason"]
