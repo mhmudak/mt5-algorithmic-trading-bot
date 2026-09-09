@@ -162,6 +162,76 @@ def build_confirmation_summary_message(
         or "UNKNOWN"
     )
 
+    entry = trade_plan.get("entry_price")
+    sl = trade_plan.get("stop_loss")
+    tp = trade_plan.get("take_profit")
+
+    rr = trade_plan.get("rr")
+
+    if rr is None:
+        rr = trade_plan.get("risk_reward")
+
+    if rr is None:
+        rr = signal_data.get("shadow_rr")
+
+    geometry_complete = all(
+        value is not None
+        for value in (
+            entry,
+            sl,
+            tp,
+            rr,
+        )
+    )
+
+    lifecycle_stage = (
+        signal_data.get("confirmation_stage")
+        or trade_plan.get("confirmation_stage")
+    )
+
+    if not lifecycle_stage:
+        if bucket == "MTF_CONFLICT_TRACKED":
+            lifecycle_stage = (
+                "MTF_CONFLICT_CANDIDATE"
+            )
+        elif geometry_complete:
+            lifecycle_stage = (
+                "TRADE_PLAN_READY"
+            )
+        else:
+            lifecycle_stage = (
+                "CANDIDATE_OBSERVATION"
+            )
+
+    geometry_role = (
+        signal_data.get(
+            "confirmation_geometry_role"
+        )
+        or trade_plan.get(
+            "confirmation_geometry_role"
+        )
+    )
+
+    if not geometry_role:
+        if (
+            lifecycle_stage
+            == "MTF_CONFLICT_CANDIDATE"
+        ):
+            geometry_role = (
+                "SHADOW_REFERENCE"
+            )
+        elif geometry_complete:
+            geometry_role = (
+                "CANONICAL_TRADE_PLAN"
+            )
+        else:
+            geometry_role = "UNAVAILABLE"
+
+    def display(value):
+        if value is None:
+            return "N/A"
+        return value
+
     confidence = report.get("confidence")
     score_delta = report.get("score_delta")
     approved = report.get("approved")
@@ -171,29 +241,101 @@ def build_confirmation_summary_message(
     modules = _get_report_modules(report)
     module_count = len(modules)
 
-    pass_count = sum(1 for m in modules if isinstance(m, dict) and m.get("status") == "PASS")
-    fail_count = sum(1 for m in modules if isinstance(m, dict) and m.get("status") == "FAIL")
-    neutral_count = sum(1 for m in modules if isinstance(m, dict) and m.get("status") == "NEUTRAL")
-    disabled_count = sum(1 for m in modules if isinstance(m, dict) and m.get("status") == "DISABLED")
+    pass_count = sum(
+        1
+        for module in modules
+        if isinstance(module, dict)
+        and module.get("status") == "PASS"
+    )
+
+    fail_count = sum(
+        1
+        for module in modules
+        if isinstance(module, dict)
+        and module.get("status") == "FAIL"
+    )
+
+    neutral_count = sum(
+        1
+        for module in modules
+        if isinstance(module, dict)
+        and module.get("status") == "NEUTRAL"
+    )
+
+    disabled_count = sum(
+        1
+        for module in modules
+        if isinstance(module, dict)
+        and module.get("status") == "DISABLED"
+    )
 
     negative_modules = []
 
     for module in modules:
-        if not isinstance(module, dict):
+        if not isinstance(
+            module,
+            dict,
+        ):
             continue
 
-        delta = _safe_float(module.get("score_delta"), 0.0)
+        delta = _safe_float(
+            module.get("score_delta"),
+            0.0,
+        )
 
-        if delta < 0 or module.get("status") in {"FAIL", "ERROR"}:
-            negative_modules.append(module)
+        if (
+            delta < 0
+            or module.get("status")
+            in {
+                "FAIL",
+                "ERROR",
+            }
+        ):
+            negative_modules.append(
+                module
+            )
 
-    shadow_decision = report.get("shadow_decision")
-    shadow_reason = report.get("shadow_reason")
-    shadow_score = report.get("shadow_score")
-    shadow_action = report.get("shadow_action")
+    shadow_decision = report.get(
+        "shadow_decision"
+    )
+
+    shadow_reason = report.get(
+        "shadow_reason"
+    )
+
+    shadow_score = report.get(
+        "shadow_score"
+    )
+
+    shadow_action = report.get(
+        "shadow_action"
+    )
 
     lines = [
         "🧠 CONFIRMATION ENGINE",
+        "",
+        f"Lifecycle Stage: {lifecycle_stage}",
+        f"Geometry Role: {geometry_role}",
+        (
+            "Execution Geometry: "
+            + (
+                "COMPLETE"
+                if geometry_complete
+                else "INCOMPLETE"
+            )
+        ),
+        "Trading Impact: NONE (observe-only)",
+        "",
+        f"Strategy: {strategy}",
+        f"Signal: {signal}",
+        f"Bucket: {bucket}",
+        f"Setup ID: {setup_id}",
+        "",
+        "Geometry:",
+        f"Entry: {display(entry)}",
+        f"SL: {display(sl)}",
+        f"TP: {display(tp)}",
+        f"RR: {display(rr)}",
         "",
         f"Shadow Decision: {shadow_decision}",
         f"Shadow Score: {shadow_score}",
@@ -201,27 +343,46 @@ def build_confirmation_summary_message(
         "",
         f"Confidence: {confidence}",
         f"Score Delta: {score_delta}",
-        f"Approved: {approved}",
+        (
+            "Confirmation Approved: "
+            f"{approved}"
+        ),
+        (
+            "Trade Approval: NOT DETERMINED "
+            "BY CONFIRMATION ENGINE"
+        ),
         f"Mode: {mode}",
         "",
-        f"Strategy: {strategy}",
-        f"Signal: {signal}",
-        f"Bucket: {bucket}",
-        f"Setup ID: {setup_id}",
-        "",
-        f"Modules: {module_count} | PASS {pass_count} | FAIL {fail_count} | NEUTRAL {neutral_count} | DISABLED {disabled_count}",
+        (
+            f"Modules: {module_count} | "
+            f"PASS {pass_count} | "
+            f"FAIL {fail_count} | "
+            f"NEUTRAL {neutral_count} | "
+            f"DISABLED {disabled_count}"
+        ),
     ]
 
     if negative_modules:
         lines.append("")
-        lines.append("Risk / Negative Modules:")
+        lines.append(
+            "Risk / Negative Modules:"
+        )
 
         max_modules = _safe_int(
-            getattr(settings, "CONFIRMATION_SUMMARY_TELEGRAM_MAX_MODULES", 6),
+            getattr(
+                settings,
+                "CONFIRMATION_SUMMARY_"
+                "TELEGRAM_MAX_MODULES",
+                6,
+            ),
             6,
         )
 
-        for module in negative_modules[:max_modules]:
+        for module in (
+            negative_modules[
+                :max_modules
+            ]
+        ):
             lines.append(
                 f"- {module.get('module')} | "
                 f"{module.get('status')} | "
@@ -231,21 +392,35 @@ def build_confirmation_summary_message(
 
     include_details = getattr(
         settings,
-        "CONFIRMATION_SUMMARY_TELEGRAM_INCLUDE_MODULE_DETAILS",
+        "CONFIRMATION_SUMMARY_"
+        "TELEGRAM_INCLUDE_MODULE_DETAILS",
         True,
     )
 
-    if include_details and modules:
+    if (
+        include_details
+        and modules
+    ):
         lines.append("")
         lines.append("Top Modules:")
 
         max_modules = _safe_int(
-            getattr(settings, "CONFIRMATION_SUMMARY_TELEGRAM_MAX_MODULES", 6),
+            getattr(
+                settings,
+                "CONFIRMATION_SUMMARY_"
+                "TELEGRAM_MAX_MODULES",
+                6,
+            ),
             6,
         )
 
-        for module in modules[:max_modules]:
-            if not isinstance(module, dict):
+        for module in modules[
+            :max_modules
+        ]:
+            if not isinstance(
+                module,
+                dict,
+            ):
                 continue
 
             lines.append(
@@ -257,16 +432,26 @@ def build_confirmation_summary_message(
 
     if shadow_reason:
         lines.append("")
-        lines.append(f"Shadow Reason: {shadow_reason}")
+        lines.append(
+            f"Shadow Reason: {shadow_reason}"
+        )
 
     if summary:
-        lines.append("")
-        lines.append(f"Summary: {summary}")
+        lines.append(
+            f"Summary: {summary}"
+        )
 
     lines.append("")
-    lines.append("Action: observe-only, trade not blocked.")
+    lines.append(
+        "Action: observe-only; confirmation "
+        "engine does not approve, block, "
+        "or execute this trade."
+    )
 
-    return "\n".join(str(x) for x in lines)
+    return "\n".join(
+        str(item)
+        for item in lines
+    )
 
 
 def maybe_notify_confirmation_summary(

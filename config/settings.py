@@ -20,6 +20,12 @@ ENABLE_STRATEGY_REJECTION_DEBUG = True
 # Telegram Signal Messages
 # =========================
 TELEGRAM_VERBOSE_SIGNALS = False
+
+# Canonical operator lifecycle messages.
+# Keep these independent from broad verbose/debug Telegram.
+TELEGRAM_NOTIFY_SETUP_CONFIRMED = True
+TELEGRAM_NOTIFY_TRADE_PLAN_READY = True
+
 TELEGRAM_NOTIFY_TRADE_TRACKER_OPENED = False
 
 

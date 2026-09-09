@@ -181,6 +181,8 @@ from config.settings import (
     CONFLUENCE_SCORE_BOOST_PER_STRATEGY,
     MAX_CONFLUENCE_SCORE_BOOST,
     TELEGRAM_VERBOSE_SIGNALS,
+    TELEGRAM_NOTIFY_SETUP_CONFIRMED,
+    TELEGRAM_NOTIFY_TRADE_PLAN_READY,
     ENABLE_FAILED_BREAKOUT_REVERSAL,
     ENABLE_WAIT_FOR_BETTER_ENTRY,
     BETTER_ENTRY_EXPIRY_MINUTES,
@@ -1749,6 +1751,9 @@ def observe_universal_confirmation_from_scope(
     scope,
     *,
     setup_source_bucket_override=None,
+    trade_plan_override=None,
+    confirmation_stage_override=None,
+    geometry_role_override=None,
 ):
     """
     Phase 1N helper.
@@ -1783,21 +1788,27 @@ def observe_universal_confirmation_from_scope(
         else:
             selected_signal_data = {}
 
-        raw_trade_plan = _confirmation_scope_get_first(
-            scope,
-            [
-                "trade_plan",
-                "mtf_trade_plan",
-                "scalp_trade_plan",
-                "reversal_trade_plan",
-                "split_trade_plan",
-                "fvg_trade_plan",
-                "candidate_trade_plan",
-                "event_trade_plan",
-                "intrabar_trade_plan",
-                "immediate_trade_plan",
-            ],
-        )
+        if isinstance(
+            trade_plan_override,
+            dict,
+        ):
+            raw_trade_plan = trade_plan_override
+        else:
+            raw_trade_plan = _confirmation_scope_get_first(
+                scope,
+                [
+                    "trade_plan",
+                    "mtf_trade_plan",
+                    "scalp_trade_plan",
+                    "reversal_trade_plan",
+                    "split_trade_plan",
+                    "fvg_trade_plan",
+                    "candidate_trade_plan",
+                    "event_trade_plan",
+                    "intrabar_trade_plan",
+                    "immediate_trade_plan",
+                ],
+            )
 
         if isinstance(raw_trade_plan, dict):
             trade_plan = dict(raw_trade_plan)
@@ -1834,6 +1845,22 @@ def observe_universal_confirmation_from_scope(
             trade_plan.setdefault("setup_source_bucket", setup_source_bucket_override)
             trade_plan.setdefault("execution_bucket", setup_source_bucket_override)
 
+        if confirmation_stage_override:
+            selected_signal_data[
+                "confirmation_stage"
+            ] = confirmation_stage_override
+            trade_plan[
+                "confirmation_stage"
+            ] = confirmation_stage_override
+
+        if geometry_role_override:
+            selected_signal_data[
+                "confirmation_geometry_role"
+            ] = geometry_role_override
+            trade_plan[
+                "confirmation_geometry_role"
+            ] = geometry_role_override
+
         df = _confirmation_scope_get_first(
             scope,
             ["df", "df_m15", "m15_df", "df_signal", "latest_df"],
@@ -1866,6 +1893,24 @@ def observe_universal_confirmation_from_scope(
             scope,
             ["min_rr_required", "required_rr", "candidate_required_rr"],
         )
+
+        observed_rr = _confirmation_scope_get_first(
+            scope,
+            [
+                "rr_value",
+                "shadow_rr",
+                "mtf_rr",
+                "reversal_rr",
+                "scalp_rr",
+            ],
+        )
+
+        if (
+            trade_plan.get("rr") is None
+            and trade_plan.get("risk_reward") is None
+            and observed_rr is not None
+        ):
+            trade_plan["rr"] = observed_rr
 
         observe_universal_confirmation_for_setup(
             selected_signal_data=selected_signal_data,
@@ -6787,6 +6832,13 @@ def process_mtf_conflict_candidate(
             observe_universal_confirmation_from_scope(
                 locals(),
                 setup_source_bucket_override="MTF_CONFLICT_TRACKED",
+                trade_plan_override=(
+                    shadow_trade_plan
+                    if isinstance(shadow_trade_plan, dict)
+                    else {}
+                ),
+                confirmation_stage_override="MTF_CONFLICT_CANDIDATE",
+                geometry_role_override="SHADOW_REFERENCE",
             )
             mtf_conflict_tracked_confirmation_observed = True
         except Exception as confirmation_exc:
@@ -13264,7 +13316,7 @@ def process_cycle(last_processed_candle_time):
 
 
         if not best_setup.get("notified"):
-            if TELEGRAM_VERBOSE_SIGNALS and not best_setup.get("notified"):
+            if TELEGRAM_NOTIFY_SETUP_CONFIRMED and not best_setup.get("notified"):
                 send_telegram_message(
                     f"✅ Setup Confirmed #{selected_signal_data.get('setup_id', 'N/A')}\n"
                     f"Symbol: {SYMBOL}\n"
@@ -13765,7 +13817,7 @@ def process_cycle(last_processed_candle_time):
             return current_candle_time
 
         if not best_setup.get("trade_plan_notified"):
-            if TELEGRAM_VERBOSE_SIGNALS and not best_setup.get("trade_plan_notified"):
+            if TELEGRAM_NOTIFY_TRADE_PLAN_READY and not best_setup.get("trade_plan_notified"):
                 send_telegram_message(
                     f"📐 Trade Plan Ready #{selected_signal_data.get('setup_id', 'N/A')}\n"
                     f"Symbol: {SYMBOL}\n"
