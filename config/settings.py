@@ -7,7 +7,14 @@ load_dotenv()
 # =========================
 # Google Sheets Logging
 # =========================
-ENABLE_GOOGLE_SHEETS_LOGGING = False
+ENABLE_GOOGLE_SHEETS_LOGGING = True
+
+# Google Sheets is secondary telemetry only.
+# Network I/O must never block setup detection or MT5 execution.
+GOOGLE_SHEETS_ASYNC_NONBLOCKING = True
+GOOGLE_SHEETS_HTTP_TIMEOUT_SECONDS = 15
+GOOGLE_SHEETS_RETRY_REQUEST_MIN_INTERVAL_SECONDS = 30.0
+
 GOOGLE_SHEETS_WEBHOOK_URL = os.getenv("GOOGLE_SHEETS_WEBHOOK_URL", "")
 GOOGLE_SHEETS_WEBHOOK_SECRET = os.getenv("GOOGLE_SHEETS_WEBHOOK_SECRET", "")
 

@@ -1,10 +1,16 @@
 import json
+import queue
+import threading
+import time
 from datetime import datetime
 
 import requests
 
 from config.settings import (
     ENABLE_GOOGLE_SHEETS_LOGGING,
+    GOOGLE_SHEETS_ASYNC_NONBLOCKING,
+    GOOGLE_SHEETS_HTTP_TIMEOUT_SECONDS,
+    GOOGLE_SHEETS_RETRY_REQUEST_MIN_INTERVAL_SECONDS,
     GOOGLE_SHEETS_WEBHOOK_URL,
     GOOGLE_SHEETS_WEBHOOK_SECRET,
 )
@@ -98,7 +104,59 @@ def queue_google_sheets_payload(payload, reason):
     )
 
 
-def post_google_sheets_payload(payload, label):
+# ============================================================
+# Non-blocking Google Sheets transport
+# ============================================================
+#
+# CRITICAL EXECUTION INVARIANT:
+# Trading/setup callers may enqueue telemetry only.
+#
+# HTTP, response parsing, persistent retry-file access, and
+# retry delivery run exclusively in this daemon worker.
+#
+# Google Sheets must never participate in:
+# - signal detection
+# - setup approval
+# - order timing
+# - sizing
+# - SL / TP calculation
+# - execute_trade latency
+# ============================================================
+
+_GOOGLE_SHEETS_WORK_QUEUE = queue.Queue()
+
+_GOOGLE_SHEETS_WORKER_LOCK = threading.Lock()
+_GOOGLE_SHEETS_WORKER_THREAD = None
+
+_GOOGLE_SHEETS_RETRY_REQUEST_LOCK = threading.Lock()
+_GOOGLE_SHEETS_LAST_RETRY_REQUEST = 0.0
+
+
+def _snapshot_google_payload(payload):
+    """
+    Fast producer-side snapshot.
+
+    Payload dictionaries are newly constructed by the Google
+    adapter functions. A shallow copy intentionally avoids
+    expensive serialization/deep-copy work on the trading path.
+    """
+
+    if not isinstance(payload, dict):
+        return {}
+
+    return dict(payload)
+
+
+def _post_google_sheets_payload_sync(
+    payload,
+    label,
+):
+    """
+    WORKER-ONLY synchronous HTTP transport.
+
+    Never call this from setup detection or execution code.
+    """
+
     if not ENABLE_GOOGLE_SHEETS_LOGGING:
         return False, "google_sheets_logging_disabled"
 
@@ -109,36 +167,449 @@ def post_google_sheets_payload(payload, label):
         response = requests.post(
             GOOGLE_SHEETS_WEBHOOK_URL,
             json=payload,
-            timeout=15,
+            timeout=GOOGLE_SHEETS_HTTP_TIMEOUT_SECONDS,
         )
 
         if response.status_code != 200:
-            return False, f"http_{response.status_code}: {response.text}"
+            return (
+                False,
+                f"http_{response.status_code}: "
+                f"{response.text}",
+            )
 
         data = response.json()
 
         if not data.get("ok"):
-            return False, f"api_error: {data}"
+            return (
+                False,
+                f"api_error: {data}",
+            )
 
-        logger.info(f"[GOOGLE SHEETS] {label} sent")
+        logger.info(
+            f"[GOOGLE SHEETS WORKER] "
+            f"{label} sent"
+        )
+
         return True, None
 
-    except Exception as e:
-        return False, str(e)
+    except Exception as exc:
+        return False, str(exc)
 
 
-def send_setup_event_to_google_sheets(event_data):
+def _flush_google_sheets_retry_queue_sync(
+    max_items=5,
+):
+    """
+    WORKER-ONLY persistent retry processing.
+    """
+
+    if not ENABLE_GOOGLE_SHEETS_LOGGING:
+        return 0
+
+    retry_items = load_google_sheets_retry_queue()
+
+    if not retry_items:
+        return 0
+
+    remaining = []
+    flushed = 0
+
+    for item in retry_items:
+        if flushed >= max_items:
+            remaining.append(item)
+            continue
+
+        payload = item.get("payload", {})
+        queue_key = item.get("queue_key")
+
+        success, error = (
+            _post_google_sheets_payload_sync(
+                payload,
+                f"Retry payload {queue_key}",
+            )
+        )
+
+        if success:
+            flushed += 1
+
+            logger.info(
+                f"[GOOGLE SHEETS QUEUE] "
+                f"Flushed | key={queue_key}"
+            )
+
+            continue
+
+        item["attempts"] = (
+            int(item.get("attempts", 0))
+            + 1
+        )
+
+        item["last_error"] = str(error)
+
+        item["last_attempt_at"] = (
+            datetime.now().isoformat()
+        )
+
+        remaining.append(item)
+
+        logger.warning(
+            f"[GOOGLE SHEETS QUEUE] "
+            f"Retry failed | "
+            f"key={queue_key} "
+            f"attempts={item['attempts']} "
+            f"error={error}"
+        )
+
+    save_google_sheets_retry_queue(
+        remaining
+    )
+
+    if flushed:
+        logger.info(
+            f"[GOOGLE SHEETS QUEUE] "
+            f"Flushed count={flushed}"
+        )
+
+    return flushed
+
+
+def _google_sheets_worker_main():
+    logger.info(
+        "[GOOGLE SHEETS WORKER] "
+        "Async worker started"
+    )
+
+    while True:
+        item = _GOOGLE_SHEETS_WORK_QUEUE.get()
+
+        try:
+            if not isinstance(item, dict):
+                continue
+
+            kind = item.get("kind")
+
+            if kind == "PAYLOAD":
+                payload = item.get(
+                    "payload",
+                    {},
+                )
+
+                label = item.get(
+                    "label",
+                    "Google payload",
+                )
+
+                queue_on_failure = bool(
+                    item.get(
+                        "queue_on_failure",
+                        True,
+                    )
+                )
+
+                success, error = (
+                    _post_google_sheets_payload_sync(
+                        payload,
+                        label,
+                    )
+                )
+
+                if (
+                    not success
+                    and queue_on_failure
+                ):
+                    try:
+                        queue_google_sheets_payload(
+                            dict(payload),
+                            error,
+                        )
+
+                    except Exception as exc:
+                        logger.error(
+                            "[GOOGLE SHEETS WORKER] "
+                            "Failed to persist retry "
+                            f"payload | error={exc}"
+                        )
+
+                elif not success:
+                    logger.error(
+                        "[GOOGLE SHEETS WORKER] "
+                        f"{label} failed | "
+                        f"error={error}"
+                    )
+
+            elif kind == "FLUSH_RETRY":
+                _flush_google_sheets_retry_queue_sync(
+                    max_items=max(
+                        1,
+                        int(
+                            item.get(
+                                "max_items",
+                                5,
+                            )
+                        ),
+                    )
+                )
+
+        except Exception as exc:
+            logger.error(
+                "[GOOGLE SHEETS WORKER] "
+                f"Unhandled worker error: {exc}"
+            )
+
+        finally:
+            _GOOGLE_SHEETS_WORK_QUEUE.task_done()
+
+
+def _ensure_google_sheets_worker_started():
+    global _GOOGLE_SHEETS_WORKER_THREAD
+
+    worker = _GOOGLE_SHEETS_WORKER_THREAD
+
+    if (
+        worker is not None
+        and worker.is_alive()
+    ):
+        return True
+
+    with _GOOGLE_SHEETS_WORKER_LOCK:
+        worker = (
+            _GOOGLE_SHEETS_WORKER_THREAD
+        )
+
+        if (
+            worker is not None
+            and worker.is_alive()
+        ):
+            return True
+
+        try:
+            worker = threading.Thread(
+                target=_google_sheets_worker_main,
+                name="google-sheets-worker",
+                daemon=True,
+            )
+
+            worker.start()
+
+            _GOOGLE_SHEETS_WORKER_THREAD = (
+                worker
+            )
+
+            return True
+
+        except Exception as exc:
+            logger.error(
+                "[GOOGLE SHEETS ASYNC] "
+                "Failed to start worker | "
+                f"error={exc}"
+            )
+
+            return False
+
+
+def enqueue_google_sheets_payload(
+    payload,
+    label,
+    *,
+    queue_on_failure=True,
+):
+    """
+    Producer-side API.
+
+    This function performs NO:
+    - HTTP
+    - retry-file reads
+    - retry-file writes
+    - sleeps
+    - waits for Google
+    """
+
+    if not ENABLE_GOOGLE_SHEETS_LOGGING:
+        return (
+            False,
+            "google_sheets_logging_disabled",
+        )
+
+    if not GOOGLE_SHEETS_WEBHOOK_URL:
+        return (
+            False,
+            "google_sheets_webhook_url_missing",
+        )
+
+    if not _ensure_google_sheets_worker_started():
+        return (
+            False,
+            "google_sheets_worker_unavailable",
+        )
+
+    try:
+        _GOOGLE_SHEETS_WORK_QUEUE.put_nowait(
+            {
+                "kind": "PAYLOAD",
+                "payload": (
+                    _snapshot_google_payload(
+                        payload
+                    )
+                ),
+                "label": str(label),
+                "queue_on_failure": bool(
+                    queue_on_failure
+                ),
+                "queued_at": (
+                    datetime.now().isoformat()
+                ),
+            }
+        )
+
+        return True, None
+
+    except Exception as exc:
+        logger.error(
+            "[GOOGLE SHEETS ASYNC] "
+            "Failed to enqueue payload | "
+            f"label={label} error={exc}"
+        )
+
+        return False, str(exc)
+
+
+def _request_google_sheets_retry_flush(
+    max_items=5,
+):
+    """
+    Non-blocking, rate-limited retry request.
+
+    The main trading loop may call this safely. It does not
+    touch the persistent retry file or perform HTTP.
+    """
+
+    global _GOOGLE_SHEETS_LAST_RETRY_REQUEST
+
+    if not ENABLE_GOOGLE_SHEETS_LOGGING:
+        return False
+
+    if not _ensure_google_sheets_worker_started():
+        return False
+
+    now = time.monotonic()
+
+    with _GOOGLE_SHEETS_RETRY_REQUEST_LOCK:
+        elapsed = (
+            now
+            - _GOOGLE_SHEETS_LAST_RETRY_REQUEST
+        )
+
+        if (
+            _GOOGLE_SHEETS_LAST_RETRY_REQUEST
+            and elapsed
+            < GOOGLE_SHEETS_RETRY_REQUEST_MIN_INTERVAL_SECONDS
+        ):
+            return False
+
+        _GOOGLE_SHEETS_LAST_RETRY_REQUEST = (
+            now
+        )
+
+    try:
+        _GOOGLE_SHEETS_WORK_QUEUE.put_nowait(
+            {
+                "kind": "FLUSH_RETRY",
+                "max_items": max(
+                    1,
+                    int(max_items),
+                ),
+            }
+        )
+
+        return True
+
+    except Exception as exc:
+        logger.error(
+            "[GOOGLE SHEETS ASYNC] "
+            "Failed to enqueue retry flush | "
+            f"error={exc}"
+        )
+
+        return False
+
+
+def _wait_for_google_sheets_worker_idle_for_test(
+    timeout_seconds=3.0,
+):
+    """
+    Focused regression helper only.
+    Never used by live trading.
+    """
+
+    deadline = (
+        time.monotonic()
+        + float(timeout_seconds)
+    )
+
+    while (
+        time.monotonic()
+        < deadline
+    ):
+        if (
+            _GOOGLE_SHEETS_WORK_QUEUE
+            .unfinished_tasks
+            == 0
+        ):
+            return True
+
+        time.sleep(0.01)
+
+    return False
+
+
+def post_google_sheets_payload(
+    payload,
+    label,
+    queue_on_failure=True,
+):
+    """
+    Compatibility API.
+
+    Success means accepted by the asynchronous outbox,
+    NOT that Google has already acknowledged the row.
+    """
+
+    return enqueue_google_sheets_payload(
+        payload,
+        label,
+        queue_on_failure=queue_on_failure,
+    )
+
+
+def send_setup_event_to_google_sheets(
+    event_data,
+):
     payload = {
         "secret": GOOGLE_SHEETS_WEBHOOK_SECRET,
         "sheet": "Events",
         **event_data,
     }
 
-    success, error = post_google_sheets_payload(payload, "Setup event")
+    accepted, error = (
+        post_google_sheets_payload(
+            payload,
+            "Setup event",
+            queue_on_failure=True,
+        )
+    )
 
-    if not success:
-        logger.error(f"[GOOGLE SHEETS] Failed to send event: {error}")
+    if not accepted:
+        logger.error(
+            "[GOOGLE SHEETS ASYNC] "
+            "Failed to queue setup event: "
+            f"{error}"
+        )
         return False
+
+    logger.info(
+        "[GOOGLE SHEETS ASYNC] "
+        "Setup event queued"
+    )
 
     return True
 
@@ -188,21 +659,36 @@ def build_setup_outcome_payload(item):
     }
 
 
-def send_setup_outcome_to_google_sheets(item, queue_on_failure=True):
-    payload = build_setup_outcome_payload(item)
+def send_setup_outcome_to_google_sheets(
+    item,
+    queue_on_failure=True,
+):
+    payload = build_setup_outcome_payload(
+        item
+    )
 
-    success, error = post_google_sheets_payload(payload, "Setup outcome")
+    accepted, error = (
+        post_google_sheets_payload(
+            payload,
+            "Setup outcome",
+            queue_on_failure=queue_on_failure,
+        )
+    )
 
-    if success:
-        logger.info("[GOOGLE SHEETS] Setup outcome upserted")
-        return True
+    if not accepted:
+        logger.error(
+            "[GOOGLE SHEETS ASYNC] "
+            "Failed to queue setup outcome: "
+            f"{error}"
+        )
+        return False
 
-    logger.error(f"[GOOGLE SHEETS] Failed to send setup outcome: {error}")
+    logger.info(
+        "[GOOGLE SHEETS ASYNC] "
+        "Setup outcome queued"
+    )
 
-    if queue_on_failure:
-        queue_google_sheets_payload(payload, error)
-
-    return False
+    return True
 
 
 def build_memory_decision_report_payload(report):
@@ -251,69 +737,69 @@ def build_memory_decision_report_payload(report):
     }
 
 
-def send_memory_decision_report_to_google_sheets(report, queue_on_failure=True):
-    payload = build_memory_decision_report_payload(report)
-
-    success, error = post_google_sheets_payload(
-        payload,
-        "Memory decision report",
+def send_memory_decision_report_to_google_sheets(
+    report,
+    queue_on_failure=True,
+):
+    payload = (
+        build_memory_decision_report_payload(
+            report
+        )
     )
 
-    if success:
-        logger.info("[GOOGLE SHEETS] Memory decision report appended")
-        return True
-
-    logger.error(f"[GOOGLE SHEETS] Failed to send memory decision report: {error}")
-
-    if queue_on_failure:
-        queue_google_sheets_payload(payload, error)
-
-    return False
-
-
-def flush_google_sheets_retry_queue(max_items=5):
-    if not ENABLE_GOOGLE_SHEETS_LOGGING:
-        return 0
-
-    queue = load_google_sheets_retry_queue()
-
-    if not queue:
-        return 0
-
-    remaining = []
-    flushed = 0
-
-    for item in queue:
-        if flushed >= max_items:
-            remaining.append(item)
-            continue
-
-        payload = item.get("payload", {})
-        queue_key = item.get("queue_key")
-
-        success, error = post_google_sheets_payload(
+    accepted, error = (
+        post_google_sheets_payload(
             payload,
-            f"Retry payload {queue_key}",
+            "Memory decision report",
+            queue_on_failure=queue_on_failure,
         )
+    )
 
-        if success:
-            flushed += 1
-            logger.info(f"[GOOGLE SHEETS QUEUE] Flushed | key={queue_key}")
-            continue
-
-        item["attempts"] = int(item.get("attempts", 0)) + 1
-        item["last_error"] = str(error)
-        item["last_attempt_at"] = datetime.now().isoformat()
-        remaining.append(item)
-
-        logger.warning(
-            f"[GOOGLE SHEETS QUEUE] Retry failed | "
-            f"key={queue_key} attempts={item['attempts']} error={error}"
+    if not accepted:
+        logger.error(
+            "[GOOGLE SHEETS ASYNC] "
+            "Failed to queue memory "
+            f"decision report: {error}"
         )
+        return False
 
-    save_google_sheets_retry_queue(remaining)
+    logger.info(
+        "[GOOGLE SHEETS ASYNC] "
+        "Memory decision report queued"
+    )
 
-    if flushed:
-        logger.info(f"[GOOGLE SHEETS QUEUE] Flushed count={flushed}")
+    return True
 
-    return flushed
+
+def flush_google_sheets_retry_queue(
+    max_items=5,
+):
+    """
+    Legacy compatibility entry point.
+
+    IMPORTANT:
+    This no longer performs retry HTTP or retry-file I/O
+    on the caller thread.
+
+    It only schedules a background retry request.
+    """
+
+    _request_google_sheets_retry_flush(
+        max_items=max_items,
+    )
+
+    return 0
+
+
+# Start the daemon worker during module/bootstrap time.
+#
+# This performs NO network access. The worker immediately
+# blocks on Queue.get() until telemetry is submitted.
+#
+# Result: the first live setup/execution event does not pay
+# Python thread-creation latency.
+if (
+    ENABLE_GOOGLE_SHEETS_LOGGING
+    and GOOGLE_SHEETS_ASYNC_NONBLOCKING
+):
+    _ensure_google_sheets_worker_started()
