@@ -47,16 +47,70 @@ def as_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+def write_json(
+    path: Path,
+    payload: dict[str, Any],
+) -> None:
+    """
+    Atomically publish the latest basis-calibration status.
+    """
+
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    temporary_path = path.with_name(
+        f".{path.name}.tmp"
+    )
+
+    temporary_path.write_text(
+        json.dumps(
+            payload,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    os.replace(
+        temporary_path,
+        path,
+    )
 
 
-def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def append_jsonl(
+    path: Path,
+    payload: dict[str, Any],
+) -> None:
+    """
+    Durably append one basis observation.
 
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    Phase 5AC normally samples only every few seconds, so an
+    fsync per observation is acceptable for useful partial
+    session recovery.
+    """
+
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    with path.open(
+        "a",
+        encoding="utf-8",
+    ) as f:
+        f.write(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+
+        f.flush()
+        os.fsync(
+            f.fileno()
+        )
 
 
 def deep_find(obj: Any, key: str) -> Any:
@@ -126,9 +180,16 @@ def initialize_mt5(mt5_symbol: str) -> dict[str, Any]:
     selected = mt5.symbol_select(mt5_symbol, True)
 
     if not selected:
+        error = (
+            "mt5.symbol_select failed for "
+            f"{mt5_symbol}: {mt5.last_error()}"
+        )
+
+        shutdown_mt5()
+
         return {
             "ok": False,
-            "error": f"mt5.symbol_select failed for {mt5_symbol}: {mt5.last_error()}",
+            "error": error,
         }
 
     return {
@@ -220,214 +281,898 @@ def extract_rithmic_quote(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def summarize_basis(records: list[dict[str, Any]]) -> dict[str, Any]:
-    valid = [r for r in records if r.get("basis_valid")]
+BASIS_SAMPLE_EVENT_TYPES = frozenset(
+    {
+        "last_trade",
+        "best_bid_offer",
+        "order_book",
+    }
+)
 
-    basis_values = [as_float(r.get("basis")) for r in valid]
-    abs_basis_values = [abs(x) for x in basis_values]
 
-    basis_changes = []
-    for prev, cur in zip(basis_values, basis_values[1:]):
-        basis_changes.append(cur - prev)
+def _safe_symbol_for_file(
+    value: str,
+) -> str:
+    safe = str(value).strip().upper()
 
-    if not valid:
+    for old, new in (
+        ("/", "_"),
+        ("\\", "_"),
+        (".", "_"),
+        (" ", "_"),
+        (":", "_"),
+    ):
+        safe = safe.replace(
+            old,
+            new,
+        )
+
+    return safe
+
+
+def resolve_rithmic_symbol(
+    cli_symbol: str | None,
+    configured_symbol: str | None,
+) -> str:
+    """
+    Resolve only an explicit CLI or configured active contract.
+
+    There is deliberately no dated futures fallback.
+    """
+
+    cli = str(
+        cli_symbol or ""
+    ).strip()
+
+    if cli:
+        return cli.upper()
+
+    configured = str(
+        configured_symbol or ""
+    ).strip()
+
+    if configured:
+        return configured.upper()
+
+    raise ValueError(
+        "No Rithmic contract configured. "
+        "Pass --rithmic-symbol explicitly "
+        "or set RITHMIC_SYMBOL to the "
+        "active contract."
+    )
+
+
+def should_sample_basis_event(
+    event: dict[str, Any],
+) -> bool:
+    """
+    Only actual market observations may trigger a timed basis
+    sample. Login, heartbeat and connection-recovery telemetry
+    must never cause stale cached futures prices to be sampled.
+    """
+
+    return (
+        event.get("event_type")
+        in BASIS_SAMPLE_EVENT_TYPES
+    )
+
+
+def classify_session_status(
+    latest_snapshot: dict[str, Any] | None,
+    terminal_recovery_status: str | None,
+) -> str:
+    """
+    Classify a normally-returning stream without treating
+    rejected login as successful completion.
+    """
+
+    if (
+        terminal_recovery_status
+        == "RECONNECT_EXHAUSTED"
+    ):
+        return "RECOVERY_EXHAUSTED"
+
+    connection = (
+        (latest_snapshot or {}).get(
+            "connection"
+        )
+        or {}
+    )
+
+    if (
+        latest_snapshot is not None
+        and not bool(
+            connection.get("login_ok")
+        )
+    ):
+        return "LOGIN_NOT_OK"
+
+    return "COMPLETED"
+
+
+class BasisSummaryAccumulator:
+    """
+    Constant-memory Phase 5AC basis summary.
+
+    Population variance uses Welford's online algorithm so the
+    result is equivalent to statistics.pstdev without retaining
+    every historical record.
+    """
+
+    def __init__(self) -> None:
+        self.sample_count = 0
+        self.valid_pair_count = 0
+
+        self.sum_basis = 0.0
+        self.sum_abs_basis = 0.0
+
+        self.min_basis: float | None = None
+        self.max_basis: float | None = None
+
+        self.mean_basis = 0.0
+        self.m2_basis = 0.0
+
+        self.previous_valid_basis: (
+            float | None
+        ) = None
+
+        self.max_abs_basis_jump = 0.0
+
+    def add_record(
+        self,
+        record: dict[str, Any],
+    ) -> None:
+        self.sample_count += 1
+
+        if not bool(
+            record.get("basis_valid")
+        ):
+            return
+
+        value = as_float(
+            record.get("basis")
+        )
+
+        self.valid_pair_count += 1
+
+        self.sum_basis += value
+        self.sum_abs_basis += abs(
+            value
+        )
+
+        if (
+            self.min_basis is None
+            or value < self.min_basis
+        ):
+            self.min_basis = value
+
+        if (
+            self.max_basis is None
+            or value > self.max_basis
+        ):
+            self.max_basis = value
+
+        delta = (
+            value
+            - self.mean_basis
+        )
+
+        self.mean_basis += (
+            delta
+            / self.valid_pair_count
+        )
+
+        delta2 = (
+            value
+            - self.mean_basis
+        )
+
+        self.m2_basis += (
+            delta
+            * delta2
+        )
+
+        if (
+            self.previous_valid_basis
+            is not None
+        ):
+            jump = abs(
+                value
+                - self.previous_valid_basis
+            )
+
+            self.max_abs_basis_jump = max(
+                self.max_abs_basis_jump,
+                jump,
+            )
+
+        self.previous_valid_basis = value
+
+    def summary(
+        self,
+    ) -> dict[str, Any]:
+        if (
+            self.valid_pair_count == 0
+        ):
+            return {
+                "sample_count": (
+                    self.sample_count
+                ),
+                "valid_pair_count": 0,
+                "valid_pair_rate": 0.0,
+                "basis_ready_observe_only": False,
+                "reason": (
+                    "NO_VALID_BASIS_PAIRS"
+                ),
+            }
+
+        valid_pair_rate = (
+            self.valid_pair_count
+            / self.sample_count
+            if self.sample_count
+            else 0.0
+        )
+
+        population_variance = (
+            self.m2_basis
+            / self.valid_pair_count
+        )
+
+        population_std = (
+            population_variance ** 0.5
+        )
+
         return {
-            "sample_count": len(records),
-            "valid_pair_count": 0,
-            "valid_pair_rate": 0.0,
-            "basis_ready_observe_only": False,
-            "reason": "NO_VALID_BASIS_PAIRS",
+            "sample_count": (
+                self.sample_count
+            ),
+            "valid_pair_count": (
+                self.valid_pair_count
+            ),
+            "valid_pair_rate": round(
+                valid_pair_rate,
+                4,
+            ),
+            "avg_basis": round(
+                self.sum_basis
+                / self.valid_pair_count,
+                6,
+            ),
+            "min_basis": round(
+                float(self.min_basis),
+                6,
+            ),
+            "max_basis": round(
+                float(self.max_basis),
+                6,
+            ),
+            "avg_abs_basis": round(
+                self.sum_abs_basis
+                / self.valid_pair_count,
+                6,
+            ),
+            "basis_std": round(
+                population_std,
+                6,
+            ),
+            "max_abs_basis_jump": round(
+                self.max_abs_basis_jump,
+                6,
+            ),
+            "basis_ready_observe_only": bool(
+                self.valid_pair_count >= 30
+                and valid_pair_rate >= 0.90
+                and population_std <= 2.0
+            ),
+            "decision_grade_ready": False,
+            "automation_allowed": False,
+            "decision_impact": "NONE",
+            "can_influence_decision": False,
         }
 
-    avg_basis = sum(basis_values) / len(basis_values)
 
-    return {
-        "sample_count": len(records),
-        "valid_pair_count": len(valid),
-        "valid_pair_rate": round(len(valid) / len(records), 4) if records else 0.0,
-        "avg_basis": round(avg_basis, 6),
-        "min_basis": round(min(basis_values), 6),
-        "max_basis": round(max(basis_values), 6),
-        "avg_abs_basis": round(sum(abs_basis_values) / len(abs_basis_values), 6),
-        "basis_std": round(statistics.pstdev(basis_values), 6) if len(basis_values) >= 2 else 0.0,
-        "max_abs_basis_jump": round(max([abs(x) for x in basis_changes], default=0.0), 6),
-        "basis_ready_observe_only": bool(
-            len(valid) >= 30
-            and len(valid) / len(records) >= 0.90
-            and (statistics.pstdev(basis_values) if len(basis_values) >= 2 else 0.0) <= 2.0
-        ),
-        "decision_grade_ready": False,
-        "automation_allowed": False,
-        "decision_impact": "NONE",
-        "can_influence_decision": False,
-    }
+def summarize_basis(
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """
+    Backward-compatible offline helper.
+
+    Live Phase 5AC uses BasisSummaryAccumulator directly and
+    therefore never retains an unbounded records list.
+    """
+
+    accumulator = BasisSummaryAccumulator()
+
+    for record in records:
+        accumulator.add_record(
+            record
+        )
+
+    return accumulator.summary()
 
 
 async def main_async() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mt5-symbol", default="XAUUSD")
-    parser.add_argument("--rithmic-symbol", default="MGCQ6")
-    parser.add_argument("--exchange", default="COMEX")
-    parser.add_argument("--duration-seconds", type=int, default=300)
-    parser.add_argument("--snapshot-interval-seconds", type=int, default=3)
-    parser.add_argument("--include-order-book", action="store_true")
+
+    parser.add_argument(
+        "--mt5-symbol",
+        default="XAUUSD",
+    )
+
+    parser.add_argument(
+        "--rithmic-symbol",
+        default=None,
+    )
+
+    parser.add_argument(
+        "--exchange",
+        default="COMEX",
+    )
+
+    parser.add_argument(
+        "--duration-seconds",
+        type=int,
+        default=300,
+    )
+
+    parser.add_argument(
+        "--snapshot-interval-seconds",
+        type=int,
+        default=3,
+    )
+
+    parser.add_argument(
+        "--include-order-book",
+        action="store_true",
+    )
+
     args = parser.parse_args()
 
-    ORDER_FLOW_DIR.mkdir(parents=True, exist_ok=True)
-
-    jsonl_path = ORDER_FLOW_DIR / "phase5ac_xauusd_mgcq6_basis_history.jsonl"
-    jsonl_path.write_text("", encoding="utf-8")
-
-    print("[PHASE 5AC XAUUSD ↔ RITHMIC BASIS CALIBRATION]")
-    print(f"mt5_symbol = {args.mt5_symbol}")
-    print(f"rithmic_symbol = {args.rithmic_symbol}")
-    print(f"exchange = {args.exchange}")
-    print(f"duration_seconds = {args.duration_seconds}")
-    print(f"snapshot_interval_seconds = {args.snapshot_interval_seconds}")
-    print("mode = OBSERVE_ONLY")
-    print("decision_impact = NONE")
-    print("can_influence_decision = False")
-    print("trade_action = NO_AUTO_TRADE")
-    print("")
-
-    mt5_status = initialize_mt5(args.mt5_symbol)
-
-    if not mt5_status.get("ok"):
-        report = {
-            "phase": PHASE,
-            "updated_at": datetime.now().isoformat(timespec="seconds"),
-            "status": "FAILED_MT5_NOT_AVAILABLE",
-            "mt5_status": mt5_status,
-            "mode": "OBSERVE_ONLY",
-            "decision_impact": "NONE",
-            "can_influence_decision": False,
-            "trade_action": "NO_AUTO_TRADE",
-        }
-        write_json(OUT_JSON, report)
-        print(f"[STOP] {mt5_status.get('error')}")
-        return
-
-    config = build_rithmic_config(symbol=args.rithmic_symbol, exchange=args.exchange)
-    client = RithmicMarketDataClient(config)
-    cache = RithmicRollingStateCache(symbol=args.rithmic_symbol, exchange=args.exchange)
-
-    records: list[dict[str, Any]] = []
-    next_snapshot_at = time.time()
-    end_time = time.time() + args.duration_seconds
+    if load_dotenv is not None:
+        load_dotenv(
+            ROOT / ".env"
+        )
 
     try:
+        rithmic_symbol = (
+            resolve_rithmic_symbol(
+                args.rithmic_symbol,
+                os.getenv(
+                    "RITHMIC_SYMBOL"
+                ),
+            )
+        )
+    except ValueError as exc:
+        parser.error(
+            str(exc)
+        )
+
+    ORDER_FLOW_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    safe_mt5_symbol = (
+        _safe_symbol_for_file(
+            args.mt5_symbol
+        )
+    )
+
+    safe_rithmic_symbol = (
+        _safe_symbol_for_file(
+            rithmic_symbol
+        )
+    )
+
+    jsonl_path = (
+        ORDER_FLOW_DIR
+        / (
+            "phase5ac_"
+            f"{safe_mt5_symbol}_"
+            f"{safe_rithmic_symbol}_"
+            "basis_history.jsonl"
+        )
+    )
+
+    jsonl_path.write_text(
+        "",
+        encoding="utf-8",
+    )
+
+    print(
+        "[PHASE 5AC XAUUSD "
+        "↔ RITHMIC BASIS CALIBRATION]"
+    )
+
+    print(
+        f"mt5_symbol = "
+        f"{args.mt5_symbol}"
+    )
+
+    print(
+        f"rithmic_symbol = "
+        f"{rithmic_symbol}"
+    )
+
+    print(
+        f"exchange = "
+        f"{args.exchange}"
+    )
+
+    print(
+        f"duration_seconds = "
+        f"{args.duration_seconds}"
+    )
+
+    print(
+        "snapshot_interval_seconds = "
+        f"{args.snapshot_interval_seconds}"
+    )
+
+    print("mode = OBSERVE_ONLY")
+    print("decision_impact = NONE")
+    print(
+        "can_influence_decision = False"
+    )
+    print(
+        "trade_action = NO_AUTO_TRADE"
+    )
+    print("")
+
+    accumulator = (
+        BasisSummaryAccumulator()
+    )
+
+    session_status = "INITIALIZING"
+    error_type: str | None = None
+
+    terminal_recovery_status: (
+        str | None
+    ) = None
+
+    last_connection_recovery: (
+        dict[str, Any] | None
+    ) = None
+
+    latest_snapshot: (
+        dict[str, Any] | None
+    ) = None
+
+    started_at = (
+        datetime.now().isoformat(
+            timespec="seconds"
+        )
+    )
+
+    interpretation = (
+        f"basis = MT5_{args.mt5_symbol}_mid "
+        f"- Rithmic_{rithmic_symbol}_mid"
+    )
+
+    recommendation = (
+        "Use basis calibration only to understand "
+        f"{args.mt5_symbol} vs {rithmic_symbol} "
+        "price distance. Do not allow Rithmic to "
+        "influence decisions until repeated "
+        "production sessions pass."
+    )
+
+    def write_progress(
+        *,
+        mt5_status: (
+            dict[str, Any] | None
+        ) = None,
+    ) -> None:
+        write_json(
+            OUT_JSON,
+            {
+                "phase": PHASE,
+                "started_at": started_at,
+                "updated_at": (
+                    datetime.now().isoformat(
+                        timespec="seconds"
+                    )
+                ),
+                "session_status": (
+                    session_status
+                ),
+                "error_type": error_type,
+                "mt5_symbol": (
+                    args.mt5_symbol
+                ),
+                "rithmic_symbol": (
+                    rithmic_symbol
+                ),
+                "exchange": (
+                    args.exchange
+                ),
+                "duration_seconds": (
+                    args.duration_seconds
+                ),
+                "snapshot_interval_seconds": (
+                    args.snapshot_interval_seconds
+                ),
+                "include_order_book": (
+                    args.include_order_book
+                ),
+                "jsonl": str(
+                    jsonl_path
+                ),
+                "mt5_status": (
+                    mt5_status
+                ),
+                "summary": (
+                    accumulator.summary()
+                ),
+                "last_connection_recovery": (
+                    last_connection_recovery
+                ),
+                "interpretation": (
+                    interpretation
+                ),
+                "mode": "OBSERVE_ONLY",
+                "decision_impact": "NONE",
+                "can_influence_decision": False,
+                "safe_for_execution": False,
+                "trade_action": (
+                    "NO_AUTO_TRADE"
+                ),
+                "recommendation": (
+                    recommendation
+                ),
+            },
+        )
+
+    mt5_status = initialize_mt5(
+        args.mt5_symbol
+    )
+
+    if not mt5_status.get("ok"):
+        session_status = (
+            "FAILED_MT5_NOT_AVAILABLE"
+        )
+
+        write_progress(
+            mt5_status=mt5_status,
+        )
+
+        print(
+            "[STOP] "
+            f"{mt5_status.get('error')}"
+        )
+
+        return
+
+    next_snapshot_at = time.time()
+
+    end_time = (
+        time.time()
+        + max(
+            0,
+            args.duration_seconds,
+        )
+    )
+
+    try:
+        config = build_rithmic_config(
+            symbol=rithmic_symbol,
+            exchange=args.exchange,
+        )
+
+        client = (
+            RithmicMarketDataClient(
+                config
+            )
+        )
+
+        cache = (
+            RithmicRollingStateCache(
+                symbol=rithmic_symbol,
+                exchange=args.exchange,
+            )
+        )
+
+        session_status = "RUNNING"
+
+        write_progress(
+            mt5_status=mt5_status,
+        )
+
         async for event in client.stream(
-            duration_seconds=args.duration_seconds,
-            include_order_book=args.include_order_book,
+            duration_seconds=(
+                args.duration_seconds
+            ),
+            include_order_book=(
+                args.include_order_book
+            ),
         ):
-            snapshot = cache.update(event)
+            latest_snapshot = cache.update(
+                event
+            )
+
+            snapshot = latest_snapshot
+
             now = time.time()
+
+            event_type = event.get(
+                "event_type"
+            )
+
+            if (
+                event_type
+                == "connection_recovery"
+            ):
+                last_connection_recovery = {
+                    "status": (
+                        event.get("status")
+                    ),
+                    "attempt": (
+                        event.get("attempt")
+                    ),
+                    "max_attempts": (
+                        event.get(
+                            "max_attempts"
+                        )
+                    ),
+                    "error_type": (
+                        event.get(
+                            "error_type"
+                        )
+                    ),
+                    "received_at_epoch": (
+                        event.get(
+                            "received_at_epoch"
+                        )
+                    ),
+                    "decision_impact": (
+                        "NONE"
+                    ),
+                    "can_influence_decision": False,
+                    "safe_for_execution": False,
+                }
+
+                terminal_recovery_status = (
+                    str(
+                        event.get(
+                            "status"
+                        )
+                        or ""
+                    )
+                )
+
+                write_progress(
+                    mt5_status=mt5_status,
+                )
+
+            # Connection/login/heartbeat telemetry may update
+            # observer state, but must never trigger a basis
+            # observation from cached futures prices.
+            if not should_sample_basis_event(
+                event
+            ):
+                continue
 
             if now < next_snapshot_at:
                 continue
 
-            mt5_quote = get_mt5_quote(args.mt5_symbol)
-            rithmic_quote = extract_rithmic_quote(snapshot)
+            mt5_quote = get_mt5_quote(
+                args.mt5_symbol
+            )
 
-            basis_valid = bool(mt5_quote.get("ok") and rithmic_quote.get("ok"))
+            rithmic_quote = (
+                extract_rithmic_quote(
+                    snapshot
+                )
+            )
+
+            basis_valid = bool(
+                mt5_quote.get("ok")
+                and rithmic_quote.get("ok")
+            )
 
             basis = None
+
             if basis_valid:
-                basis = round(as_float(mt5_quote.get("mid")) - as_float(rithmic_quote.get("mid")), 6)
+                basis = round(
+                    as_float(
+                        mt5_quote.get(
+                            "mid"
+                        )
+                    )
+                    - as_float(
+                        rithmic_quote.get(
+                            "mid"
+                        )
+                    ),
+                    6,
+                )
 
             record = {
                 "phase": PHASE,
-                "recorded_at": datetime.now().isoformat(timespec="seconds"),
-                "elapsed_seconds": round(args.duration_seconds - max(0, end_time - now), 3),
-                "mt5_symbol": args.mt5_symbol,
-                "rithmic_symbol": args.rithmic_symbol,
+                "recorded_at": (
+                    datetime.now().isoformat(
+                        timespec="seconds"
+                    )
+                ),
+                "elapsed_seconds": round(
+                    args.duration_seconds
+                    - max(
+                        0,
+                        end_time - now,
+                    ),
+                    3,
+                ),
+                "mt5_symbol": (
+                    args.mt5_symbol
+                ),
+                "rithmic_symbol": (
+                    rithmic_symbol
+                ),
                 "mt5": mt5_quote,
-                "rithmic": rithmic_quote,
+                "rithmic": (
+                    rithmic_quote
+                ),
                 "basis": basis,
-                "basis_valid": basis_valid,
-                "interpretation": "basis = MT5_XAUUSD_mid - Rithmic_MGCQ6_mid",
+                "basis_valid": (
+                    basis_valid
+                ),
+                "interpretation": (
+                    interpretation
+                ),
                 "decision_impact": "NONE",
                 "can_influence_decision": False,
-                "trade_action": "NO_AUTO_TRADE",
+                "safe_for_execution": False,
+                "trade_action": (
+                    "NO_AUTO_TRADE"
+                ),
             }
 
-            append_jsonl(jsonl_path, record)
-            records.append(record)
-
-            print(
-                f"[BASIS] samples={len(records)} "
-                f"valid={basis_valid} "
-                f"mt5_mid={mt5_quote.get('mid')} "
-                f"rithmic_mid={rithmic_quote.get('mid')} "
-                f"basis={basis} "
-                f"mt5_spread={mt5_quote.get('spread')} "
-                f"rithmic_spread={rithmic_quote.get('spread')}"
+            append_jsonl(
+                jsonl_path,
+                record,
             )
 
-            next_snapshot_at = now + args.snapshot_interval_seconds
+            accumulator.add_record(
+                record
+            )
+
+            summary = (
+                accumulator.summary()
+            )
+
+            print(
+                "[BASIS] "
+                f"samples="
+                f"{summary.get('sample_count')} "
+                f"valid={basis_valid} "
+                f"mt5_mid="
+                f"{mt5_quote.get('mid')} "
+                f"rithmic_mid="
+                f"{rithmic_quote.get('mid')} "
+                f"basis={basis} "
+                f"mt5_spread="
+                f"{mt5_quote.get('spread')} "
+                f"rithmic_spread="
+                f"{rithmic_quote.get('spread')}"
+            )
+
+            next_snapshot_at = (
+                now
+                + max(
+                    1,
+                    args.snapshot_interval_seconds,
+                )
+            )
+
+            write_progress(
+                mt5_status=mt5_status,
+            )
+
+        session_status = (
+            classify_session_status(
+                latest_snapshot,
+                terminal_recovery_status,
+            )
+        )
+
+        write_progress(
+            mt5_status=mt5_status,
+        )
+
+    except BaseException as exc:
+        error_type = (
+            type(exc).__name__
+        )
+
+        if isinstance(
+            exc,
+            (
+                asyncio.CancelledError,
+                KeyboardInterrupt,
+            ),
+        ):
+            session_status = (
+                "INTERRUPTED"
+            )
+        else:
+            session_status = "ERROR"
+
+        try:
+            write_progress(
+                mt5_status=mt5_status,
+            )
+        except Exception:
+            pass
+
+        raise
 
     finally:
         shutdown_mt5()
 
-    summary = summarize_basis(records)
-
-    report = {
-        "phase": PHASE,
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
-        "mt5_symbol": args.mt5_symbol,
-        "rithmic_symbol": args.rithmic_symbol,
-        "exchange": args.exchange,
-        "jsonl": str(jsonl_path),
-        "mode": "OBSERVE_ONLY",
-        "decision_impact": "NONE",
-        "can_influence_decision": False,
-        "safe_for_execution": False,
-        "trade_action": "NO_AUTO_TRADE",
-        "summary": summary,
-        "recommendation": (
-            "Use basis calibration only to understand XAUUSD vs MGCQ6 price distance. "
-            "Do not allow Rithmic to influence decisions until repeated production sessions pass."
-        ),
-    }
-
-    write_json(OUT_JSON, report)
+    summary = (
+        accumulator.summary()
+    )
 
     lines = [
-        "[PHASE 5AC XAUUSD ↔ RITHMIC BASIS CALIBRATION]",
-        f"updated_at = {report['updated_at']}",
-        f"mt5_symbol = {args.mt5_symbol}",
-        f"rithmic_symbol = {args.rithmic_symbol}",
-        f"mode = {report['mode']}",
-        f"decision_impact = {report['decision_impact']}",
-        f"can_influence_decision = {report['can_influence_decision']}",
-        f"safe_for_execution = {report['safe_for_execution']}",
-        f"trade_action = {report['trade_action']}",
+        "[PHASE 5AC XAUUSD "
+        "↔ RITHMIC BASIS CALIBRATION]",
+        f"updated_at = "
+        f"{datetime.now().isoformat(timespec='seconds')}",
+        f"session_status = "
+        f"{session_status}",
+        f"mt5_symbol = "
+        f"{args.mt5_symbol}",
+        f"rithmic_symbol = "
+        f"{rithmic_symbol}",
+        f"mode = OBSERVE_ONLY",
+        f"decision_impact = NONE",
+        f"can_influence_decision = False",
+        f"safe_for_execution = False",
+        f"trade_action = NO_AUTO_TRADE",
         "",
         "[SUMMARY]",
-        f"sample_count = {summary.get('sample_count')}",
-        f"valid_pair_count = {summary.get('valid_pair_count')}",
-        f"valid_pair_rate = {summary.get('valid_pair_rate')}",
-        f"avg_basis = {summary.get('avg_basis')}",
-        f"min_basis = {summary.get('min_basis')}",
-        f"max_basis = {summary.get('max_basis')}",
-        f"avg_abs_basis = {summary.get('avg_abs_basis')}",
-        f"basis_std = {summary.get('basis_std')}",
-        f"max_abs_basis_jump = {summary.get('max_abs_basis_jump')}",
-        f"basis_ready_observe_only = {summary.get('basis_ready_observe_only')}",
-        f"decision_grade_ready = {summary.get('decision_grade_ready')}",
-        f"automation_allowed = {summary.get('automation_allowed')}",
+        f"sample_count = "
+        f"{summary.get('sample_count')}",
+        f"valid_pair_count = "
+        f"{summary.get('valid_pair_count')}",
+        f"valid_pair_rate = "
+        f"{summary.get('valid_pair_rate')}",
+        f"avg_basis = "
+        f"{summary.get('avg_basis')}",
+        f"min_basis = "
+        f"{summary.get('min_basis')}",
+        f"max_basis = "
+        f"{summary.get('max_basis')}",
+        f"avg_abs_basis = "
+        f"{summary.get('avg_abs_basis')}",
+        f"basis_std = "
+        f"{summary.get('basis_std')}",
+        f"max_abs_basis_jump = "
+        f"{summary.get('max_abs_basis_jump')}",
+        f"basis_ready_observe_only = "
+        f"{summary.get('basis_ready_observe_only')}",
+        f"decision_grade_ready = "
+        f"{summary.get('decision_grade_ready')}",
+        f"automation_allowed = "
+        f"{summary.get('automation_allowed')}",
         "",
         "[RECOMMENDATION]",
-        report["recommendation"],
+        recommendation,
         "",
         f"json = {OUT_JSON}",
         f"jsonl = {jsonl_path}",
         f"summary = {OUT_TXT}",
     ]
 
-    OUT_TXT.write_text("\n".join(lines), encoding="utf-8")
+    OUT_TXT.write_text(
+        "\n".join(lines),
+        encoding="utf-8",
+    )
+
     print("")
-    print("\n".join(lines))
+    print(
+        "\n".join(lines)
+    )
 
 
 def main() -> None:

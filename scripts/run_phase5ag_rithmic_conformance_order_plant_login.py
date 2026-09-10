@@ -69,6 +69,71 @@ def build_rithmic_config(*, symbol: str, exchange: str) -> RithmicConfig:
     return RithmicConfig(**kwargs)
 
 
+def resolve_rithmic_symbol(
+    cli_symbol: str | None,
+    configured_symbol: str | None,
+) -> str:
+    """
+    Resolve an explicit/current contract only.
+
+    The ORDER_PLANT conformance login does not subscribe to
+    market data, but RithmicMarketDataClient still requires
+    explicit contract identity and must never silently choose
+    an old dated contract.
+    """
+
+    cli = str(
+        cli_symbol or ""
+    ).strip()
+
+    if cli:
+        return cli.upper()
+
+    configured = str(
+        configured_symbol or ""
+    ).strip()
+
+    if configured:
+        return configured.upper()
+
+    raise ValueError(
+        "No Rithmic contract configured. "
+        "Pass --symbol explicitly or set "
+        "RITHMIC_SYMBOL to the active contract."
+    )
+
+
+async def close_transport_quietly(
+    client: Any,
+) -> None:
+    """
+    Close only the websocket transport.
+
+    Phase 5AG performs a custom ORDER_PLANT login. Do not send
+    the generic provider logout request without explicit
+    protocol evidence that the same logout flow is required.
+    """
+
+    ws = getattr(
+        client,
+        "ws",
+        None,
+    )
+
+    client.ws = None
+
+    if ws is None:
+        return
+
+    try:
+        await ws.close(
+            1000,
+            "phase5ag conformance done",
+        )
+    except Exception:
+        pass
+
+
 def get_order_plant_enum(pb: dict[str, Any]) -> int:
     enum_obj = pb["request_login_pb2"].RequestLogin.SysInfraType
 
@@ -95,107 +160,302 @@ def get_order_plant_enum(pb: dict[str, Any]) -> int:
 
 async def main_async() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--symbol", default="MGCQ6")
-    parser.add_argument("--exchange", default="COMEX")
-    parser.add_argument("--duration-seconds", type=int, default=3600)
-    parser.add_argument("--heartbeat-seconds", type=int, default=30)
+
+    parser.add_argument(
+        "--symbol",
+        default=None,
+    )
+
+    parser.add_argument(
+        "--exchange",
+        default="COMEX",
+    )
+
+    parser.add_argument(
+        "--duration-seconds",
+        type=int,
+        default=3600,
+    )
+
+    parser.add_argument(
+        "--heartbeat-seconds",
+        type=int,
+        default=30,
+    )
+
     args = parser.parse_args()
 
     if load_dotenv is not None:
-        load_dotenv(ROOT / ".env")
+        load_dotenv(
+            ROOT / ".env"
+        )
 
-    app_name = os.getenv("RITHMIC_APP_NAME", "elme:MT5_XAUUSD_RITHMIC_OBSERVE_ONLY")
+    try:
+        symbol = (
+            resolve_rithmic_symbol(
+                args.symbol,
+                os.getenv(
+                    "RITHMIC_SYMBOL"
+                ),
+            )
+        )
+    except ValueError as exc:
+        parser.error(
+            str(exc)
+        )
 
-    config = build_rithmic_config(symbol=args.symbol, exchange=args.exchange)
-    client = RithmicMarketDataClient(config)
+    app_name = os.getenv(
+        "RITHMIC_APP_NAME",
+        "elme:MT5_XAUUSD_RITHMIC_OBSERVE_ONLY",
+    )
 
-    print("[PHASE 5AG RITHMIC CONFORMANCE ORDER PLANT LOGIN]")
-    print(f"system_name = {config.system_name}")
-    print(f"symbol = {args.symbol}")
-    print(f"exchange = {args.exchange}")
-    print(f"app_name = {app_name}")
-    print("infra_type = ORDER_PLANT")
-    print("mode = CONFORMANCE_LOGIN_ONLY")
-    print("decision_impact = NONE")
-    print("can_influence_decision = False")
-    print("trade_action = NO_AUTO_TRADE")
-    print("orders_sent = 0")
+    config = build_rithmic_config(
+        symbol=symbol,
+        exchange=args.exchange,
+    )
+
+    client = RithmicMarketDataClient(
+        config
+    )
+
+    print(
+        "[PHASE 5AG RITHMIC "
+        "CONFORMANCE ORDER PLANT LOGIN]"
+    )
+
+    print(
+        f"system_name = "
+        f"{config.system_name}"
+    )
+
+    print(
+        f"symbol = {symbol}"
+    )
+
+    print(
+        f"exchange = "
+        f"{args.exchange}"
+    )
+
+    print(
+        f"app_name = {app_name}"
+    )
+
+    print(
+        "infra_type = ORDER_PLANT"
+    )
+
+    print(
+        "mode = CONFORMANCE_LOGIN_ONLY"
+    )
+
+    print(
+        "decision_impact = NONE"
+    )
+
+    print(
+        "can_influence_decision = False"
+    )
+
+    print(
+        "trade_action = NO_AUTO_TRADE"
+    )
+
+    print(
+        "orders_sent = 0"
+    )
+
     print("")
 
-    started_at = datetime.now().isoformat(timespec="seconds")
+    started_at = (
+        datetime.now().isoformat(
+            timespec="seconds"
+        )
+    )
+
     login_ok = False
-    login_response: dict[str, Any] = {}
+
+    login_response: dict[
+        str,
+        Any,
+    ] = {}
+
     error: str | None = None
 
     try:
         await client.connect()
 
-        rq = client.pb["request_login_pb2"].RequestLogin()
+        rq = (
+            client.pb[
+                "request_login_pb2"
+            ].RequestLogin()
+        )
+
         rq.template_id = 10
         rq.template_version = "3.9"
-        rq.user_msg.append("phase5ag_conformance_order_plant_login")
+
+        rq.user_msg.append(
+            "phase5ag_conformance_"
+            "order_plant_login"
+        )
 
         rq.user = config.username
         rq.password = config.password
         rq.app_name = app_name
         rq.app_version = "0.1.0"
-        rq.system_name = config.system_name
-        rq.infra_type = get_order_plant_enum(client.pb)
+        rq.system_name = (
+            config.system_name
+        )
 
-        await client.ws.send(rq.SerializeToString())
+        rq.infra_type = (
+            get_order_plant_enum(
+                client.pb
+            )
+        )
+
+        await client.ws.send(
+            rq.SerializeToString()
+        )
 
         raw = await client.ws.recv()
-        rp = client.pb["response_login_pb2"].ResponseLogin()
-        rp.ParseFromString(raw)
 
-        rp_code = list(rp.rp_code)
-        login_ok = rp_code == ["0"] or rp_code == [0]
+        rp = (
+            client.pb[
+                "response_login_pb2"
+            ].ResponseLogin()
+        )
+
+        rp.ParseFromString(
+            raw
+        )
+
+        rp_code = list(
+            rp.rp_code
+        )
+
+        login_ok = (
+            rp_code == ["0"]
+            or rp_code == [0]
+        )
 
         login_response = {
             "rp_code": rp_code,
             "ok": login_ok,
-            "fcm_id": getattr(rp, "fcm_id", None),
-            "ib_id": getattr(rp, "ib_id", None),
-            "heartbeat_interval": getattr(rp, "heartbeat_interval", None),
-            "unique_user_id": getattr(rp, "unique_user_id", None),
+            "fcm_id": getattr(
+                rp,
+                "fcm_id",
+                None,
+            ),
+            "ib_id": getattr(
+                rp,
+                "ib_id",
+                None,
+            ),
+            "heartbeat_interval": getattr(
+                rp,
+                "heartbeat_interval",
+                None,
+            ),
+            "unique_user_id": getattr(
+                rp,
+                "unique_user_id",
+                None,
+            ),
         }
 
-        print(f"[LOGIN ORDER PLANT] ok={login_ok} rp_code={rp_code}")
-        print("Leave this window running. Now email Rithmic that the app is logged in.")
-        print("Press Ctrl+C only after Rithmic says they are done or after duration ends.")
+        print(
+            "[LOGIN ORDER PLANT] "
+            f"ok={login_ok} "
+            f"rp_code={rp_code}"
+        )
+
+        print(
+            "Leave this window running. "
+            "Now email Rithmic that the "
+            "app is logged in."
+        )
+
+        print(
+            "Press Ctrl+C only after Rithmic "
+            "says they are done or after "
+            "duration ends."
+        )
+
         print("")
 
-        end_time = time.time() + args.duration_seconds
+        end_time = (
+            time.time()
+            + args.duration_seconds
+        )
+
         heartbeat_count = 0
 
-        while time.time() < end_time:
-            await asyncio.sleep(args.heartbeat_seconds)
+        while (
+            time.time()
+            < end_time
+        ):
+            await asyncio.sleep(
+                args.heartbeat_seconds
+            )
+
             heartbeat_count += 1
 
             try:
                 await client.send_heartbeat()
-                print(f"[HEARTBEAT] {heartbeat_count} ok at {datetime.now().isoformat(timespec='seconds')}")
+
+                print(
+                    "[HEARTBEAT] "
+                    f"{heartbeat_count} ok at "
+                    f"{datetime.now().isoformat(timespec='seconds')}"
+                )
+
             except Exception as exc:
-                print(f"[HEARTBEAT WARNING] {repr(exc)}")
+                print(
+                    "[HEARTBEAT WARNING] "
+                    f"{repr(exc)}"
+                )
 
     except KeyboardInterrupt:
-        print("[STOPPED] Ctrl+C received.")
+        print(
+            "[STOPPED] Ctrl+C received."
+        )
+
     except Exception as exc:
         error = repr(exc)
-        print(f"[ERROR] {error}")
+
+        print(
+            f"[ERROR] {error}"
+        )
+
+    finally:
+        await close_transport_quietly(
+            client
+        )
 
     report = {
         "phase": PHASE,
         "started_at": started_at,
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
-        "system_name": getattr(config, "system_name", None),
-        "symbol": args.symbol,
+        "updated_at": (
+            datetime.now().isoformat(
+                timespec="seconds"
+            )
+        ),
+        "system_name": getattr(
+            config,
+            "system_name",
+            None,
+        ),
+        "symbol": symbol,
         "exchange": args.exchange,
         "app_name": app_name,
         "infra_type": "ORDER_PLANT",
-        "mode": "CONFORMANCE_LOGIN_ONLY",
+        "mode": (
+            "CONFORMANCE_LOGIN_ONLY"
+        ),
         "login_ok": login_ok,
-        "login_response": login_response,
+        "login_response": (
+            login_response
+        ),
         "error": error,
         "decision_impact": "NONE",
         "can_influence_decision": False,
@@ -203,25 +463,45 @@ async def main_async() -> None:
         "trade_action": "NO_AUTO_TRADE",
         "orders_sent": 0,
         "recommendation": (
-            "If login_ok is True, notify Rithmic that app_name is logged into the order plant of Rithmic Test."
+            "If login_ok is True, notify "
+            "Rithmic that app_name is logged "
+            "into the order plant of "
+            "Rithmic Test."
         ),
     }
 
-    write_json(OUT_JSON, report)
+    write_json(
+        OUT_JSON,
+        report,
+    )
 
     lines = [
-        "[PHASE 5AG RITHMIC CONFORMANCE ORDER PLANT LOGIN]",
-        f"updated_at = {report['updated_at']}",
-        f"system_name = {report['system_name']}",
-        f"app_name = {report['app_name']}",
-        f"infra_type = {report['infra_type']}",
-        f"login_ok = {report['login_ok']}",
-        f"rp_code = {login_response.get('rp_code')}",
-        f"orders_sent = {report['orders_sent']}",
-        f"decision_impact = {report['decision_impact']}",
-        f"can_influence_decision = {report['can_influence_decision']}",
-        f"trade_action = {report['trade_action']}",
-        f"error = {report['error']}",
+        "[PHASE 5AG RITHMIC "
+        "CONFORMANCE ORDER PLANT LOGIN]",
+        f"updated_at = "
+        f"{report['updated_at']}",
+        f"system_name = "
+        f"{report['system_name']}",
+        f"symbol = "
+        f"{report['symbol']}",
+        f"app_name = "
+        f"{report['app_name']}",
+        f"infra_type = "
+        f"{report['infra_type']}",
+        f"login_ok = "
+        f"{report['login_ok']}",
+        f"rp_code = "
+        f"{login_response.get('rp_code')}",
+        f"orders_sent = "
+        f"{report['orders_sent']}",
+        f"decision_impact = "
+        f"{report['decision_impact']}",
+        f"can_influence_decision = "
+        f"{report['can_influence_decision']}",
+        f"trade_action = "
+        f"{report['trade_action']}",
+        f"error = "
+        f"{report['error']}",
         "",
         "[RECOMMENDATION]",
         report["recommendation"],
@@ -230,7 +510,10 @@ async def main_async() -> None:
         f"summary = {OUT_TXT}",
     ]
 
-    OUT_TXT.write_text("\n".join(lines), encoding="utf-8")
+    OUT_TXT.write_text(
+        "\n".join(lines),
+        encoding="utf-8",
+    )
 
 
 def main() -> None:
