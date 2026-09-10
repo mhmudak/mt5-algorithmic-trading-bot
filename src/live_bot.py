@@ -6647,6 +6647,35 @@ def is_mtf_conflict_candidate_already_tracked(setup_id, rejection_reason, execut
     MTF_CONFLICT_TRACKED_CACHE[key] = now_ts
     return False
 
+def _format_mtf_conflict_setup_reason(candidate):
+    """
+    Render the canonical strategy setup reason for MTF-conflict
+    operator visibility.
+
+    Notification-only. This must never influence execution,
+    geometry, RR, confirmation, recovery, or MTF decisions.
+    """
+
+    if not isinstance(candidate, dict):
+        return ""
+
+    reason = candidate.get("reason")
+
+    if reason is None:
+        return ""
+
+    reason_text = str(reason).strip()
+
+    if (
+        not reason_text
+        or reason_text.upper()
+        in {"N/A", "NONE", "NULL"}
+    ):
+        return ""
+
+    return f"Setup Reason: {reason_text}\n"
+
+
 def process_mtf_conflict_candidate(
     *,
     candidate,
@@ -6894,7 +6923,8 @@ def process_mtf_conflict_candidate(
                     f"Strategy Mode: {strategy_mode}\n"
                     f"Execution Mode: {execution_mode}\n"
                     f"Execution Allowed: {execution_allowed}\n"
-                    f"Execution Reason: {execution_reason}\n\n"
+                    f"Execution Reason: {execution_reason}\n"
+                    f"{_format_mtf_conflict_setup_reason(candidate)}\n"
                     f"Telegram Trigger: {'GOOD_RR' if good_rr_mtf_candidate else 'HIGH_SCORE'}\n"
                     f"Entry: {shadow_trade_plan.get('entry_price') if shadow_trade_plan else None}\n"
                     f"SL: {shadow_trade_plan.get('stop_loss') if shadow_trade_plan else None}\n"
