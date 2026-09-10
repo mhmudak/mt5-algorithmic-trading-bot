@@ -208,3 +208,100 @@ def evaluate_intrabar_subprofile_risk_guard(
         "candidate": candidate,
         "dynamic_rules_loaded": bool(load_dynamic_intrabar_subprofile_block_rules()),
     }
+
+# ============================================================
+# ASLS Entry-Model Execution Policy
+# ============================================================
+
+def evaluate_asls_entry_model_execution_policy(
+    *,
+    signal: Any,
+    trade_plan: Any,
+    enabled: bool = True,
+    blocked_entry_models=None,
+) -> Dict[str, Any]:
+    """
+    Narrow execution policy for AUTO_STRUCTURAL_LEVEL_SCALP.
+
+    This does not alter detection, score, entry, SL, TP, RR,
+    session logic, or any non-ASLS strategy.
+
+    Selected ASLS entry models may remain detectable while
+    being execution-ineligible for continued shadow tracking.
+    """
+
+    plan = _as_dict(trade_plan)
+
+    candidate = {
+        "strategy": plan.get("strategy"),
+        "signal": (
+            normalize_signal(signal)
+            or normalize_signal(
+                plan.get("signal")
+            )
+        ),
+        "entry_model": plan.get("entry_model"),
+        "setup_id": plan.get("setup_id"),
+        "session": plan.get("session"),
+        "market_condition": (
+            plan.get("market_condition")
+        ),
+    }
+
+    if not enabled:
+        return {
+            "allowed": True,
+            "reason": (
+                "asls_entry_model_policy_disabled"
+            ),
+            "matched_entry_model": None,
+            "candidate": candidate,
+        }
+
+    strategy = _norm(
+        candidate["strategy"]
+    )
+
+    if (
+        strategy
+        != "AUTO_STRUCTURAL_LEVEL_SCALP"
+    ):
+        return {
+            "allowed": True,
+            "reason": "not_asls_strategy",
+            "matched_entry_model": None,
+            "candidate": candidate,
+        }
+
+    blocked = {
+        _norm(item)
+        for item in (
+            blocked_entry_models or ()
+        )
+        if _norm(item)
+    }
+
+    entry_model = _norm(
+        candidate["entry_model"]
+    )
+
+    if entry_model in blocked:
+        return {
+            "allowed": False,
+            "reason": (
+                "asls_entry_model_shadow_only"
+            ),
+            "matched_entry_model": (
+                entry_model
+            ),
+            "candidate": candidate,
+        }
+
+    return {
+        "allowed": True,
+        "reason": (
+            "asls_entry_model_execution_allowed"
+        ),
+        "matched_entry_model": None,
+        "candidate": candidate,
+    }

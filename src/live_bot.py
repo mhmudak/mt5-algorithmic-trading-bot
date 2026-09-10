@@ -10477,6 +10477,168 @@ def execute_trade(signal, trade_plan, symbol):
         if _logger is not None:
             _logger.warning(f"[M15 DIRECTION LOCK] failed open: {exc}")
 
+    # Central ASLS entry-model execution failsafe.
+    #
+    # The dedicated intrabar path blocks selected bounce
+    # models earlier for clean lifecycle telemetry. This
+    # second check guarantees that no alternate caller can
+    # execute the same ASLS bounce model through execute_trade.
+    try:
+        from config import settings as _asls_entry_policy_settings
+        from src.intrabar_subprofile_risk_guard import (
+            evaluate_asls_entry_model_execution_policy,
+        )
+
+        asls_entry_policy = (
+            evaluate_asls_entry_model_execution_policy(
+                signal=signal,
+                trade_plan=trade_plan,
+                enabled=bool(
+                    getattr(
+                        _asls_entry_policy_settings,
+                        "ENABLE_ASLS_ENTRY_MODEL_EXECUTION_POLICY",
+                        False,
+                    )
+                ),
+                blocked_entry_models=getattr(
+                    _asls_entry_policy_settings,
+                    "ASLS_SHADOW_ONLY_ENTRY_MODELS",
+                    (),
+                ),
+            )
+        )
+
+        if not asls_entry_policy.get(
+            "allowed",
+            True,
+        ):
+            plan = (
+                trade_plan
+                if isinstance(
+                    trade_plan,
+                    dict,
+                )
+                else {}
+            )
+
+            if isinstance(
+                trade_plan,
+                dict,
+            ):
+                trade_plan[
+                    "asls_entry_model_shadow_only"
+                ] = True
+
+                trade_plan[
+                    "execution_policy_reason"
+                ] = asls_entry_policy.get(
+                    "reason"
+                )
+
+            setup_id = plan.get(
+                "setup_id"
+            )
+            strategy = plan.get(
+                "strategy"
+            )
+            entry_model = plan.get(
+                "entry_model"
+            )
+
+            _logger = globals().get(
+                "logger"
+            )
+
+            if _logger is not None:
+                _logger.warning(
+                    "[ASLS ENTRY MODEL POLICY] "
+                    "execution blocked; "
+                    f"setup_id={setup_id} "
+                    f"entry_model={entry_model}"
+                )
+
+            try:
+                _log_setup_event = (
+                    globals().get(
+                        "log_setup_event"
+                    )
+                )
+
+                if callable(
+                    _log_setup_event
+                ):
+                    _log_setup_event(
+                        setup_id=setup_id,
+                        event=(
+                            "ASLS_ENTRY_MODEL_SHADOW_ONLY"
+                        ),
+                        strategy=strategy,
+                        signal=signal,
+                        entry_model=entry_model,
+                        score=plan.get(
+                            "score"
+                        ),
+                        session=plan.get(
+                            "session"
+                        ),
+                        market_condition=(
+                            plan.get(
+                                "market_condition"
+                            )
+                        ),
+                        entry=plan.get(
+                            "entry_price"
+                        ),
+                        sl=plan.get(
+                            "stop_loss"
+                        ),
+                        tp=plan.get(
+                            "take_profit"
+                        ),
+                        rr=plan.get(
+                            "rr"
+                        ),
+                        reason=(
+                            asls_entry_policy.get(
+                                "reason"
+                            )
+                        ),
+                        extra={
+                            "shadow_only": True,
+                            "execution_allowed": (
+                                False
+                            ),
+                            "execution_policy": (
+                                "ASLS_ENTRY_MODEL"
+                            ),
+                            "matched_entry_model": (
+                                asls_entry_policy.get(
+                                    "matched_entry_model"
+                                )
+                            ),
+                        },
+                    )
+
+            except Exception as exc:
+                if _logger is not None:
+                    _logger.warning(
+                        "[ASLS ENTRY MODEL POLICY] "
+                        f"setup log failed: {exc}"
+                    )
+
+            return False
+
+    except Exception as exc:
+        _logger = globals().get(
+            "logger"
+        )
+
+        if _logger is not None:
+            _logger.warning(
+                "[ASLS ENTRY MODEL POLICY] "
+                f"failed open: {exc}"
+            )
+
     try:
         from config import settings as _phase6w2_settings
         from src.intrabar_subprofile_risk_guard import evaluate_intrabar_subprofile_risk_guard
@@ -11058,15 +11220,276 @@ def process_cycle(last_processed_candle_time):
             ASLS_INTRABAR_DUPLICATE_SECONDS,
             ASLS_INTRABAR_ENTRY_TOLERANCE,
             ASLS_MIN_RR,
+            ASLS_SHADOW_ONLY_ENTRY_MODELS,
+            ENABLE_ASLS_ENTRY_MODEL_EXECUTION_POLICY,
         )
         from src.session_engine import detect_session
+        from src.intrabar_subprofile_risk_guard import (
+            evaluate_asls_entry_model_execution_policy,
+        )
         from src.strategies.strategy_auto_structural_level_scalp import (
             generate_signal as auto_structural_level_scalp_signal,
         )
 
         asls_signal_data = auto_structural_level_scalp_signal(df)
 
-        if isinstance(asls_signal_data, dict) and asls_signal_data.get("signal") in ["BUY", "SELL"]:
+        # Evaluate ASLS execution eligibility before entering
+        # the dedicated execution path.
+        #
+        # Shadow-only bounce candidates remain observable but
+        # must fall through to the rest of process_cycle rather
+        # than marking the candle processed or suppressing
+        # unrelated strategies.
+        asls_model_policy = {
+            "allowed": True,
+            "reason": "no_valid_asls_signal",
+            "matched_entry_model": None,
+        }
+
+        if (
+            isinstance(asls_signal_data, dict)
+            and asls_signal_data.get("signal")
+            in ["BUY", "SELL"]
+        ):
+            asls_shadow_signal = (
+                asls_signal_data.get("signal")
+            )
+
+            asls_shadow_entry_model = (
+                asls_signal_data.get(
+                    "entry_model",
+                    "AUTO_STRUCTURAL_LEVEL_SCALP",
+                )
+            )
+
+            asls_model_policy = (
+                evaluate_asls_entry_model_execution_policy(
+                    signal=asls_shadow_signal,
+                    trade_plan={
+                        "strategy": asls_signal_data.get(
+                            "strategy",
+                            "AUTO_STRUCTURAL_LEVEL_SCALP",
+                        ),
+                        "signal": asls_shadow_signal,
+                        "entry_model": (
+                            asls_shadow_entry_model
+                        ),
+                        "setup_id": asls_signal_data.get(
+                            "setup_id"
+                        ),
+                        "session": detect_session(
+                            current_candle_time
+                        ),
+                        "market_condition": (
+                            "INTRABAR_STRUCTURAL_LEVEL_SCALP"
+                        ),
+                    },
+                    enabled=(
+                        ENABLE_ASLS_ENTRY_MODEL_EXECUTION_POLICY
+                    ),
+                    blocked_entry_models=(
+                        ASLS_SHADOW_ONLY_ENTRY_MODELS
+                    ),
+                )
+            )
+
+            if not asls_model_policy.get(
+                "allowed",
+                True,
+            ):
+                # Shadow telemetry is fail-open, but execution
+                # eligibility remains blocked regardless of
+                # telemetry success.
+                try:
+                    asls_shadow_entry = (
+                        asls_signal_data.get(
+                            "entry_reference"
+                        )
+                    )
+
+                    asls_shadow_level = (
+                        asls_signal_data.get(
+                            "structural_level",
+                            asls_shadow_entry,
+                        )
+                    )
+
+                    asls_shadow_setup_id = (
+                        asls_signal_data.get(
+                            "setup_id"
+                        )
+                        or (
+                            f"ASLS-SHADOW-"
+                            f"{asls_shadow_signal}-"
+                            f"{asls_shadow_entry_model}-"
+                            f"{asls_shadow_level}-"
+                            f"{asls_shadow_entry}-"
+                            f"{current_candle_time}"
+                        )
+                    )
+
+                    asls_shadow_session = (
+                        detect_session(
+                            current_candle_time
+                        )
+                    )
+
+                    asls_signal_data[
+                        "setup_id"
+                    ] = asls_shadow_setup_id
+
+                    asls_signal_data[
+                        "session"
+                    ] = asls_shadow_session
+
+                    asls_signal_data[
+                        "market_condition"
+                    ] = (
+                        "INTRABAR_STRUCTURAL_LEVEL_SCALP"
+                    )
+
+                    asls_signal_data[
+                        "execution_bucket"
+                    ] = "INTRABAR"
+
+                    asls_signal_data[
+                        "intrabar_live_executor"
+                    ] = True
+
+                    shadow_memory_key = (
+                        f"{asls_shadow_signal}:"
+                        f"{asls_shadow_entry_model}:"
+                        f"{asls_shadow_level}:"
+                        f"{asls_shadow_entry}"
+                    )
+
+                    shadow_now_ts = time.time()
+
+                    shadow_last_seen_ts = (
+                        PHASE6H_INTRABAR_SCALP_MEMORY.get(
+                            shadow_memory_key
+                        )
+                    )
+
+                    if (
+                        shadow_last_seen_ts
+                        is None
+                        or (
+                            shadow_now_ts
+                            - shadow_last_seen_ts
+                        )
+                        >= ASLS_INTRABAR_DUPLICATE_SECONDS
+                    ):
+                        PHASE6H_INTRABAR_SCALP_MEMORY[
+                            shadow_memory_key
+                        ] = shadow_now_ts
+
+                        log_setup_event(
+                            setup_id=(
+                                asls_shadow_setup_id
+                            ),
+                            event=(
+                                "PHASE6H3_ASLS_SHADOW_ONLY"
+                            ),
+                            strategy=(
+                                asls_signal_data.get(
+                                    "strategy",
+                                    "AUTO_STRUCTURAL_LEVEL_SCALP",
+                                )
+                            ),
+                            signal=(
+                                asls_shadow_signal
+                            ),
+                            entry_model=(
+                                asls_shadow_entry_model
+                            ),
+                            score=(
+                                asls_signal_data.get(
+                                    "score"
+                                )
+                            ),
+                            session=(
+                                asls_shadow_session
+                            ),
+                            market_condition=(
+                                "INTRABAR_STRUCTURAL_LEVEL_SCALP"
+                            ),
+                            entry=(
+                                asls_shadow_entry
+                            ),
+                            sl=(
+                                asls_signal_data.get(
+                                    "sl_reference"
+                                )
+                            ),
+                            tp=(
+                                asls_signal_data.get(
+                                    "tp_reference"
+                                )
+                            ),
+                            rr=(
+                                asls_signal_data.get(
+                                    "rr"
+                                )
+                            ),
+                            required_rr=(
+                                ASLS_MIN_RR
+                            ),
+                            reason=(
+                                asls_model_policy.get(
+                                    "reason"
+                                )
+                                or (
+                                    "asls_entry_model_"
+                                    "shadow_only"
+                                )
+                            ),
+                            extra={
+                                "shadow_only": True,
+                                "execution_allowed": (
+                                    False
+                                ),
+                                "execution_policy": (
+                                    "ASLS_ENTRY_MODEL"
+                                ),
+                                "matched_entry_model": (
+                                    asls_model_policy.get(
+                                        "matched_entry_model"
+                                    )
+                                ),
+                                "intrabar_live_executor": (
+                                    True
+                                ),
+                                "cycle_continues": True,
+                            },
+                        )
+
+                        logger.info(
+                            "[PHASE 6H3 ASLS SHADOW] "
+                            f"setup_id="
+                            f"{asls_shadow_setup_id} "
+                            f"entry_model="
+                            f"{asls_shadow_entry_model} "
+                            "execution=False "
+                            "cycle_continues=True"
+                        )
+
+                except Exception as exc:
+                    logger.warning(
+                        "[PHASE 6H3 ASLS SHADOW] "
+                        "telemetry failed open | "
+                        f"error={exc}"
+                    )
+
+        if (
+            isinstance(asls_signal_data, dict)
+            and asls_signal_data.get("signal")
+            in ["BUY", "SELL"]
+            and asls_model_policy.get(
+                "allowed",
+                True,
+            )
+        ):
             asls_signal = asls_signal_data.get("signal")
             asls_strategy = asls_signal_data.get("strategy", "AUTO_STRUCTURAL_LEVEL_SCALP")
             asls_entry_model = asls_signal_data.get("entry_model", "AUTO_STRUCTURAL_LEVEL_SCALP")

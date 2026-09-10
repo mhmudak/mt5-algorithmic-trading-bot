@@ -2374,6 +2374,20 @@ ASLS_MIN_TARGET_PRICE = 5.0
 ASLS_MAX_TARGET_PRICE = 14.0
 ASLS_MIN_RR = 1.0
 ASLS_MIN_SCORE = 94
+
+# Evidence-based ASLS entry-model execution policy.
+#
+# Detection remains active for every ASLS model so weak
+# models continue producing research/shadow evidence.
+# Only realized execution eligibility is changed.
+#
+# Do NOT widen ASLS SL or change RR/score as part of this
+# policy. Those require independent evidence.
+ENABLE_ASLS_ENTRY_MODEL_EXECUTION_POLICY = True
+ASLS_SHADOW_ONLY_ENTRY_MODELS = (
+    "SUPPORT_BOUNCE_SCALP",
+    "RESISTANCE_BOUNCE_SCALP",
+)
 ASLS_ROUND_CONFLUENCE_STEPS = [5.0, 25.0, 50.0, 100.0]
 ASLS_NY_SESSION_BOOST_ENABLED = True
 ASLS_NY_START_HOUR = 15
