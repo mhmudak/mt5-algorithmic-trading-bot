@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import websockets
+from websockets.exceptions import ConnectionClosed
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 from dotenv import load_dotenv
 
@@ -251,6 +252,43 @@ class RithmicMarketDataClient:
         rq.template_id = 18
         await self.ws.send(rq.SerializeToString())
 
+    async def _close_websocket_quietly(self):
+        ws = self.ws
+        self.ws = None
+
+        if ws is None:
+            return
+
+        try:
+            await ws.close(
+                1001,
+                "rithmic reconnect",
+            )
+        except Exception:
+            pass
+
+    def _connection_recovery_event(
+        self,
+        *,
+        status: str,
+        attempt: int,
+        max_attempts: int,
+        error_type: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "event_type": "connection_recovery",
+            "status": status,
+            "attempt": int(attempt),
+            "max_attempts": int(max_attempts),
+            "symbol": self.config.symbol,
+            "exchange": self.config.exchange,
+            "error_type": error_type,
+            "received_at_epoch": time.time(),
+            "decision_impact": "NONE",
+            "can_influence_decision": False,
+            "safe_for_execution": False,
+        }
+
     async def login(self) -> dict[str, Any]:
         rq = self.pb["request_login_pb2"].RequestLogin()
         rq.template_id = 10
@@ -470,25 +508,204 @@ class RithmicMarketDataClient:
             "raw_size_bytes": len(raw),
         }
 
-    async def stream(self, duration_seconds: int = 60, *, include_order_book: bool = False):
+    async def stream(
+        self,
+        duration_seconds: int = 60,
+        *,
+        include_order_book: bool = False,
+        reconnect_max_attempts: int = 3,
+        reconnect_backoff_seconds: float = 1.0,
+    ):
         await self.connect()
 
         login_event = await self.login()
         yield login_event
 
         if not login_event.get("ok"):
+            await self.logout()
             return
 
-        await self.subscribe_market_data(include_order_book=include_order_book)
+        await self.subscribe_market_data(
+            include_order_book=include_order_book
+        )
         await self.send_heartbeat()
 
         end_time = time.time() + duration_seconds
 
-        while time.time() < end_time:
-            try:
-                raw = await asyncio.wait_for(self.ws.recv(), timeout=5)
-                yield self.parse_message(raw)
-            except asyncio.TimeoutError:
-                await self.send_heartbeat()
+        max_attempts = max(
+            0,
+            int(reconnect_max_attempts),
+        )
 
-        await self.logout()
+        base_backoff = max(
+            0.0,
+            float(reconnect_backoff_seconds),
+        )
+
+        try:
+            while time.time() < end_time:
+                connection_error = None
+
+                try:
+                    raw = await asyncio.wait_for(
+                        self.ws.recv(),
+                        timeout=5,
+                    )
+
+                    yield self.parse_message(raw)
+                    continue
+
+                except asyncio.TimeoutError:
+                    try:
+                        await self.send_heartbeat()
+
+                    except (
+                        ConnectionClosed,
+                        OSError,
+                    ) as exc:
+                        connection_error = exc
+
+                    else:
+                        continue
+
+                except (
+                    ConnectionClosed,
+                    OSError,
+                ) as exc:
+                    connection_error = exc
+
+                yield self._connection_recovery_event(
+                    status="DISCONNECTED",
+                    attempt=0,
+                    max_attempts=max_attempts,
+                    error_type=type(
+                        connection_error
+                    ).__name__,
+                )
+
+                recovered = False
+                reconnect_login_rejected = False
+                attempts_used = 0
+                last_error_type = type(
+                    connection_error
+                ).__name__
+
+                for attempt in range(
+                    1,
+                    max_attempts + 1,
+                ):
+                    if time.time() >= end_time:
+                        break
+
+                    attempts_used = attempt
+
+                    await self._close_websocket_quietly()
+
+                    delay = (
+                        base_backoff
+                        * (2 ** (attempt - 1))
+                    )
+
+                    if delay > 0:
+                        remaining = max(
+                            0.0,
+                            end_time - time.time(),
+                        )
+
+                        if remaining <= 0:
+                            break
+
+                        await asyncio.sleep(
+                            min(
+                                delay,
+                                remaining,
+                            )
+                        )
+
+                    try:
+                        await self.connect()
+
+                        reconnect_login_event = (
+                            await self.login()
+                        )
+
+                        yield reconnect_login_event
+
+                        if not reconnect_login_event.get(
+                            "ok"
+                        ):
+                            reconnect_login_rejected = True
+
+                            yield (
+                                self._connection_recovery_event(
+                                    status=(
+                                        "RECONNECT_LOGIN_REJECTED"
+                                    ),
+                                    attempt=attempt,
+                                    max_attempts=max_attempts,
+                                )
+                            )
+
+                            break
+
+                        await self.subscribe_market_data(
+                            include_order_book=(
+                                include_order_book
+                            )
+                        )
+
+                        await self.send_heartbeat()
+
+                    except (
+                        ConnectionClosed,
+                        OSError,
+                        asyncio.TimeoutError,
+                    ) as exc:
+                        last_error_type = (
+                            type(exc).__name__
+                        )
+
+                        yield (
+                            self._connection_recovery_event(
+                                status=(
+                                    "RECONNECT_ATTEMPT_FAILED"
+                                ),
+                                attempt=attempt,
+                                max_attempts=max_attempts,
+                                error_type=(
+                                    last_error_type
+                                ),
+                            )
+                        )
+
+                        continue
+
+                    yield (
+                        self._connection_recovery_event(
+                            status="RECONNECTED",
+                            attempt=attempt,
+                            max_attempts=max_attempts,
+                        )
+                    )
+
+                    recovered = True
+                    break
+
+                if not recovered:
+                    yield (
+                        self._connection_recovery_event(
+                            status="RECONNECT_EXHAUSTED",
+                            attempt=attempts_used,
+                            max_attempts=max_attempts,
+                            error_type=(
+                                None
+                                if reconnect_login_rejected
+                                else last_error_type
+                            ),
+                        )
+                    )
+
+                    break
+
+        finally:
+            await self.logout()
