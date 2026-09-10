@@ -24,6 +24,32 @@ def _utc_stamp():
     return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
+def _update_rithmic_recorder_trade_stats(stats, event):
+    """
+    Update recorder-only LastTrade diagnostics.
+
+    BUY and SELL must be explicit. Unknown/undefined aggressor
+    values remain neutral and must never manufacture SELL delta.
+    """
+
+    stats["last_trade_count"] += 1
+
+    size = int(event.get("trade_size") or 0)
+    aggressor = str(event.get("aggressor") or "").strip().upper()
+
+    if aggressor == "BUY":
+        stats["buy_volume"] += size
+        stats["cumulative_delta"] += size
+
+    elif aggressor == "SELL":
+        stats["sell_volume"] += size
+        stats["cumulative_delta"] -= size
+
+    else:
+        stats["unknown_trade_count"] += 1
+        stats["unknown_volume"] += size
+
+
 async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbol", default=None)
@@ -64,6 +90,8 @@ async def main():
         "bbo_count": 0,
         "buy_volume": 0,
         "sell_volume": 0,
+        "unknown_trade_count": 0,
+        "unknown_volume": 0,
         "cumulative_delta": 0,
         "output_path": str(output_path),
     }
@@ -85,15 +113,10 @@ async def main():
                 print("[MARKET_DATA_RESPONSE]", event)
 
             elif event_type == "last_trade":
-                stats["last_trade_count"] += 1
-
-                size = int(event.get("trade_size") or 0)
-                if event.get("aggressor") == "BUY":
-                    stats["buy_volume"] += size
-                    stats["cumulative_delta"] += size
-                else:
-                    stats["sell_volume"] += size
-                    stats["cumulative_delta"] -= size
+                _update_rithmic_recorder_trade_stats(
+                    stats,
+                    event,
+                )
 
                 print(
                     "[LAST_TRADE]",
