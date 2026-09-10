@@ -25,25 +25,41 @@ def as_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def load_jsonl(path: Path) -> list[dict[str, Any]]:
+def load_jsonl(
+    path: Path,
+) -> list[dict[str, Any]]:
+    """
+    Parse JSONL incrementally.
+
+    The analyzer may still retain parsed records because later
+    historical analytics require them, but it must not also
+    allocate a second full-file string plus splitlines list.
+    Malformed/truncated final lines are safely ignored so a
+    partial capture remains analyzable.
+    """
+
     rows: list[dict[str, Any]] = []
 
     if not path.exists():
         return rows
 
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
+    with path.open(
+        "r",
+        encoding="utf-8",
+    ) as f:
+        for line in f:
+            line = line.strip()
 
-        if not line:
-            continue
+            if not line:
+                continue
 
-        try:
-            obj = json.loads(line)
-        except Exception:
-            continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
 
-        if isinstance(obj, dict):
-            rows.append(obj)
+            if isinstance(obj, dict):
+                rows.append(obj)
 
     return rows
 
@@ -399,10 +415,16 @@ def classify_decision_readiness(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--symbol", default="MGCQ6")
+    parser.add_argument("--symbol", required=True)
     args = parser.parse_args()
 
-    symbol = args.symbol.upper()
+    symbol = args.symbol.strip().upper()
+
+    if not symbol:
+        parser.error(
+            "--symbol must name the active "
+            "Rithmic contract explicitly."
+        )
     jsonl_path = ORDER_FLOW_DIR / f"{symbol}_phase5y_long_session_history.jsonl"
 
     records = load_jsonl(jsonl_path)
@@ -435,7 +457,7 @@ def main() -> None:
         "decision_readiness": readiness,
         "recommendation": (
             "Use Phase 5Z only for manual review and research. "
-            "Next steps: longer sessions, GCQ6 validation, XAUUSD futures basis calibration, and repeated-session acceptance."
+            "Next steps: longer sessions, active-contract validation, XAUUSD futures basis calibration, and repeated-session acceptance."
         ),
     }
 
