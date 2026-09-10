@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import sys
+
+import argparse
+
 import json
 import re
 from datetime import datetime
@@ -9,13 +13,22 @@ from typing import Any
 
 PHASE = "PHASE_5V_RITHMIC_OBSERVE_ONLY_PROVIDER_REGISTRATION"
 
-ROOT = Path(".")
+ROOT = Path(__file__).resolve().parents[1]
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.order_flow_providers.rithmic_contract_identity import (
+    require_rithmic_symbol as _require_rithmic_symbol,
+    require_rithmic_symbols as _require_rithmic_symbols,
+    resolve_rithmic_symbol as _resolve_rithmic_symbol,
+    safe_symbol_for_file as _rithmic_safe_symbol_for_file,
+)
 ORDER_FLOW_DIR = ROOT / "data" / "order_flow" / "rithmic"
 ACCOUNT_DIR = ROOT / "data" / "strategy_intelligence" / "Tickmill-Demo_25323531"
 
 PHASE5U_REPORT = ACCOUNT_DIR / "phase5u_rithmic_real_orderflow_acceptance_report.json"
 PHASE5U_SUMMARY = ACCOUNT_DIR / "phase5u_rithmic_real_orderflow_acceptance_summary.txt"
-PHASE5C_LATEST = ORDER_FLOW_DIR / "MGCQ6_phase5c_rithmic_state_latest.json"
 
 OUT_JSON = ORDER_FLOW_DIR / "phase5v_rithmic_observe_only_provider_registration.json"
 OUT_TXT = ORDER_FLOW_DIR / "phase5v_rithmic_observe_only_provider_registration_summary.txt"
@@ -120,26 +133,219 @@ def get_bool_metric(report: dict[str, Any], text: str, key: str, default: bool =
     return as_bool(value)
 
 
+
+def report_contains_symbol(
+    report: dict[str, Any],
+    symbol: str,
+) -> bool:
+    target = str(
+        symbol
+    ).strip().upper()
+
+    stack: list[Any] = [
+        report
+    ]
+
+    while stack:
+        item = stack.pop()
+
+        if isinstance(
+            item,
+            dict,
+        ):
+            explicit_symbol = item.get(
+                "symbol"
+            )
+
+            if (
+                explicit_symbol is not None
+                and str(
+                    explicit_symbol
+                ).strip().upper()
+                == target
+            ):
+                return True
+
+            for key, value in item.items():
+                if (
+                    key
+                    in {
+                        "symbols",
+                        "symbol_summary",
+                    }
+                    and isinstance(
+                        value,
+                        dict,
+                    )
+                ):
+                    if target in {
+                        str(
+                            candidate
+                        ).strip().upper()
+                        for candidate
+                        in value.keys()
+                    }:
+                        return True
+
+                stack.append(
+                    value
+                )
+
+        elif isinstance(
+            item,
+            list,
+        ):
+            stack.extend(
+                item
+            )
+
+    return False
+
+
+def instrument_family_for_symbol(
+    symbol: str,
+) -> str:
+    upper = str(
+        symbol
+    ).upper()
+
+    if upper.startswith(
+        "MGC"
+    ):
+        return (
+            "MICRO_GOLD_FUTURES"
+        )
+
+    if upper.startswith(
+        "GC"
+    ):
+        return "GOLD_FUTURES"
+
+    return (
+        "GOLD_FUTURES_CONTRACT"
+    )
+
+
 def main() -> None:
-    ORDER_FLOW_DIR.mkdir(parents=True, exist_ok=True)
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--symbol",
+        default=None,
+    )
+    args = parser.parse_args()
 
-    phase5u = load_json(PHASE5U_REPORT)
-    phase5u_text = read_text(PHASE5U_SUMMARY)
-    phase5c = load_json(PHASE5C_LATEST)
+    try:
+        symbol = _require_rithmic_symbol(
+            args.symbol,
+            root=ROOT,
+        )
+    except ValueError as exc:
+        parser.error(
+            str(exc)
+        )
 
-    accepted = get_bool_metric(phase5u, phase5u_text, "accepted", False)
-    overall_status = get_status(phase5u, phase5u_text, "overall_status")
+    phase5c_latest = (
+        ORDER_FLOW_DIR
+        / (
+            f"{_rithmic_safe_symbol_for_file(symbol)}"
+            "_phase5c_rithmic_state_latest.json"
+        )
+    )
 
-    hard_ok_rate = get_metric(phase5u, phase5u_text, "hard_ok_rate")
-    quality_ok_rate = get_metric(phase5u, phase5u_text, "quality_ok_rate")
+    ORDER_FLOW_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
-    positive_bbo_rate = get_metric(phase5u, phase5u_text, "positive_bbo_rate")
-    dom_available_rate = get_metric(phase5u, phase5u_text, "dom_available_rate")
-    two_sided_dom_rate = get_metric(phase5u, phase5u_text, "two_sided_dom_rate")
-    avg_trade_count = get_metric(phase5u, phase5u_text, "avg_trade_count")
-    max_trade_count = get_metric(phase5u, phase5u_text, "max_trade_count")
-    avg_spread = get_metric(phase5u, phase5u_text, "avg_spread")
-    max_spread = get_metric(phase5u, phase5u_text, "max_spread")
+    phase5u = load_json(
+        PHASE5U_REPORT
+    )
+    phase5u_text = read_text(
+        PHASE5U_SUMMARY
+    )
+    phase5c = load_json(
+        phase5c_latest
+    )
+
+    phase5u_matches_symbol = (
+        report_contains_symbol(
+            phase5u,
+            symbol,
+        )
+    )
+
+    if phase5u_matches_symbol:
+        accepted = get_bool_metric(
+            phase5u,
+            phase5u_text,
+            "accepted",
+            False,
+        )
+        overall_status = get_status(
+            phase5u,
+            phase5u_text,
+            "overall_status",
+        )
+
+        hard_ok_rate = get_metric(
+            phase5u,
+            phase5u_text,
+            "hard_ok_rate",
+        )
+        quality_ok_rate = get_metric(
+            phase5u,
+            phase5u_text,
+            "quality_ok_rate",
+        )
+        positive_bbo_rate = get_metric(
+            phase5u,
+            phase5u_text,
+            "positive_bbo_rate",
+        )
+        dom_available_rate = get_metric(
+            phase5u,
+            phase5u_text,
+            "dom_available_rate",
+        )
+        two_sided_dom_rate = get_metric(
+            phase5u,
+            phase5u_text,
+            "two_sided_dom_rate",
+        )
+        avg_trade_count = get_metric(
+            phase5u,
+            phase5u_text,
+            "avg_trade_count",
+        )
+        max_trade_count = get_metric(
+            phase5u,
+            phase5u_text,
+            "max_trade_count",
+        )
+        avg_spread = get_metric(
+            phase5u,
+            phase5u_text,
+            "avg_spread",
+        )
+        max_spread = get_metric(
+            phase5u,
+            phase5u_text,
+            "max_spread",
+        )
+    else:
+        accepted = False
+        overall_status = (
+            "PHASE5U_SYMBOL_MISMATCH_OR_MISSING"
+        )
+        hard_ok_rate = 0.0
+        quality_ok_rate = 0.0
+        positive_bbo_rate = 0.0
+        dom_available_rate = 0.0
+        two_sided_dom_rate = 0.0
+        avg_trade_count = 0.0
+        max_trade_count = 0.0
+        avg_spread = 0.0
+        max_spread = 0.0
 
     latest_bid = as_float(deep_find(phase5c, "last_bid"))
     latest_ask = as_float(deep_find(phase5c, "last_ask"))
@@ -202,8 +408,8 @@ def main() -> None:
         "provider": "RITHMIC_R_PROTOCOL",
         "provider_role": "REAL_ORDER_FLOW_SOURCE",
         "source_market": "COMEX",
-        "symbol": "MGCQ6",
-        "instrument_family": "MICRO_GOLD_FUTURES",
+        "symbol": symbol,
+        "instrument_family": instrument_family_for_symbol(symbol),
         "registration_status": registration_status,
         "provider_quality": provider_quality,
         "mode": "OBSERVE_ONLY",
@@ -232,7 +438,7 @@ def main() -> None:
             "max_spread": max_spread,
         },
         "latest_state": {
-            "report_path": str(PHASE5C_LATEST),
+            "report_path": str(phase5c_latest),
             "state_status": deep_find(phase5c, "state_status"),
             "rolling_trade_count": rolling_trade_count,
             "rolling_delta": rolling_delta,

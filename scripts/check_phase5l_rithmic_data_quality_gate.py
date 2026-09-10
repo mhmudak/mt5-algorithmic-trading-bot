@@ -9,6 +9,16 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.order_flow_providers.rithmic_contract_identity import (
+    require_rithmic_symbol as _require_rithmic_symbol,
+    require_rithmic_symbols as _require_rithmic_symbols,
+    resolve_rithmic_symbol as _resolve_rithmic_symbol,
+    safe_symbol_for_file as _rithmic_safe_symbol_for_file,
+)
 RITHMIC_DIR = ROOT / "data" / "order_flow" / "rithmic"
 
 
@@ -28,7 +38,7 @@ def parse_symbols(value: str) -> list[str]:
         if symbol:
             symbols.append(symbol)
 
-    return symbols or ["GCQ6"]
+    return symbols
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -184,11 +194,27 @@ def validate_symbol(symbol: str, *, max_bbo_spread: float, min_trades: int, requ
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--symbols", default="GCQ6,MGCQ6")
+    parser.add_argument("--symbols", default=None)
     parser.add_argument("--max-bbo-spread", type=float, default=5.0)
     parser.add_argument("--min-trades", type=int, default=5)
     parser.add_argument("--require-two-sided-dom", action="store_true")
     args = parser.parse_args()
+
+    try:
+        resolved_symbols = (
+            _require_rithmic_symbols(
+                args.symbols,
+                root=ROOT,
+            )
+        )
+    except ValueError as exc:
+        parser.error(
+            str(exc)
+        )
+
+    args.symbols = ",".join(
+        resolved_symbols
+    )
 
     RITHMIC_DIR.mkdir(parents=True, exist_ok=True)
 

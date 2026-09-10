@@ -11,6 +11,16 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.order_flow_providers.rithmic_contract_identity import (
+    require_rithmic_symbol as _require_rithmic_symbol,
+    require_rithmic_symbols as _require_rithmic_symbols,
+    resolve_rithmic_symbol as _resolve_rithmic_symbol,
+    safe_symbol_for_file as _rithmic_safe_symbol_for_file,
+)
 RITHMIC_DIR = ROOT / "data" / "order_flow" / "rithmic"
 
 REPORT_PATH = RITHMIC_DIR / "phase5o_rithmic_setup_filter_watcher_report.json"
@@ -176,7 +186,7 @@ def run_cycle(args: argparse.Namespace) -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--symbols", default="GCQ6,MGCQ6")
+    parser.add_argument("--symbols", default=None)
     parser.add_argument("--exchange", default="COMEX")
     parser.add_argument("--duration-seconds", type=int, default=60)
     parser.add_argument("--interval-seconds", type=int, default=900)
@@ -186,6 +196,22 @@ def main() -> None:
     parser.add_argument("--min-trades", type=int, default=5)
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
+
+    try:
+        resolved_symbols = (
+            _require_rithmic_symbols(
+                args.symbols,
+                root=ROOT,
+            )
+        )
+    except ValueError as exc:
+        parser.error(
+            str(exc)
+        )
+
+    args.symbols = ",".join(
+        resolved_symbols
+    )
 
     if args.interval_seconds < 300 and not args.once:
         raise SystemExit("[STOP] Use interval >= 300 seconds for Rithmic watcher to avoid excessive reconnects.")

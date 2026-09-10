@@ -10,6 +10,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.order_flow_providers.rithmic_contract_identity import (
+    require_rithmic_symbol as _require_rithmic_symbol,
+    require_rithmic_symbols as _require_rithmic_symbols,
+    resolve_rithmic_symbol as _resolve_rithmic_symbol,
+    safe_symbol_for_file as _rithmic_safe_symbol_for_file,
+)
+
 INTEL_DIR = ROOT / "data" / "strategy_intelligence" / "Tickmill-Demo_25323531"
 
 REPORT_PATH = INTEL_DIR / "phase4_orderflow_status_report.json"
@@ -24,11 +31,29 @@ def _safe_symbol_for_file(symbol):
 
 
 def _configured_rithmic_symbol():
-    return os.getenv("RITHMIC_SYMBOL", "GCQ6")
+    return _resolve_rithmic_symbol(
+        None,
+        root=ROOT,
+    )
 
 
 def _load_rithmic_bridge():
     symbol = _configured_rithmic_symbol()
+
+    if not symbol:
+        return {
+            "loaded": False,
+            "symbol": None,
+            "path": None,
+            "bridge_status": (
+                "RITHMIC_SYMBOL_NOT_CONFIGURED"
+            ),
+            "decision_impact": "NONE",
+            "can_influence_decision": False,
+            "warnings": [
+                "RITHMIC_SYMBOL_NOT_CONFIGURED"
+            ],
+        }
     path = RITHMIC_DIR / f"{_safe_symbol_for_file(symbol)}_phase5g_rithmic_monitoring_bridge.json"
 
     if not path.exists():

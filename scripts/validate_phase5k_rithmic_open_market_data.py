@@ -11,6 +11,14 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.order_flow_providers.rithmic_contract_identity import (
+    require_rithmic_symbols as _require_rithmic_symbols,
+)
+
 RITHMIC_DIR = ROOT / "data" / "order_flow" / "rithmic"
 
 
@@ -26,7 +34,7 @@ def parse_symbols(value: str) -> list[str]:
         if symbol:
             items.append(symbol)
 
-    return items or ["GCQ6"]
+    return items
 
 
 def safe_symbol(symbol: str) -> str:
@@ -96,6 +104,30 @@ def as_number(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def freshness_with_threshold(
+    freshness: dict[str, Any],
+    *,
+    flag_key: str,
+    age_key: str,
+    stale_after_seconds: int,
+) -> bool:
+    age = freshness.get(age_key)
+
+    if age is None:
+        return as_bool(
+            freshness.get(flag_key)
+        )
+
+    age_seconds = as_number(
+        age,
+        default=float("inf"),
+    )
+
+    return bool(
+        0.0 <= age_seconds <= stale_after_seconds
+    )
+
+
 def validate_symbol(symbol: str, *, stale_after_seconds: int) -> dict[str, Any]:
     s = safe_symbol(symbol)
 
@@ -115,9 +147,24 @@ def validate_symbol(symbol: str, *, stale_after_seconds: int) -> dict[str, Any]:
 
     login_ok = as_bool(connection.get("login_ok"))
     market_data_ok = as_bool(connection.get("market_data_ok"))
-    has_fresh_trade = as_bool(freshness.get("has_fresh_trade"))
-    has_fresh_bbo = as_bool(freshness.get("has_fresh_bbo"))
-    has_fresh_order_book = as_bool(freshness.get("has_fresh_order_book"))
+    has_fresh_trade = freshness_with_threshold(
+        freshness,
+        flag_key="has_fresh_trade",
+        age_key="last_trade_age_seconds",
+        stale_after_seconds=stale_after_seconds,
+    )
+    has_fresh_bbo = freshness_with_threshold(
+        freshness,
+        flag_key="has_fresh_bbo",
+        age_key="last_bbo_age_seconds",
+        stale_after_seconds=stale_after_seconds,
+    )
+    has_fresh_order_book = freshness_with_threshold(
+        freshness,
+        flag_key="has_fresh_order_book",
+        age_key="last_order_book_age_seconds",
+        stale_after_seconds=stale_after_seconds,
+    )
 
     trade_count = int(as_number(sample.get("rolling_trade_count"), 0))
     bbo_count = int(as_number(sample.get("bbo_count"), 0))
@@ -171,6 +218,7 @@ def validate_symbol(symbol: str, *, stale_after_seconds: int) -> dict[str, Any]:
     dom_quality_checks = [
         "order_book_observed",
         "dom_available",
+        "has_fresh_order_book",
     ]
 
     critical_ok = all(checks.get(k) for k in critical_checks)
@@ -224,7 +272,7 @@ def validate_symbol(symbol: str, *, stale_after_seconds: int) -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--symbols", default="GCQ6,MGCQ6")
+    parser.add_argument("--symbols", default=None)
     parser.add_argument("--exchange", default="COMEX")
     parser.add_argument("--duration-seconds", type=int, default=60)
     parser.add_argument("--include-order-book", action="store_true")
@@ -232,9 +280,25 @@ def main() -> None:
     parser.add_argument("--stale-after-seconds", type=int, default=30)
     args = parser.parse_args()
 
+    if args.stale_after_seconds <= 0:
+        parser.error(
+            "--stale-after-seconds must be > 0"
+        )
+
+    try:
+        symbols = _require_rithmic_symbols(
+            args.symbols,
+            root=ROOT,
+        )
+    except ValueError as exc:
+        parser.error(
+            str(exc)
+        )
+
+    args.symbols = ",".join(symbols)
+
     RITHMIC_DIR.mkdir(parents=True, exist_ok=True)
 
-    symbols = parse_symbols(args.symbols)
     python = sys.executable
 
     refresh_result = None

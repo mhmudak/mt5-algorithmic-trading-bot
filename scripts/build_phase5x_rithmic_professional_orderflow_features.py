@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import json
 import statistics
 from datetime import datetime
@@ -9,13 +11,21 @@ from typing import Any
 
 PHASE = "PHASE_5X_RITHMIC_PROFESSIONAL_ORDERFLOW_FEATURES"
 
-ROOT = Path(".")
+ROOT = Path(__file__).resolve().parents[1]
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.order_flow_providers.rithmic_contract_identity import (
+    require_rithmic_symbol as _require_rithmic_symbol,
+    require_rithmic_symbols as _require_rithmic_symbols,
+    resolve_rithmic_symbol as _resolve_rithmic_symbol,
+    safe_symbol_for_file as _rithmic_safe_symbol_for_file,
+)
 ORDER_FLOW_DIR = ROOT / "data" / "order_flow" / "rithmic"
 INTEL_DIR = ROOT / "data" / "strategy_intelligence" / "Tickmill-Demo_25323531"
 
-SYMBOL = "MGCQ6"
 
-STATE_PATH = ORDER_FLOW_DIR / f"{SYMBOL}_phase5c_rithmic_state_latest.json"
 REGISTRATION_PATH = ORDER_FLOW_DIR / "phase5v_rithmic_observe_only_provider_registration.json"
 
 OUT_JSON = ORDER_FLOW_DIR / "phase5x_rithmic_professional_orderflow_features.json"
@@ -382,11 +392,39 @@ def detect_footprint_imbalance(profile_levels: list[dict[str, Any]]) -> dict[str
 
 
 def main() -> None:
-    ORDER_FLOW_DIR.mkdir(parents=True, exist_ok=True)
-    INTEL_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        symbol = _require_rithmic_symbol(
+            None,
+            root=ROOT,
+        )
+    except ValueError as exc:
+        raise SystemExit(
+            f"[STOP] {exc}"
+        )
 
-    state = load_json(STATE_PATH)
-    registration = load_json(REGISTRATION_PATH)
+    state_path = (
+        ORDER_FLOW_DIR
+        / (
+            f"{_rithmic_safe_symbol_for_file(symbol)}"
+            "_phase5c_rithmic_state_latest.json"
+        )
+    )
+
+    ORDER_FLOW_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    INTEL_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    state = load_json(
+        state_path
+    )
+    registration = load_json(
+        REGISTRATION_PATH
+    )
 
     book = extract_order_book(state)
     profile_levels = extract_volume_profile(state)
@@ -397,12 +435,24 @@ def main() -> None:
     absorption = detect_absorption(state, book)
     footprint = detect_footprint_imbalance(profile_levels)
 
-    provider_registered = registration.get("registration_status") == "REGISTERED_OBSERVE_ONLY"
+    provider_registered = bool(
+        registration.get(
+            "registration_status"
+        )
+        == "REGISTERED_OBSERVE_ONLY"
+        and str(
+            registration.get(
+                "symbol"
+            )
+            or ""
+        ).strip().upper()
+        == symbol
+    )
 
     report = {
         "phase": PHASE,
         "updated_at": datetime.now().isoformat(timespec="seconds"),
-        "symbol": SYMBOL,
+        "symbol": symbol,
         "provider": "RITHMIC_R_PROTOCOL",
         "mode": "OBSERVE_ONLY",
         "decision_impact": "NONE",
@@ -430,7 +480,7 @@ def main() -> None:
             "Absorption is heuristic only.",
             "Iceberg/spoofing/pulling-stacking require multi-snapshot history.",
             "Footprint needs stronger per-price aggressive buy/sell accumulation.",
-            "XAUUSD vs MGCQ6/GCQ6 basis calibration not added yet.",
+            "Current-contract XAUUSD/futures basis calibration must remain validated before decision use.",
             "Automatic decision influence remains disabled.",
         ],
         "recommendation": (
@@ -444,7 +494,7 @@ def main() -> None:
     lines = [
         "[PHASE 5X RITHMIC PROFESSIONAL ORDER-FLOW FEATURES]",
         f"updated_at = {report['updated_at']}",
-        f"symbol = {SYMBOL}",
+        f"symbol = {symbol}",
         f"provider = {report['provider']}",
         f"mode = {report['mode']}",
         f"decision_impact = {report['decision_impact']}",

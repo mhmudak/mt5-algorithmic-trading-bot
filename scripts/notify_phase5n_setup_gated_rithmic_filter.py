@@ -14,13 +14,19 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.order_flow_providers.rithmic_contract_identity import (
+    require_rithmic_symbol as _require_rithmic_symbol,
+    require_rithmic_symbols as _require_rithmic_symbols,
+    resolve_rithmic_symbol as _resolve_rithmic_symbol,
+    safe_symbol_for_file as _rithmic_safe_symbol_for_file,
+)
+
 INTEL_DIR = ROOT / "data" / "strategy_intelligence" / "Tickmill-Demo_25323531"
 RITHMIC_DIR = ROOT / "data" / "order_flow" / "rithmic"
 
 OPPORTUNITY_REPORT_PATH = INTEL_DIR / "phase4_opportunity_alerts_report.json"
 DECISION_CANDIDATES_PATH = INTEL_DIR / "phase3_decision_candidates_report.json"
 RITHMIC_QUALITY_PATH = RITHMIC_DIR / "phase5l_rithmic_data_quality_gate_report.json"
-RITHMIC_BRIDGE_PATH = RITHMIC_DIR / "GCQ6_phase5g_rithmic_monitoring_bridge.json"
 
 STATE_PATH = INTEL_DIR / "phase5n_setup_gated_rithmic_filter_state.json"
 REPORT_PATH = INTEL_DIR / "phase5n_setup_gated_rithmic_filter_report.json"
@@ -126,24 +132,117 @@ def get_nested(data: dict[str, Any], *keys: str, default: Any = None) -> Any:
 
 
 def load_rithmic_quality() -> dict[str, Any]:
-    quality = load_json(RITHMIC_QUALITY_PATH, {})
-    bridge = load_json(RITHMIC_BRIDGE_PATH, {})
+    symbol = _resolve_rithmic_symbol(
+        None,
+        root=ROOT,
+    )
+
+    if not symbol:
+        return {
+            "loaded": False,
+            "rithmic_symbol": None,
+            "overall_status": (
+                "RITHMIC_SYMBOL_NOT_CONFIGURED"
+            ),
+            "decision_impact": "NONE",
+            "can_influence_decision": False,
+            "recommendation": (
+                "Configure the active RITHMIC_SYMBOL "
+                "before reviewing Rithmic setup context."
+            ),
+            "validations": [],
+            "bridge": {},
+        }
+
+    bridge_path = (
+        RITHMIC_DIR
+        / (
+            f"{_rithmic_safe_symbol_for_file(symbol)}"
+            "_phase5g_rithmic_monitoring_bridge.json"
+        )
+    )
+
+    quality = load_json(
+        RITHMIC_QUALITY_PATH,
+        {},
+    )
+
+    bridge = load_json(
+        bridge_path,
+        {},
+    )
 
     if not quality:
         return {
             "loaded": False,
-            "overall_status": "RITHMIC_QUALITY_GATE_NOT_BUILT",
+            "rithmic_symbol": symbol,
+            "overall_status": (
+                "RITHMIC_QUALITY_GATE_NOT_BUILT"
+            ),
             "decision_impact": "NONE",
             "can_influence_decision": False,
-            "recommendation": "Run Phase 5L quality gate before using Rithmic as a setup filter.",
+            "recommendation": (
+                "Run Phase 5L quality gate before "
+                "reviewing Rithmic as setup context."
+            ),
             "validations": [],
             "bridge": bridge,
+            "bridge_path": str(
+                bridge_path
+            ),
         }
 
-    quality["loaded"] = True
-    quality["bridge"] = bridge
-    return quality
+    validations = (
+        quality.get("validations")
+        or []
+    )
 
+    if isinstance(
+        validations,
+        list,
+    ) and validations:
+        matching = [
+            item
+            for item in validations
+            if isinstance(
+                item,
+                dict,
+            )
+            and str(
+                item.get("symbol")
+                or ""
+            ).strip().upper()
+            == symbol
+        ]
+
+        if not matching:
+            return {
+                "loaded": False,
+                "rithmic_symbol": symbol,
+                "overall_status": (
+                    "RITHMIC_QUALITY_SYMBOL_MISMATCH"
+                ),
+                "decision_impact": "NONE",
+                "can_influence_decision": False,
+                "recommendation": (
+                    "Rebuild Phase 5L for the configured "
+                    "active Rithmic contract."
+                ),
+                "validations": [],
+                "bridge": bridge,
+                "bridge_path": str(
+                    bridge_path
+                ),
+            }
+
+    quality["loaded"] = True
+    quality["rithmic_symbol"] = symbol
+    quality["bridge"] = bridge
+    quality["bridge_path"] = str(
+        bridge_path
+    )
+
+    return quality
 
 def collect_setup_candidates() -> list[dict[str, Any]]:
     opportunity_report = load_json(OPPORTUNITY_REPORT_PATH, {})

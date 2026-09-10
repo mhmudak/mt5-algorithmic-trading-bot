@@ -6,8 +6,16 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ROOT = PROJECT_ROOT
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.order_flow_providers.rithmic_contract_identity import (
+    require_rithmic_symbol as _require_rithmic_symbol,
+    require_rithmic_symbols as _require_rithmic_symbols,
+    resolve_rithmic_symbol as _resolve_rithmic_symbol,
+    safe_symbol_for_file as _rithmic_safe_symbol_for_file,
+)
 
 from src.order_flow_providers.rithmic_monitoring_bridge import (
     build_rithmic_monitoring_bridge,
@@ -26,11 +34,21 @@ def _safe_symbol_for_file(symbol: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--symbol", default="GCQ6")
+    parser.add_argument("--symbol", default=None)
     parser.add_argument("--input-dir", default="data/order_flow/rithmic")
     parser.add_argument("--stale-after-seconds", type=int, default=30)
     parser.add_argument("--output-dir", default="data/order_flow/rithmic")
     args = parser.parse_args()
+
+    try:
+        args.symbol = _require_rithmic_symbol(
+            args.symbol,
+            root=ROOT,
+        )
+    except ValueError as exc:
+        parser.error(
+            str(exc)
+        )
 
     input_dir = Path(args.input_dir)
     snapshot_path = input_dir / f"{args.symbol}_phase5c_rithmic_state_latest.json"

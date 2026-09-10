@@ -11,6 +11,16 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.order_flow_providers.rithmic_contract_identity import (
+    require_rithmic_symbol as _require_rithmic_symbol,
+    require_rithmic_symbols as _require_rithmic_symbols,
+    resolve_rithmic_symbol as _resolve_rithmic_symbol,
+    safe_symbol_for_file as _rithmic_safe_symbol_for_file,
+)
 OUTPUT_DIR = ROOT / "data" / "order_flow" / "rithmic"
 
 
@@ -26,7 +36,7 @@ def parse_symbols(value: str) -> list[str]:
         if symbol:
             symbols.append(symbol)
 
-    return symbols or ["GCQ6"]
+    return symbols
 
 
 def run_command(label: str, command: list[str], *, env: dict[str, str] | None = None, timeout: int = 240) -> dict:
@@ -72,12 +82,28 @@ def run_command(label: str, command: list[str], *, env: dict[str, str] | None = 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--symbols", default="GCQ6,MGCQ6")
+    parser.add_argument("--symbols", default=None)
     parser.add_argument("--exchange", default="COMEX")
     parser.add_argument("--duration-seconds", type=int, default=30)
     parser.add_argument("--include-order-book", action="store_true")
     parser.add_argument("--telegram-check", action="store_true")
     args = parser.parse_args()
+
+    try:
+        resolved_symbols = (
+            _require_rithmic_symbols(
+                args.symbols,
+                root=ROOT,
+            )
+        )
+    except ValueError as exc:
+        parser.error(
+            str(exc)
+        )
+
+    args.symbols = ",".join(
+        resolved_symbols
+    )
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 

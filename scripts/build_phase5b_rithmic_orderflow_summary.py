@@ -6,8 +6,16 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ROOT = PROJECT_ROOT
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.order_flow_providers.rithmic_contract_identity import (
+    require_rithmic_symbol as _require_rithmic_symbol,
+    require_rithmic_symbols as _require_rithmic_symbols,
+    resolve_rithmic_symbol as _resolve_rithmic_symbol,
+    safe_symbol_for_file as _rithmic_safe_symbol_for_file,
+)
 
 from src.order_flow_features.rithmic_summary import (
     build_rithmic_orderflow_summary,
@@ -20,7 +28,7 @@ from src.order_flow_features.rithmic_summary import (
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-dir", default="data/order_flow/rithmic")
-    parser.add_argument("--symbol", default="GCQ6")
+    parser.add_argument("--symbol", default=None)
     parser.add_argument("--all-files", action="store_true")
     parser.add_argument("--tick-size", type=float, default=0.1)
     parser.add_argument("--bucket-seconds", type=int, default=60)
@@ -35,6 +43,16 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    try:
+        args.symbol = _require_rithmic_symbol(
+            args.symbol,
+            root=ROOT,
+        )
+    except ValueError as exc:
+        parser.error(
+            str(exc)
+        )
 
     files = find_rithmic_jsonl_files(
         args.input_dir,

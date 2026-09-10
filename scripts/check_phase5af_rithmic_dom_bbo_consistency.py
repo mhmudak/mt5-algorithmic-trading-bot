@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import argparse
 import json
 from datetime import datetime
@@ -10,6 +12,16 @@ from typing import Any
 PHASE = "PHASE_5AF_RITHMIC_DOM_BBO_CONSISTENCY_CHECK"
 
 ROOT = Path(__file__).resolve().parents[1]
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.order_flow_providers.rithmic_contract_identity import (
+    require_rithmic_symbol as _require_rithmic_symbol,
+    require_rithmic_symbols as _require_rithmic_symbols,
+    resolve_rithmic_symbol as _resolve_rithmic_symbol,
+    safe_symbol_for_file as _rithmic_safe_symbol_for_file,
+)
 ORDER_FLOW_DIR = ROOT / "data" / "order_flow" / "rithmic"
 
 OUT_JSON = ORDER_FLOW_DIR / "phase5af_rithmic_dom_bbo_consistency_check.json"
@@ -54,9 +66,19 @@ def deep_find(obj: Any, key: str) -> Any:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--symbol", default="MGCQ6")
+    parser.add_argument("--symbol", default=None)
     parser.add_argument("--max-difference", type=float, default=1.0)
     args = parser.parse_args()
+
+    try:
+        args.symbol = _require_rithmic_symbol(
+            args.symbol,
+            root=ROOT,
+        )
+    except ValueError as exc:
+        parser.error(
+            str(exc)
+        )
 
     symbol = args.symbol.upper()
     state_path = ORDER_FLOW_DIR / f"{symbol}_phase5c_rithmic_state_latest.json"

@@ -12,6 +12,16 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.order_flow_providers.rithmic_contract_identity import (
+    require_rithmic_symbol as _require_rithmic_symbol,
+    require_rithmic_symbols as _require_rithmic_symbols,
+    resolve_rithmic_symbol as _resolve_rithmic_symbol,
+    safe_symbol_for_file as _rithmic_safe_symbol_for_file,
+)
 ACCOUNT_NAME = "Tickmill-Demo_25323531"
 INTEL_DIR = ROOT / "data" / "strategy_intelligence" / ACCOUNT_NAME
 
@@ -280,7 +290,7 @@ def calculate_acceptance(cycles: list[dict[str, Any]], min_quality_pass_ratio: f
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--symbols", default="GCQ6,MGCQ6")
+    parser.add_argument("--symbols", default=None)
     parser.add_argument("--exchange", default="COMEX")
     parser.add_argument("--cycles", type=int, default=5)
     parser.add_argument("--duration-seconds", type=int, default=60)
@@ -291,6 +301,22 @@ def main() -> None:
     parser.add_argument("--require-two-sided-dom", action="store_true")
     parser.add_argument("--min-quality-pass-ratio", type=float, default=0.80)
     args = parser.parse_args()
+
+    try:
+        resolved_symbols = (
+            _require_rithmic_symbols(
+                args.symbols,
+                root=ROOT,
+            )
+        )
+    except ValueError as exc:
+        parser.error(
+            str(exc)
+        )
+
+    args.symbols = ",".join(
+        resolved_symbols
+    )
 
     INTEL_DIR.mkdir(parents=True, exist_ok=True)
 
