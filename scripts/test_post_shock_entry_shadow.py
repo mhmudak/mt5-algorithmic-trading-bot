@@ -17,6 +17,7 @@ from src.post_shock_entry_shadow import (
     build_post_shock_entry_shadow,
     build_post_shock_entry_shadow_fail_open,
     evaluate_post_shock_shadow_rr_viability,
+    evaluate_post_shock_shadow_confirmation_readiness,
 )
 
 
@@ -955,6 +956,250 @@ def test_rr_viability_waits_for_plan():
 
 
 
+
+def _rr_ready_shadow(
+    *,
+    required_rr=1.25,
+):
+    shadow = (
+        _constructed_sell_shadow()
+    )
+
+    shadow[
+        "rr_viability"
+    ] = (
+        evaluate_post_shock_shadow_rr_viability(
+            shadow_result=shadow,
+            required_rr=required_rr,
+        )
+    )
+
+    return shadow
+
+
+def confirmation_report_fixture():
+    return {
+        "mode": "MT5_ONLY",
+        "approved": True,
+        "confidence": 74,
+        "score_delta": 2.0,
+        "enforce_required": False,
+        "required_failed": [],
+        "optional_failed": [
+            {
+                "module": "OPTIONAL_CONTEXT",
+                "status": "FAIL",
+            },
+        ],
+        "results": [
+            {
+                "module": "ENTRY_QUALITY",
+                "status": "PASS",
+                "reason": (
+                    "original plan entry quality"
+                ),
+            },
+        ],
+    }
+
+
+def assert_confirmation_observer_only(
+    result,
+):
+    assert (
+        result["observer_only"]
+        is True
+    )
+
+    assert (
+        result["decision_impact"]
+        == "NONE"
+    )
+
+    assert (
+        result["can_influence_decision"]
+        is False
+    )
+
+    assert (
+        result["safe_for_execution"]
+        is False
+    )
+
+    assert (
+        result["execution_allowed"]
+        is False
+    )
+
+    assert (
+        result[
+            "future_execution_authority_ready"
+        ]
+        is False
+    )
+
+    assert (
+        result[
+            "hypothetical_confirmation_verdict"
+        ]
+        is None
+    )
+
+
+def test_confirmation_rr_would_block():
+    shadow = _rr_ready_shadow(
+        required_rr=3.0,
+    )
+
+    result = (
+        evaluate_post_shock_shadow_confirmation_readiness(
+            shadow_result=shadow,
+            m5_confirmed=True,
+            m5_reason="m5_confirmed",
+            confirmation_report=(
+                confirmation_report_fixture()
+            ),
+        )
+    )
+
+    assert_confirmation_observer_only(
+        result
+    )
+
+    assert (
+        result["state"]
+        == "RR_WOULD_BLOCK"
+    )
+
+
+def test_confirmation_m5_context_blocked():
+    shadow = _rr_ready_shadow()
+
+    result = (
+        evaluate_post_shock_shadow_confirmation_readiness(
+            shadow_result=shadow,
+            m5_confirmed=False,
+            m5_reason=(
+                "m5_execution_not_confirmed"
+            ),
+            confirmation_report=None,
+        )
+    )
+
+    assert_confirmation_observer_only(
+        result
+    )
+
+    assert (
+        result["available"]
+        is True
+    )
+
+    assert (
+        result["state"]
+        == "NORMAL_M5_GATE_BLOCKED"
+    )
+
+    assert (
+        result[
+            "normal_m5_gate_passed"
+        ]
+        is False
+    )
+
+
+def test_confirmation_context_observed():
+    shadow = _rr_ready_shadow()
+
+    result = (
+        evaluate_post_shock_shadow_confirmation_readiness(
+            shadow_result=shadow,
+            m5_confirmed=True,
+            m5_reason="m5_confirmed",
+            confirmation_report=(
+                confirmation_report_fixture()
+            ),
+        )
+    )
+
+    assert_confirmation_observer_only(
+        result
+    )
+
+    assert (
+        result["available"]
+        is True
+    )
+
+    assert (
+        result["state"]
+        == "CONFIRMATION_CONTEXT_OBSERVED"
+    )
+
+    assert (
+        result[
+            "reached_normal_confirmation_layer"
+        ]
+        is True
+    )
+
+    assert (
+        result[
+            "normal_universal_report_available"
+        ]
+        is True
+    )
+
+    assert (
+        result[
+            "normal_universal_report_scope"
+        ]
+        == "ORIGINAL_LIVE_TRADE_PLAN_CONTEXT"
+    )
+
+    assert (
+        result[
+            "universal_confirmation_enforce_required"
+        ]
+        is False
+    )
+
+    assert (
+        result[
+            "entry_quality_status"
+        ]
+        == "PASS"
+    )
+
+
+def test_confirmation_report_missing():
+    shadow = _rr_ready_shadow()
+
+    result = (
+        evaluate_post_shock_shadow_confirmation_readiness(
+            shadow_result=shadow,
+            m5_confirmed=True,
+            m5_reason="m5_confirmed",
+            confirmation_report=None,
+        )
+    )
+
+    assert_confirmation_observer_only(
+        result
+    )
+
+    assert (
+        result["available"]
+        is False
+    )
+
+    assert (
+        result["state"]
+        == "UNIVERSAL_CONTEXT_UNAVAILABLE"
+    )
+
+
+
 def test_live_integration_is_non_interventional():
     live_source = (
         ROOT
@@ -989,89 +1234,67 @@ def test_live_integration_is_non_interventional():
     )
 
     assert (
-        "build_post_shock_entry_shadow_fail_open("
+        "evaluate_post_shock_shadow_"
+        "confirmation_readiness"
         in live_source
     )
 
     assert (
-        "build_post_shock_entry_shadow("
-        not in live_source
+        live_source.count(
+            "_attach_post_shock_shadow_"
+            "confirmation_readiness_fail_open("
+        )
+        == 3
     )
+
+    normal_m5_marker = (
+        "# M5 confirmation for immediate "
+        "execution only"
+    )
+
+    main_m5_position = live_source.rfind(
+        normal_m5_marker
+    )
+
+    blocked_attach_position = (
+        live_source.find(
+            "_attach_post_shock_shadow_"
+            "confirmation_readiness_fail_open(",
+            main_m5_position,
+        )
+    )
+
+    report_position = live_source.rfind(
+        "confirmation_report = "
+        "observe_universal_confirmation_for_setup("
+    )
+
+    observed_attach_position = (
+        live_source.find(
+            "_attach_post_shock_shadow_"
+            "confirmation_readiness_fail_open(",
+            report_position,
+        )
+    )
+
+    execution_position = live_source.rfind(
+        'logger.info("🔥 Executing trade...")'
+    )
+
+    assert main_m5_position >= 0
+    assert blocked_attach_position >= 0
+    assert report_position >= 0
+    assert observed_attach_position >= 0
+    assert execution_position >= 0
 
     assert (
-        "POST_SHOCK_ENTRY_SHADOW_OBSERVATION"
-        in live_source
+        main_m5_position
+        < blocked_attach_position
+        < report_position
+        < observed_attach_position
+        < execution_position
     )
 
-    assert (
-        "_capture_post_shock_m1_closed_bars_fail_open("
-        in live_source
-    )
-
-    assert (
-        "mt5.TIMEFRAME_M1"
-        in live_source
-    )
-
-    assert (
-        "evaluate_post_shock_shadow_rr_viability"
-        in live_source
-    )
-
-    assert (
-        "_attach_post_shock_shadow_rr_viability_fail_open("
-        in live_source
-    )
-
-    # The event name is intentionally split across
-    # adjacent Python string literals in live_bot.py.
-    # Check the raw source representation instead of
-    # searching for the runtime-concatenated string.
-    assert (
-        '"POST_SHOCK_ENTRY_SHADOW_"'
-        in live_source
-    )
-
-    assert (
-        '"RR_VIABILITY"'
-        in live_source
-    )
-
-    assert (
-        "required_rr=min_rr_required"
-        in live_source
-    )
-
-    # Verify the ACTUAL invocation order rather than
-    # accidentally matching the helper definition.
-    discount_position = live_source.rfind(
-        "min_rr_required = round("
-        "min_rr_required * EXTRA_RR_MULTIPLIER, 2)"
-    )
-
-    rr_attach_position = live_source.rfind(
-        "        _attach_post_shock_shadow_"
-        "rr_viability_fail_open("
-    )
-
-    rr_gate_position = live_source.rfind(
-        "        if not is_rr_valid("
-        "trade_plan, min_rr=min_rr_required"
-        "):"
-    )
-
-    assert discount_position >= 0
-    assert rr_attach_position >= 0
-    assert rr_gate_position >= 0
-
-    assert (
-        discount_position
-        < rr_attach_position
-        < rr_gate_position
-    )
-
-    # Shadow telemetry is never consumed as trading
-    # authority.
     assert (
         "if post_shock_entry_shadow"
         not in live_source
@@ -1094,7 +1317,7 @@ def test_live_integration_is_non_interventional():
         )
 
         assert (
-            "rr_gate_would_pass"
+            "confirmation_readiness"
             not in source
         )
 
@@ -1113,14 +1336,19 @@ def main():
     test_rr_viability_would_pass()
     test_rr_viability_would_fail()
     test_rr_viability_waits_for_plan()
+    test_confirmation_rr_would_block()
+    test_confirmation_m5_context_blocked()
+    test_confirmation_context_observed()
+    test_confirmation_report_missing()
     test_live_integration_is_non_interventional()
 
     print(
-        "[PASS] Post-shock shadow compares "
-        "hypothetical local RR with the exact "
-        "final min_rr_required used by the normal "
-        "live RR gate, without changing decisions; "
-        "confirmation remains pending."
+        "[PASS] Post-shock shadow now records "
+        "RR viability, the exact normal M5 gate "
+        "context, and the existing universal "
+        "confirmation context without inventing "
+        "a hypothetical confirmation verdict or "
+        "gaining execution authority."
     )
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ from typing import Any
 
 
 OBSERVER_VERSION = (
-    "post_shock_entry_shadow_v1_4"
+    "post_shock_entry_shadow_v1_5"
 )
 
 DEFAULT_SHOCK_SCALE_STOP_RATIO = 0.75
@@ -860,6 +860,350 @@ def evaluate_post_shock_shadow_rr_viability(
     return result
 
 
+
+def _base_confirmation_readiness() -> dict[str, Any]:
+    return {
+        "available": False,
+        "observer_only": True,
+        "decision_impact": "NONE",
+        "can_influence_decision": False,
+        "safe_for_execution": False,
+        "execution_allowed": False,
+        "future_execution_authority_ready": False,
+        "state": "NOT_EVALUATED",
+        "reason": (
+            "confirmation_context_not_evaluated"
+        ),
+        "rr_viability_available": False,
+        "rr_gate_would_pass": None,
+        "normal_m5_gate_observed": False,
+        "normal_m5_gate_passed": None,
+        "normal_m5_gate_reason": None,
+        "normal_universal_report_available": False,
+        "normal_universal_report_scope": (
+            "ORIGINAL_LIVE_TRADE_PLAN_CONTEXT"
+        ),
+        "universal_confirmation_engine_mode": None,
+        "universal_confirmation_confidence": None,
+        "universal_confirmation_score_delta": None,
+        "universal_confirmation_enforce_required": None,
+        "required_failed_count": None,
+        "optional_failed_count": None,
+        "entry_quality_status": None,
+        "entry_quality_reason": None,
+        "hypothetical_confirmation_verdict": None,
+        "reached_normal_confirmation_layer": False,
+    }
+
+
+def evaluate_post_shock_shadow_confirmation_readiness(
+    *,
+    shadow_result: dict[str, Any] | None,
+    m5_confirmed: Any = None,
+    m5_reason: Any = None,
+    confirmation_report: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Observe confirmation context only.
+
+    The universal confirmation report belongs to
+    the ORIGINAL live trade plan. It must not be
+    treated as a confirmation verdict for the
+    hypothetical post-shock geometry.
+
+    No decision or execution authority is created.
+    """
+
+    result = _base_confirmation_readiness()
+
+    shadow = (
+        shadow_result
+        if isinstance(
+            shadow_result,
+            dict,
+        )
+        else {}
+    )
+
+    if not shadow:
+        result.update(
+            {
+                "state": "SHADOW_UNAVAILABLE",
+                "reason": (
+                    "post_shock_shadow_unavailable"
+                ),
+            }
+        )
+
+        return result
+
+    plan = (
+        shadow.get("shadow_plan")
+        if isinstance(
+            shadow.get("shadow_plan"),
+            dict,
+        )
+        else {}
+    )
+
+    if (
+        plan.get("status")
+        != "HYPOTHETICAL_LOCAL_PLAN_CONSTRUCTED"
+    ):
+        result.update(
+            {
+                "state": "PLAN_NOT_READY",
+                "reason": (
+                    "hypothetical_local_plan_"
+                    "not_constructed"
+                ),
+            }
+        )
+
+        return result
+
+    rr_viability = (
+        shadow.get("rr_viability")
+        if isinstance(
+            shadow.get("rr_viability"),
+            dict,
+        )
+        else {}
+    )
+
+    rr_available = bool(
+        rr_viability.get(
+            "available",
+            False,
+        )
+    )
+
+    rr_would_pass = (
+        rr_viability.get(
+            "rr_gate_would_pass"
+        )
+        if rr_available
+        else None
+    )
+
+    result.update(
+        {
+            "rr_viability_available": (
+                rr_available
+            ),
+            "rr_gate_would_pass": (
+                rr_would_pass
+            ),
+        }
+    )
+
+    if not rr_available:
+        result.update(
+            {
+                "state": (
+                    "RR_VIABILITY_UNAVAILABLE"
+                ),
+                "reason": (
+                    "final_live_rr_threshold_"
+                    "not_observed"
+                ),
+            }
+        )
+
+        return result
+
+    if rr_would_pass is not True:
+        result.update(
+            {
+                "available": True,
+                "state": "RR_WOULD_BLOCK",
+                "reason": (
+                    "hypothetical_plan_fails_"
+                    "normal_rr_gate"
+                ),
+            }
+        )
+
+        return result
+
+    if not isinstance(
+        m5_confirmed,
+        bool,
+    ):
+        result.update(
+            {
+                "state": (
+                    "M5_CONTEXT_UNAVAILABLE"
+                ),
+                "reason": (
+                    "normal_m5_gate_not_observed"
+                ),
+            }
+        )
+
+        return result
+
+    result.update(
+        {
+            "normal_m5_gate_observed": True,
+            "normal_m5_gate_passed": (
+                m5_confirmed
+            ),
+            "normal_m5_gate_reason": (
+                str(
+                    m5_reason
+                    or ""
+                )
+            ),
+        }
+    )
+
+    if not m5_confirmed:
+        result.update(
+            {
+                "available": True,
+                "state": (
+                    "NORMAL_M5_GATE_BLOCKED"
+                ),
+                "reason": (
+                    "normal_live_m5_gate_blocked"
+                ),
+            }
+        )
+
+        return result
+
+    report = (
+        confirmation_report
+        if isinstance(
+            confirmation_report,
+            dict,
+        )
+        else {}
+    )
+
+    if not report:
+        result.update(
+            {
+                "state": (
+                    "UNIVERSAL_CONTEXT_UNAVAILABLE"
+                ),
+                "reason": (
+                    "normal_universal_report_"
+                    "not_observed"
+                ),
+            }
+        )
+
+        return result
+
+    results = (
+        report.get("results")
+        if isinstance(
+            report.get("results"),
+            list,
+        )
+        else []
+    )
+
+    entry_quality = None
+
+    for item in results:
+        if not isinstance(
+            item,
+            dict,
+        ):
+            continue
+
+        if str(
+            item.get("module")
+            or ""
+        ).upper() == "ENTRY_QUALITY":
+            entry_quality = item
+            break
+
+    required_failed = (
+        report.get("required_failed")
+        if isinstance(
+            report.get("required_failed"),
+            list,
+        )
+        else []
+    )
+
+    optional_failed = (
+        report.get("optional_failed")
+        if isinstance(
+            report.get("optional_failed"),
+            list,
+        )
+        else []
+    )
+
+    result.update(
+        {
+            "available": True,
+            "state": (
+                "CONFIRMATION_CONTEXT_OBSERVED"
+            ),
+            "reason": (
+                "normal_confirmation_context_"
+                "observed_for_original_plan"
+            ),
+            "normal_universal_report_available": (
+                True
+            ),
+            "universal_confirmation_engine_mode": (
+                report.get("mode")
+            ),
+            "universal_confirmation_confidence": (
+                report.get("confidence")
+            ),
+            "universal_confirmation_score_delta": (
+                report.get("score_delta")
+            ),
+            "universal_confirmation_enforce_required": (
+                bool(
+                    report.get(
+                        "enforce_required",
+                        False,
+                    )
+                )
+            ),
+            "required_failed_count": (
+                len(required_failed)
+            ),
+            "optional_failed_count": (
+                len(optional_failed)
+            ),
+            "entry_quality_status": (
+                entry_quality.get("status")
+                if isinstance(
+                    entry_quality,
+                    dict,
+                )
+                else None
+            ),
+            "entry_quality_reason": (
+                entry_quality.get("reason")
+                if isinstance(
+                    entry_quality,
+                    dict,
+                )
+                else None
+            ),
+            "hypothetical_confirmation_verdict": (
+                None
+            ),
+            "reached_normal_confirmation_layer": (
+                True
+            ),
+        }
+    )
+
+    return result
+
+
 def _base_result() -> dict[str, Any]:
     return {
         "observer_version": OBSERVER_VERSION,
@@ -884,6 +1228,9 @@ def _base_result() -> dict[str, Any]:
         ),
         "rr_viability": (
             _base_rr_viability()
+        ),
+        "confirmation_readiness": (
+            _base_confirmation_readiness()
         ),
         "original_geometry": {
             "entry_price": None,

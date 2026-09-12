@@ -25,6 +25,7 @@ from src.post_shock_context import (
 from src.post_shock_entry_shadow import (
     build_post_shock_entry_shadow_fail_open,
     evaluate_post_shock_shadow_rr_viability,
+    evaluate_post_shock_shadow_confirmation_readiness,
 )
 
 from config.settings import (
@@ -1025,6 +1026,125 @@ def _attach_post_shock_shadow_rr_viability_fail_open(
         logger.warning(
             "[POST SHOCK ENTRY SHADOW] "
             "RR viability failed open "
+            f"| error={exc}"
+        )
+
+        return False
+
+
+
+def _attach_post_shock_shadow_confirmation_readiness_fail_open(
+    *,
+    signal_data,
+    m5_confirmed,
+    m5_reason,
+    confirmation_report,
+    strategy_name,
+    signal,
+    score,
+    session_name,
+    market_condition,
+):
+    """
+    Attach confirmation context to shadow telemetry
+    only. Never influences live execution.
+    """
+
+    try:
+        if not isinstance(
+            signal_data,
+            dict,
+        ):
+            return False
+
+        shadow = signal_data.get(
+            "post_shock_entry_shadow"
+        )
+
+        if not isinstance(
+            shadow,
+            dict,
+        ):
+            return False
+
+        readiness = (
+            evaluate_post_shock_shadow_confirmation_readiness(
+                shadow_result=shadow,
+                m5_confirmed=m5_confirmed,
+                m5_reason=m5_reason,
+                confirmation_report=(
+                    confirmation_report
+                ),
+            )
+        )
+
+        shadow[
+            "confirmation_readiness"
+        ] = readiness
+
+        plan = (
+            shadow.get("shadow_plan")
+            if isinstance(
+                shadow.get("shadow_plan"),
+                dict,
+            )
+            else {}
+        )
+
+        rr_viability = (
+            shadow.get("rr_viability")
+            if isinstance(
+                shadow.get("rr_viability"),
+                dict,
+            )
+            else {}
+        )
+
+        log_setup_event(
+            setup_id=signal_data.get(
+                "setup_id"
+            ),
+            event=(
+                "POST_SHOCK_ENTRY_SHADOW_"
+                "CONFIRMATION_READINESS"
+            ),
+            strategy=strategy_name,
+            signal=signal,
+            entry_model=signal_data.get(
+                "entry_model"
+            ),
+            score=score,
+            session=session_name,
+            market_condition=(
+                market_condition
+            ),
+            entry=plan.get(
+                "entry_price"
+            ),
+            sl=plan.get(
+                "stop_loss"
+            ),
+            tp=plan.get(
+                "take_profit"
+            ),
+            rr=rr_viability.get(
+                "hypothetical_rr"
+            ),
+            required_rr=rr_viability.get(
+                "required_rr"
+            ),
+            reason=readiness.get(
+                "reason"
+            ),
+            extra=readiness,
+        )
+
+        return True
+
+    except Exception as exc:
+        logger.warning(
+            "[POST SHOCK ENTRY SHADOW] "
+            "confirmation readiness failed open "
             f"| error={exc}"
         )
 
@@ -16122,6 +16242,18 @@ def process_cycle(last_processed_candle_time):
         )
 
         if not m5_confirmed:
+            _attach_post_shock_shadow_confirmation_readiness_fail_open(
+                signal_data=selected_signal_data,
+                m5_confirmed=False,
+                m5_reason=m5_confirm_reason,
+                confirmation_report=None,
+                strategy_name=strategy_name,
+                signal=signal,
+                score=score,
+                session_name=session_name,
+                market_condition=market_condition,
+            )
+
             logger.info(
                 f"[M5 EXECUTION CONFIRMATION] Execution skipped | "
                 f"strategy={strategy_name} signal={signal} reason={m5_confirm_reason}"
@@ -16150,6 +16282,18 @@ def process_cycle(last_processed_candle_time):
             market_condition=market_condition,
             min_rr_required=min_rr_required if "min_rr_required" in locals() else None,
             max_spread=MAX_SPREAD,
+        )
+
+        _attach_post_shock_shadow_confirmation_readiness_fail_open(
+            signal_data=selected_signal_data,
+            m5_confirmed=True,
+            m5_reason=m5_confirm_reason,
+            confirmation_report=confirmation_report,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=score,
+            session_name=session_name,
+            market_condition=market_condition,
         )
 
         logger.info("🔥 Executing trade...")
