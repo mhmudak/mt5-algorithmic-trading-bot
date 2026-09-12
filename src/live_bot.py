@@ -138,6 +138,9 @@ from src.intrabar_context_observer import (
 from src.market_participation_context import (
     build_market_participation_context,
     build_market_participation_observation,
+    claim_market_participation_high_impact_alert,
+    format_market_participation_high_impact_alert,
+    format_market_participation_telegram_block,
     log_market_participation_observation,
     record_mt5_tick,
     refresh_rithmic_participation_context,
@@ -1182,6 +1185,141 @@ def _capture_market_participation_context(
             "status": "CAPTURE_FAILED_OPEN",
             "error": str(exc),
         }
+
+
+
+def _market_participation_telegram_block_fail_open(
+    *,
+    signal,
+    tick=None,
+    context=None,
+):
+    """
+    Telegram-only presentation helper.
+
+    It never changes candidate state, score, RR,
+    geometry, risk, confirmation or execution.
+    """
+
+    try:
+        resolved_context = (
+            context
+            if isinstance(
+                context,
+                dict,
+            )
+            else _capture_market_participation_context(
+                signal=signal,
+                symbol=SYMBOL,
+                tick=tick,
+            )
+        )
+
+        return (
+            format_market_participation_telegram_block(
+                resolved_context
+            )
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "[MARKET PARTICIPATION] "
+            "Telegram block failed open: "
+            f"{exc}"
+        )
+
+        return ""
+
+
+def _notify_market_participation_high_impact_fail_open(
+    *,
+    context,
+    trigger="CYCLE",
+):
+    """
+    Rare market-wide Telegram alert only.
+
+    This notification has zero trading authority.
+    """
+
+    try:
+        if not isinstance(
+            context,
+            dict,
+        ):
+            return False
+
+        alert = (
+            claim_market_participation_high_impact_alert(
+                context
+            )
+        )
+
+        if not bool(
+            alert.get(
+                "should_notify"
+            )
+        ):
+            return False
+
+        message = (
+            format_market_participation_high_impact_alert(
+                context,
+                alert,
+            )
+        )
+
+        if not message:
+            return False
+
+        send_telegram_message_async(
+            message
+        )
+
+        observation = (
+            build_market_participation_observation(
+                context=context,
+                capture_phase=(
+                    "CYCLE_HIGH_IMPACT_ALERT"
+                ),
+                event=(
+                    "MARKET_PARTICIPATION_"
+                    "HIGH_IMPACT_ALERT"
+                ),
+                strategy="MARKET_WIDE",
+                setup_id=None,
+                signal=alert.get(
+                    "direction"
+                ),
+                entry_model=None,
+                session=None,
+                market_condition=None,
+                trade_plan=None,
+            )
+        )
+
+        log_market_participation_observation(
+            observation
+        )
+
+        logger.warning(
+            "[MARKET PARTICIPATION ALERT] "
+            f"trigger={trigger} "
+            f"direction={alert.get('direction')} "
+            f"severity={alert.get('severity')} "
+            f"source={alert.get('source_coverage')}"
+        )
+
+        return True
+
+    except Exception as exc:
+        logger.warning(
+            "[MARKET PARTICIPATION ALERT] "
+            "failed open: "
+            f"{exc}"
+        )
+
+        return False
 
 
 def _freeze_market_participation_observation(
@@ -5567,7 +5705,14 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
             ENABLE_CANDIDATE_REJECTION_TELEGRAM_ALERTS
             and TELEGRAM_NOTIFY_CANDIDATE_REJECTED_LOW_RR
         ):
-            send_telegram_message(
+            intrabar_participation_block = (
+                _market_participation_telegram_block_fail_open(
+                    signal=signal,
+                    tick=tick,
+                )
+            )
+
+            intrabar_rejected_message = (
                 f"⚠️ Intrabar Candidate Rejected — Low RR\n"
                 f"Symbol: {SYMBOL}\n"
                 f"Strategy: {strategy_name}\n"
@@ -5583,6 +5728,16 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
                 f"RR: {rr_value} / Required: {required_rr}\n\n"
                 f"Recovery ID: {recovery_id or 'not_registered'}\n"
                 f"Action: moved to intrabar candidate recovery if eligible."
+            )
+
+            if intrabar_participation_block:
+                intrabar_rejected_message += (
+                    "\n\n"
+                    + intrabar_participation_block
+                )
+
+            send_telegram_message(
+                intrabar_rejected_message
             )
 
         return False
@@ -7355,7 +7510,14 @@ def process_mtf_conflict_candidate(
             )
 
             if strong_mtf_candidate:
-                send_telegram_message_async(
+                mtf_participation_block = (
+                    _market_participation_telegram_block_fail_open(
+                        signal=signal,
+                        tick=tick,
+                    )
+                )
+
+                mtf_message = (
                     "📌 STRONG MTF CONFLICT TRACKED\n"
                     f"Symbol: {SYMBOL}\n"
                     f"Setup ID: {setup_id}\n"
@@ -7378,6 +7540,16 @@ def process_mtf_conflict_candidate(
                     f"Full RR (TP3): {shadow_rr}\n"
                     f"Required RR: {required_rr}\n\n"
                     "Action: tracked for promotion ? execution only if RR and confirmation gate pass; low RR waits for better entry."
+                )
+
+                if mtf_participation_block:
+                    mtf_message += (
+                        "\n\n"
+                        + mtf_participation_block
+                    )
+
+                send_telegram_message_async(
+                    mtf_message
                 )
 
         if not execution_allowed:
@@ -11498,6 +11670,18 @@ def process_cycle(last_processed_candle_time):
             symbol=SYMBOL,
         )
 
+        cycle_participation_context = (
+            _capture_market_participation_context(
+                signal="UNKNOWN",
+                symbol=SYMBOL,
+            )
+        )
+
+        _notify_market_participation_high_impact_fail_open(
+            context=cycle_participation_context,
+            trigger="PROCESS_CYCLE",
+        )
+
     except Exception as exc:
         logger.warning(
             "[MARKET PARTICIPATION] "
@@ -13225,13 +13409,34 @@ def process_cycle(last_processed_candle_time):
                     ENABLE_CANDIDATE_REJECTION_TELEGRAM_ALERTS
                     and TELEGRAM_NOTIFY_GENERIC_CANDIDATE_REJECTED
                 ):
-                    send_telegram_message(
+                    rejected_participation_block = (
+                        _market_participation_telegram_block_fail_open(
+                            signal=(
+                                candidate.get(
+                                    "signal"
+                                )
+                            ),
+                            tick=tick,
+                        )
+                    )
+
+                    rejected_message = (
                         f"🚫 Candidate Rejected\n"
                         f"Symbol: {SYMBOL}\n"
                         f"Strategy: {candidate.get('strategy')}\n"
                         f"Signal: {candidate.get('signal')}\n"
                         f"Score: {candidate.get('score')}\n\n"
                         f"Reason: {rejection_reason}"
+                    )
+
+                    if rejected_participation_block:
+                        rejected_message += (
+                            "\n\n"
+                            + rejected_participation_block
+                        )
+
+                    send_telegram_message(
+                        rejected_message
                     )
                 
                 continue
@@ -13416,7 +13621,14 @@ def process_cycle(last_processed_candle_time):
                     ENABLE_CANDIDATE_REJECTION_TELEGRAM_ALERTS
                     and TELEGRAM_NOTIFY_CANDIDATE_REJECTED_LOW_RR
                 ):
-                    send_telegram_message(
+                    low_rr_participation_block = (
+                        _market_participation_telegram_block_fail_open(
+                            signal=candidate_signal,
+                            tick=tick,
+                        )
+                    )
+
+                    low_rr_message = (
                         f"⚠️ Candidate Rejected — Low RR\n"
                         f"Symbol: {SYMBOL}\n"
                         f"Strategy: {candidate_strategy}\n"
@@ -13430,6 +13642,16 @@ def process_cycle(last_processed_candle_time):
                         f"{_format_telegram_tp123_from_trade_plan(candidate_signal, candidate_trade_plan)}\n"
                         f"RR: {rr_value} / Required: {min_rr_required}\n\n"
                         f"Action: moved to candidate recovery if eligible."
+                    )
+
+                    if low_rr_participation_block:
+                        low_rr_message += (
+                            "\n\n"
+                            + low_rr_participation_block
+                        )
+
+                    send_telegram_message(
+                        low_rr_message
                     )
                 
                 register_rejected_candidate_for_recovery(
@@ -13764,7 +13986,30 @@ def process_cycle(last_processed_candle_time):
                     "reason": reason,
                 }
 
-                send_telegram_message_async(build_trade_message(detected_data))
+                detected_message = (
+                    build_trade_message(
+                        detected_data
+                    )
+                )
+
+                detected_participation_block = (
+                    _market_participation_telegram_block_fail_open(
+                        signal=signal,
+                        context=(
+                            setup_participation_context
+                        ),
+                    )
+                )
+
+                if detected_participation_block:
+                    detected_message += (
+                        "\n\n"
+                        + detected_participation_block
+                    )
+
+                send_telegram_message_async(
+                    detected_message
+                )
 
                 log_setup_event(
                     setup_id=selected_signal_data.get("setup_id"),

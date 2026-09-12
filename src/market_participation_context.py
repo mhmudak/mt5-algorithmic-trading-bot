@@ -26,6 +26,16 @@ _LAST_TICK_KEY = None
 _RITHMIC_CACHE = {}
 _RITHMIC_LOCK = threading.Lock()
 
+# Notification-only participation alert state.
+# These thresholds never affect trading decisions.
+_HIGH_IMPACT_ALERT_LOCK = threading.Lock()
+_LAST_HIGH_IMPACT_ALERT = {}
+
+DEFAULT_HIGH_IMPACT_ALERT_COOLDOWN_SECONDS = 300.0
+HIGH_IMPACT_MIN_5S_SAMPLES = 5
+HIGH_IMPACT_MIN_OBSERVED_SPAN_SECONDS = 2.0
+HIGH_IMPACT_MIN_DIRECTIONAL_IMBALANCE = 0.60
+
 
 def _safe_float(value: Any) -> Optional[float]:
     try:
@@ -580,6 +590,695 @@ def build_market_participation_context(
     }
 
 
+
+def _format_participation_value(
+    value: Any,
+    *,
+    digits: int = 3,
+) -> str:
+    number = _safe_float(value)
+
+    if number is None:
+        return "N/A"
+
+    return str(
+        round(
+            number,
+            digits,
+        )
+    )
+
+
+def _short_activity_state(
+    value: Any,
+) -> str:
+    mapping = {
+        "ACCELERATING_QUOTE_ACTIVITY": "ACCELERATING",
+        "ELEVATED_QUOTE_ACTIVITY": "ELEVATED",
+        "NORMAL_OR_UNRESOLVED_QUOTE_ACTIVITY": (
+            "NORMAL / UNRESOLVED"
+        ),
+        "INSUFFICIENT_MT5_TICK_SAMPLE": (
+            "INSUFFICIENT SAMPLE"
+        ),
+    }
+
+    text = _safe_text(
+        value,
+        "UNAVAILABLE",
+    )
+
+    return mapping.get(
+        text,
+        text,
+    )
+
+
+def _short_pressure_state(
+    value: Any,
+) -> str:
+    mapping = {
+        "BUY_PRESSURE_PROXY": "BUY",
+        "SELL_PRESSURE_PROXY": "SELL",
+        "NEUTRAL_OR_MIXED_PRESSURE_PROXY": (
+            "NEUTRAL / MIXED"
+        ),
+    }
+
+    text = _safe_text(
+        value,
+        "UNAVAILABLE",
+    )
+
+    return mapping.get(
+        text,
+        text,
+    )
+
+
+def format_market_participation_telegram_block(
+    context: dict | None,
+) -> str:
+    """
+    Compact operator-facing context.
+
+    MT5-only data is always labelled as a proxy.
+    No institutional identity is inferred.
+    """
+
+    if not isinstance(
+        context,
+        dict,
+    ):
+        return (
+            "🏦 Market Participation — Unavailable\n"
+            "Context: unavailable\n"
+            "Mode: OBSERVE ONLY"
+        )
+
+    source_coverage = _safe_text(
+        context.get(
+            "source_coverage"
+        ),
+        "MT5_ONLY",
+    )
+
+    if source_coverage == "MT5_PLUS_RITHMIC":
+        title = (
+            "🏦 Market Participation — "
+            "MT5 + Rithmic"
+        )
+    else:
+        title = (
+            "🏦 Market Participation — "
+            "MT5 Proxy"
+        )
+
+    mt5_context = (
+        context.get(
+            "mt5"
+        )
+        if isinstance(
+            context.get(
+                "mt5"
+            ),
+            dict,
+        )
+        else {}
+    )
+
+    window_5s = (
+        (
+            mt5_context.get(
+                "windows"
+            )
+            or {}
+        ).get(
+            "5s"
+        )
+        or {}
+    )
+
+    lines = [
+        title,
+        (
+            "Activity: "
+            + _short_activity_state(
+                mt5_context.get(
+                    "activity_state"
+                )
+            )
+        ),
+        (
+            "Pressure: "
+            + _short_pressure_state(
+                mt5_context.get(
+                    "pressure_state"
+                )
+            )
+        ),
+        (
+            "5s Imbalance: "
+            + _format_participation_value(
+                window_5s.get(
+                    "directional_imbalance"
+                ),
+                digits=2,
+            )
+        ),
+        (
+            "5s Move: "
+            + _format_participation_value(
+                window_5s.get(
+                    "mid_move"
+                ),
+                digits=3,
+            )
+        ),
+        (
+            "Activity Acceleration: "
+            + _format_participation_value(
+                mt5_context.get(
+                    "quote_activity_acceleration_ratio"
+                ),
+                digits=2,
+            )
+        ),
+        (
+            "Signal Relation: "
+            + _safe_text(
+                context.get(
+                    "signal_relation"
+                ),
+                "UNRESOLVED",
+            )
+        ),
+    ]
+
+    rithmic = (
+        context.get(
+            "rithmic"
+        )
+        if isinstance(
+            context.get(
+                "rithmic"
+            ),
+            dict,
+        )
+        else {}
+    )
+
+    if bool(
+        rithmic.get(
+            "available"
+        )
+    ):
+        lines.extend(
+            [
+                (
+                    "Rithmic Aggression: "
+                    + _safe_text(
+                        rithmic.get(
+                            "aggression_state"
+                        ),
+                        "UNAVAILABLE",
+                    )
+                ),
+                (
+                    "DOM: "
+                    + _safe_text(
+                        rithmic.get(
+                            "dom_state"
+                        ),
+                        "UNAVAILABLE",
+                    )
+                ),
+                (
+                    "Combined: "
+                    + _safe_text(
+                        context.get(
+                            "combined_state"
+                        ),
+                        "UNRESOLVED",
+                    )
+                ),
+            ]
+        )
+
+    else:
+        lines.append(
+            "Rithmic: UNAVAILABLE / NOT CONNECTED"
+        )
+
+    lines.append(
+        "Mode: OBSERVE ONLY"
+    )
+
+    return "\n".join(
+        lines
+    )
+
+
+def classify_market_participation_alert(
+    context: dict | None,
+) -> dict[str, Any]:
+    """
+    Classify an operator notification only.
+
+    HIGH_IMPACT does not mean guaranteed direction,
+    institutional identity, or execution permission.
+    """
+
+    result = {
+        "observer_only": True,
+        "decision_impact": "NONE",
+        "can_influence_decision": False,
+        "safe_for_execution": False,
+        "execution_allowed": False,
+        "severity": "NORMAL",
+        "state": "NO_HIGH_IMPACT_ALERT",
+        "reason": (
+            "high_impact_conditions_not_met"
+        ),
+        "direction": None,
+        "source_coverage": None,
+        "sample_count_5s": None,
+        "observed_span_seconds_5s": None,
+        "directional_imbalance_5s": None,
+        "mid_move_5s": None,
+        "activity_acceleration_ratio": None,
+        "should_notify_candidate": False,
+    }
+
+    if not isinstance(
+        context,
+        dict,
+    ):
+        result.update(
+            {
+                "state": "CONTEXT_UNAVAILABLE",
+                "reason": (
+                    "market_participation_context_"
+                    "unavailable"
+                ),
+            }
+        )
+
+        return result
+
+    mt5_context = (
+        context.get(
+            "mt5"
+        )
+        if isinstance(
+            context.get(
+                "mt5"
+            ),
+            dict,
+        )
+        else {}
+    )
+
+    window_5s = (
+        (
+            mt5_context.get(
+                "windows"
+            )
+            or {}
+        ).get(
+            "5s"
+        )
+        or {}
+    )
+
+    activity_state = _safe_text(
+        mt5_context.get(
+            "activity_state"
+        ),
+    )
+
+    pressure_state = _safe_text(
+        mt5_context.get(
+            "pressure_state"
+        ),
+    )
+
+    imbalance = _safe_float(
+        window_5s.get(
+            "directional_imbalance"
+        )
+    )
+
+    mid_move = _safe_float(
+        window_5s.get(
+            "mid_move"
+        )
+    )
+
+    acceleration = _safe_float(
+        mt5_context.get(
+            "quote_activity_acceleration_ratio"
+        )
+    )
+
+    observed_span = _safe_float(
+        window_5s.get(
+            "observed_span_seconds"
+        )
+    )
+
+    try:
+        sample_count = int(
+            window_5s.get(
+                "sample_count"
+            )
+            or 0
+        )
+    except Exception:
+        sample_count = 0
+
+    direction = None
+
+    if (
+        pressure_state
+        == "BUY_PRESSURE_PROXY"
+    ):
+        direction = "BUY"
+
+    elif (
+        pressure_state
+        == "SELL_PRESSURE_PROXY"
+    ):
+        direction = "SELL"
+
+    result.update(
+        {
+            "direction": direction,
+            "source_coverage": (
+                context.get(
+                    "source_coverage"
+                )
+            ),
+            "sample_count_5s": (
+                sample_count
+            ),
+            "observed_span_seconds_5s": (
+                observed_span
+            ),
+            "directional_imbalance_5s": (
+                imbalance
+            ),
+            "mid_move_5s": (
+                mid_move
+            ),
+            "activity_acceleration_ratio": (
+                acceleration
+            ),
+        }
+    )
+
+    high_impact = bool(
+        activity_state
+        == "ACCELERATING_QUOTE_ACTIVITY"
+        and direction
+        in {
+            "BUY",
+            "SELL",
+        }
+        and sample_count
+        >= HIGH_IMPACT_MIN_5S_SAMPLES
+        and observed_span
+        is not None
+        and observed_span
+        >= HIGH_IMPACT_MIN_OBSERVED_SPAN_SECONDS
+        and imbalance
+        is not None
+        and abs(
+            imbalance
+        )
+        >= HIGH_IMPACT_MIN_DIRECTIONAL_IMBALANCE
+    )
+
+    if high_impact:
+        result.update(
+            {
+                "severity": "HIGH_IMPACT",
+                "state": (
+                    "HIGH_IMPACT_PARTICIPATION_PROXY"
+                ),
+                "reason": (
+                    "accelerating_quote_activity_"
+                    "with_strong_directional_"
+                    "imbalance"
+                ),
+                "should_notify_candidate": True,
+            }
+        )
+
+        return result
+
+    if (
+        activity_state
+        == "ACCELERATING_QUOTE_ACTIVITY"
+    ):
+        result.update(
+            {
+                "severity": "STRONG",
+                "state": (
+                    "ACCELERATING_ACTIVITY_"
+                    "BELOW_HIGH_IMPACT_THRESHOLD"
+                ),
+                "reason": (
+                    "accelerating_activity_without_"
+                    "full_high_impact_confirmation"
+                ),
+            }
+        )
+
+    elif (
+        activity_state
+        == "ELEVATED_QUOTE_ACTIVITY"
+    ):
+        result.update(
+            {
+                "severity": "WATCH",
+                "state": (
+                    "ELEVATED_ACTIVITY"
+                ),
+                "reason": (
+                    "elevated_quote_activity"
+                ),
+            }
+        )
+
+    return result
+
+
+def claim_market_participation_high_impact_alert(
+    context: dict | None,
+    *,
+    now_epoch: Optional[float] = None,
+    cooldown_seconds: float = (
+        DEFAULT_HIGH_IMPACT_ALERT_COOLDOWN_SECONDS
+    ),
+) -> dict[str, Any]:
+    """
+    Deduplicate same-symbol/same-direction Telegram
+    alerts. Notification state only.
+    """
+
+    alert = (
+        classify_market_participation_alert(
+            context
+        )
+    )
+
+    alert = dict(
+        alert
+    )
+
+    alert[
+        "should_notify"
+    ] = False
+
+    alert[
+        "notification_reason"
+    ] = (
+        "classification_not_high_impact"
+    )
+
+    if not bool(
+        alert.get(
+            "should_notify_candidate"
+        )
+    ):
+        return alert
+
+    now_epoch = float(
+        now_epoch
+        if now_epoch is not None
+        else time.time()
+    )
+
+    symbol = _safe_text(
+        (
+            context
+            or {}
+        ).get(
+            "symbol"
+        ),
+        "UNKNOWN",
+    ).upper()
+
+    direction = _safe_text(
+        alert.get(
+            "direction"
+        ),
+        "UNKNOWN",
+    ).upper()
+
+    fingerprint = (
+        f"{symbol}|{direction}"
+    )
+
+    cooldown_seconds = max(
+        0.0,
+        float(
+            cooldown_seconds
+        ),
+    )
+
+    with _HIGH_IMPACT_ALERT_LOCK:
+        last_epoch = _safe_float(
+            _LAST_HIGH_IMPACT_ALERT.get(
+                fingerprint
+            )
+        )
+
+        if (
+            last_epoch is not None
+            and (
+                now_epoch
+                - last_epoch
+            )
+            < cooldown_seconds
+        ):
+            alert[
+                "notification_reason"
+            ] = (
+                "same_direction_cooldown_active"
+            )
+
+            alert[
+                "cooldown_remaining_seconds"
+            ] = round(
+                max(
+                    0.0,
+                    cooldown_seconds
+                    - (
+                        now_epoch
+                        - last_epoch
+                    ),
+                ),
+                3,
+            )
+
+            return alert
+
+        _LAST_HIGH_IMPACT_ALERT[
+            fingerprint
+        ] = now_epoch
+
+    alert[
+        "should_notify"
+    ] = True
+
+    alert[
+        "notification_reason"
+    ] = "high_impact_alert_claimed"
+
+    alert[
+        "cooldown_seconds"
+    ] = cooldown_seconds
+
+    return alert
+
+
+def format_market_participation_high_impact_alert(
+    context: dict | None,
+    alert: dict | None = None,
+) -> str:
+    alert = (
+        alert
+        if isinstance(
+            alert,
+            dict,
+        )
+        else classify_market_participation_alert(
+            context
+        )
+    )
+
+    if (
+        alert.get(
+            "severity"
+        )
+        != "HIGH_IMPACT"
+    ):
+        return ""
+
+    context = (
+        context
+        if isinstance(
+            context,
+            dict,
+        )
+        else {}
+    )
+
+    symbol = _safe_text(
+        context.get(
+            "symbol"
+        ),
+        "UNKNOWN",
+    )
+
+    source = _safe_text(
+        context.get(
+            "source_coverage"
+        ),
+        "MT5_ONLY",
+    )
+
+    source_label = (
+        "MT5 + RITHMIC"
+        if source
+        == "MT5_PLUS_RITHMIC"
+        else "MT5 PROXY"
+    )
+
+    return (
+        "🚨 HIGH-IMPACT MARKET PARTICIPATION\n"
+        f"Symbol: {symbol}\n"
+        f"Source: {source_label}\n"
+        f"Direction Proxy: "
+        f"{alert.get('direction') or 'UNRESOLVED'}\n"
+        "Activity: ACCELERATING\n"
+        f"5s Imbalance: "
+        f"{_format_participation_value(alert.get('directional_imbalance_5s'), digits=2)}\n"
+        f"5s Move: "
+        f"{_format_participation_value(alert.get('mid_move_5s'), digits=3)}\n"
+        f"Activity Acceleration: "
+        f"{_format_participation_value(alert.get('activity_acceleration_ratio'), digits=2)}\n\n"
+        "⚠️ Abnormal short-term participation "
+        "conditions detected.\n"
+        "This does NOT identify institutions and "
+        "does NOT guarantee future price direction.\n"
+        "Action: do not chase; wait for structure "
+        "and normal confirmation."
+    )
+
+
 def build_market_participation_observation(
     *,
     context: dict,
@@ -661,8 +1360,13 @@ def log_market_participation_observation(
 
 def _reset_market_participation_state_for_tests() -> None:
     global _LAST_TICK_KEY
+
     with _TICK_LOCK:
         _TICK_TAPE.clear()
         _LAST_TICK_KEY = None
+
     with _RITHMIC_LOCK:
         _RITHMIC_CACHE.clear()
+
+    with _HIGH_IMPACT_ALERT_LOCK:
+        _LAST_HIGH_IMPACT_ALERT.clear()

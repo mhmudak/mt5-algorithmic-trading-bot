@@ -13,6 +13,10 @@ from src.market_participation_context import (
     _reset_market_participation_state_for_tests,
     build_market_participation_context,
     build_market_participation_observation,
+    claim_market_participation_high_impact_alert,
+    classify_market_participation_alert,
+    format_market_participation_high_impact_alert,
+    format_market_participation_telegram_block,
     get_cached_rithmic_participation_context,
     log_market_participation_observation,
     record_mt5_tick,
@@ -168,8 +172,349 @@ def test_observation_persistence_is_generic_not_intrabar_only():
     assert rows[0]["participation_context"]["combined_state"] == "CROSS_MARKET_BUY_ALIGNED"
 
 
+
+def _high_impact_mt5_context():
+    return {
+        "schema_version": 1,
+        "symbol": "XAUUSD",
+        "signal": "SELL",
+        "identity_inference": (
+            "PARTICIPANT_IDENTITY_NOT_OBSERVABLE"
+        ),
+        "decision_impact": "NONE",
+        "can_influence_decision": False,
+        "safe_for_execution": False,
+        "source_coverage": "MT5_ONLY",
+        "combined_state": (
+            "MT5_ONLY_SELL_PRESSURE_PROXY"
+        ),
+        "signal_relation": "WITH_SIGNAL",
+        "mt5": {
+            "available": True,
+            "source": (
+                "MT5_BOT_LOOP_SAMPLED_QUOTES"
+            ),
+            "decision_impact": "NONE",
+            "can_influence_decision": False,
+            "activity_state": (
+                "ACCELERATING_QUOTE_ACTIVITY"
+            ),
+            "pressure_state": (
+                "SELL_PRESSURE_PROXY"
+            ),
+            "quote_activity_acceleration_ratio": (
+                1.85
+            ),
+            "current_spread": 0.20,
+            "windows": {
+                "5s": {
+                    "sample_count": 9,
+                    "observed_span_seconds": 4.0,
+                    "mid_move": -1.25,
+                    "directional_imbalance": -0.78,
+                },
+                "15s": {},
+                "60s": {},
+            },
+        },
+        "rithmic": {
+            "available": False,
+            "source": "RITHMIC",
+            "status": (
+                "RITHMIC_CONTEXT_CACHE_"
+                "MISSING_OR_STALE"
+            ),
+            "decision_impact": "NONE",
+            "can_influence_decision": False,
+            "safe_for_execution": False,
+            "aggression_state": "UNAVAILABLE",
+            "dom_state": "UNAVAILABLE",
+        },
+    }
+
+
+def test_mt5_proxy_telegram_block_is_honest():
+    context = _high_impact_mt5_context()
+
+    block = (
+        format_market_participation_telegram_block(
+            context
+        )
+    )
+
+    assert (
+        "Market Participation — MT5 Proxy"
+        in block
+    )
+
+    assert "Activity: ACCELERATING" in block
+    assert "Pressure: SELL" in block
+    assert "5s Imbalance: -0.78" in block
+    assert "Signal Relation: WITH_SIGNAL" in block
+    assert "Rithmic: UNAVAILABLE" in block
+    assert "Mode: OBSERVE ONLY" in block
+
+    # Never overclaim participant identity.
+    assert "Institutional Confirmed" not in block
+    assert "Bank Flow" not in block
+
+
+def test_rithmic_formatter_auto_enriches_when_available():
+    _reset_market_participation_state_for_tests()
+
+    now = _seed_buy_ticks()
+
+    context = build_market_participation_context(
+        symbol="XAUUSD",
+        signal="BUY",
+        provider=FakeRithmicProvider(),
+        now_epoch=now,
+    )
+
+    block = (
+        format_market_participation_telegram_block(
+            context
+        )
+    )
+
+    assert (
+        "Market Participation — MT5 + Rithmic"
+        in block
+    )
+
+    assert (
+        "Rithmic Aggression: BUY_AGGRESSION"
+        in block
+    )
+
+    assert (
+        "DOM: BID_DEPTH_DOMINANT"
+        in block
+    )
+
+
+def test_high_impact_alert_is_notification_only():
+    context = _high_impact_mt5_context()
+
+    alert = (
+        classify_market_participation_alert(
+            context
+        )
+    )
+
+    assert (
+        alert["severity"]
+        == "HIGH_IMPACT"
+    )
+
+    assert (
+        alert[
+            "should_notify_candidate"
+        ]
+        is True
+    )
+
+    assert (
+        alert["direction"]
+        == "SELL"
+    )
+
+    assert (
+        alert["decision_impact"]
+        == "NONE"
+    )
+
+    assert (
+        alert[
+            "can_influence_decision"
+        ]
+        is False
+    )
+
+    assert (
+        alert[
+            "safe_for_execution"
+        ]
+        is False
+    )
+
+    assert (
+        alert[
+            "execution_allowed"
+        ]
+        is False
+    )
+
+    message = (
+        format_market_participation_high_impact_alert(
+            context,
+            alert,
+        )
+    )
+
+    assert (
+        "HIGH-IMPACT MARKET PARTICIPATION"
+        in message
+    )
+
+    assert (
+        "does NOT guarantee future price direction"
+        in message
+    )
+
+
+def test_high_impact_same_direction_cooldown():
+    _reset_market_participation_state_for_tests()
+
+    context = _high_impact_mt5_context()
+
+    first = (
+        claim_market_participation_high_impact_alert(
+            context,
+            now_epoch=1000.0,
+            cooldown_seconds=300.0,
+        )
+    )
+
+    second = (
+        claim_market_participation_high_impact_alert(
+            context,
+            now_epoch=1001.0,
+            cooldown_seconds=300.0,
+        )
+    )
+
+    later = (
+        claim_market_participation_high_impact_alert(
+            context,
+            now_epoch=1301.0,
+            cooldown_seconds=300.0,
+        )
+    )
+
+    assert (
+        first["should_notify"]
+        is True
+    )
+
+    assert (
+        second["should_notify"]
+        is False
+    )
+
+    assert (
+        second[
+            "notification_reason"
+        ]
+        == "same_direction_cooldown_active"
+    )
+
+    assert (
+        later["should_notify"]
+        is True
+    )
+
+
+def test_live_notifications_surface_context_without_authority():
+    live_source = (
+        ROOT
+        / "src"
+        / "live_bot.py"
+    ).read_text(
+        encoding="utf-8-sig"
+    )
+
+    risk_source = (
+        ROOT
+        / "src"
+        / "risk.py"
+    ).read_text(
+        encoding="utf-8-sig"
+    )
+
+    execution_source = (
+        ROOT
+        / "src"
+        / "execution_engine.py"
+    ).read_text(
+        encoding="utf-8-sig"
+    )
+
+    recovery_source = (
+        ROOT
+        / "src"
+        / "candidate_rejection_recovery.py"
+    ).read_text(
+        encoding="utf-8-sig"
+    )
+
+    # Definition + five lifecycle notification uses.
+    assert (
+        live_source.count(
+            "_market_participation_telegram_"
+            "block_fail_open("
+        )
+        == 6
+    )
+
+    # Definition + cycle-level invocation.
+    assert (
+        live_source.count(
+            "_notify_market_participation_"
+            "high_impact_fail_open("
+        )
+        == 2
+    )
+
+    assert (
+        "cycle_participation_context"
+        in live_source
+    )
+
+    assert (
+        "SETUP DETECTED"
+        in live_source
+    )
+
+    assert (
+        "STRONG MTF CONFLICT TRACKED"
+        in live_source
+    )
+
+    assert (
+        "Candidate Rejected"
+        in live_source
+    )
+
+    for source in (
+        risk_source,
+        execution_source,
+        recovery_source,
+    ):
+        assert (
+            "format_market_participation_"
+            "telegram_block"
+            not in source
+        )
+
+        assert (
+            "claim_market_participation_"
+            "high_impact_alert"
+            not in source
+        )
+
+
 if __name__ == "__main__":
     test_cross_market_buy_alignment_is_research_only()
     test_rithmic_cache_can_be_refreshed_outside_execution_path()
     test_observation_persistence_is_generic_not_intrabar_only()
-    print("[PASS] Universal MT5/Rithmic market-participation context regression passed.")
+    test_mt5_proxy_telegram_block_is_honest()
+    test_rithmic_formatter_auto_enriches_when_available()
+    test_high_impact_alert_is_notification_only()
+    test_high_impact_same_direction_cooldown()
+    test_live_notifications_surface_context_without_authority()
+
+    print(
+        "[PASS] Universal MT5/Rithmic market-participation "
+        "context + Telegram notification regression passed."
+    )
