@@ -22,6 +22,9 @@ from src.setup_audit import log_setup_event
 from src.post_shock_context import (
     build_post_shock_context,
 )
+from src.post_shock_entry_shadow import (
+    build_post_shock_entry_shadow,
+)
 
 from config.settings import (
     ENABLE_POST_SHOCK_CONTEXT_OBSERVER,
@@ -13212,6 +13215,24 @@ def process_cycle(last_processed_candle_time):
                         tick=tick,
                         signal_data=(
                             selected_signal_data
+                        ),
+                    )
+                )
+
+                selected_signal_data[
+                    "post_shock_entry_shadow"
+                ] = (
+                    build_post_shock_entry_shadow(
+                        post_shock_context=(
+                            selected_signal_data.get(
+                                "post_shock_context"
+                            )
+                        ),
+                        setup=(
+                            selected_signal_data
+                        ),
+                        current_price=(
+                            close_price
                         ),
                     )
                 )
