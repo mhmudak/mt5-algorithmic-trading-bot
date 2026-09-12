@@ -24,6 +24,7 @@ from src.post_shock_context import (
 )
 from src.post_shock_entry_shadow import (
     build_post_shock_entry_shadow_fail_open,
+    evaluate_post_shock_shadow_rr_viability,
 )
 
 from config.settings import (
@@ -901,6 +902,129 @@ def _log_post_shock_entry_shadow_fail_open(
         logger.warning(
             "[POST SHOCK ENTRY SHADOW] "
             "audit persistence failed open "
+            f"| error={exc}"
+        )
+
+        return False
+
+
+
+def _attach_post_shock_shadow_rr_viability_fail_open(
+    *,
+    signal_data,
+    required_rr,
+    strategy_name,
+    signal,
+    score,
+    session_name,
+    market_condition,
+):
+    """
+    Attach final normal-RR-gate viability to the
+    existing post-shock shadow payload only.
+
+    This is fail-open telemetry and must never alter
+    live setup eligibility, RR, risk or execution.
+    """
+
+    try:
+        if not isinstance(
+            signal_data,
+            dict,
+        ):
+            return False
+
+        shadow = signal_data.get(
+            "post_shock_entry_shadow"
+        )
+
+        if not isinstance(
+            shadow,
+            dict,
+        ):
+            return False
+
+        viability = (
+            evaluate_post_shock_shadow_rr_viability(
+                shadow_result=shadow,
+                required_rr=required_rr,
+                threshold_source=(
+                    "normal_live_rr_gate_"
+                    "final_min_rr_required"
+                ),
+            )
+        )
+
+        shadow[
+            "rr_viability"
+        ] = viability
+
+        if not bool(
+            viability.get(
+                "available",
+                False,
+            )
+        ):
+            return True
+
+        plan = (
+            shadow.get(
+                "shadow_plan"
+            )
+            if isinstance(
+                shadow.get(
+                    "shadow_plan"
+                ),
+                dict,
+            )
+            else {}
+        )
+
+        log_setup_event(
+            setup_id=signal_data.get(
+                "setup_id"
+            ),
+            event=(
+                "POST_SHOCK_ENTRY_SHADOW_"
+                "RR_VIABILITY"
+            ),
+            strategy=strategy_name,
+            signal=signal,
+            entry_model=signal_data.get(
+                "entry_model"
+            ),
+            score=score,
+            session=session_name,
+            market_condition=(
+                market_condition
+            ),
+            entry=plan.get(
+                "entry_price"
+            ),
+            sl=plan.get(
+                "stop_loss"
+            ),
+            tp=plan.get(
+                "take_profit"
+            ),
+            rr=viability.get(
+                "hypothetical_rr"
+            ),
+            required_rr=viability.get(
+                "required_rr"
+            ),
+            reason=viability.get(
+                "reason"
+            ),
+            extra=viability,
+        )
+
+        return True
+
+    except Exception as exc:
+        logger.warning(
+            "[POST SHOCK ENTRY SHADOW] "
+            "RR viability failed open "
             f"| error={exc}"
         )
 
@@ -14544,6 +14668,16 @@ def process_cycle(last_processed_candle_time):
                 f"[RR DISCOUNT] Extra entry RR adjusted | "
                 f"strategy={strategy_name} required_rr={min_rr_required}"
             )
+
+        _attach_post_shock_shadow_rr_viability_fail_open(
+            signal_data=selected_signal_data,
+            required_rr=min_rr_required,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=score,
+            session_name=session_name,
+            market_condition=market_condition,
+        )
 
         if not is_rr_valid(trade_plan, min_rr=min_rr_required):
             trade_allowed = False

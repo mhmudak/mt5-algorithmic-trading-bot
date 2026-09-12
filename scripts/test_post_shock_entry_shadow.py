@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
 from src.post_shock_entry_shadow import (
     build_post_shock_entry_shadow,
     build_post_shock_entry_shadow_fail_open,
+    evaluate_post_shock_shadow_rr_viability,
 )
 
 
@@ -724,6 +725,236 @@ def test_normal_context_is_inactive():
     )
 
 
+
+def _constructed_sell_shadow():
+    sell_setup = setup()
+
+    sell_setup[
+        "tp_reference"
+    ] = 90.0
+
+    return build_post_shock_entry_shadow(
+        post_shock_context=context(
+            state="POST_SHOCK_ENTRY_MODE",
+            stop_distance=93.26,
+            m5_fresh_structure=True,
+        ),
+        setup=sell_setup,
+        current_price=4390.57,
+        m1_closed_bars=(
+            sell_m1_pattern()
+        ),
+    )
+
+
+def assert_rr_viability_observer_only(
+    viability,
+):
+    assert (
+        viability["observer_only"]
+        is True
+    )
+
+    assert (
+        viability["decision_impact"]
+        == "NONE"
+    )
+
+    assert (
+        viability[
+            "can_influence_decision"
+        ]
+        is False
+    )
+
+    assert (
+        viability[
+            "safe_for_execution"
+        ]
+        is False
+    )
+
+    assert (
+        viability[
+            "execution_allowed"
+        ]
+        is False
+    )
+
+    assert (
+        viability[
+            "future_execution_authority_ready"
+        ]
+        is False
+    )
+
+    assert (
+        viability[
+            "normal_confirmation_gate_status"
+        ]
+        == "PENDING_NORMAL_PIPELINE"
+    )
+
+    assert (
+        viability[
+            "normal_confirmation_gate_would_pass"
+        ]
+        is None
+    )
+
+
+def test_rr_viability_would_pass():
+    shadow = (
+        _constructed_sell_shadow()
+    )
+
+    plan_before = dict(
+        shadow[
+            "shadow_plan"
+        ]
+    )
+
+    viability = (
+        evaluate_post_shock_shadow_rr_viability(
+            shadow_result=shadow,
+            required_rr=1.25,
+        )
+    )
+
+    assert_rr_viability_observer_only(
+        viability
+    )
+
+    assert (
+        viability["available"]
+        is True
+    )
+
+    assert (
+        viability["state"]
+        == "RR_WOULD_PASS"
+    )
+
+    assert (
+        viability[
+            "hypothetical_rr"
+        ]
+        == 2.428571
+    )
+
+    assert (
+        viability[
+            "required_rr"
+        ]
+        == 1.25
+    )
+
+    assert (
+        viability[
+            "rr_gate_would_pass"
+        ]
+        is True
+    )
+
+    assert (
+        viability[
+            "rr_margin"
+        ]
+        == 1.178571
+    )
+
+    assert (
+        shadow[
+            "shadow_plan"
+        ]
+        == plan_before
+    )
+
+
+def test_rr_viability_would_fail():
+    shadow = (
+        _constructed_sell_shadow()
+    )
+
+    viability = (
+        evaluate_post_shock_shadow_rr_viability(
+            shadow_result=shadow,
+            required_rr=3.0,
+        )
+    )
+
+    assert_rr_viability_observer_only(
+        viability
+    )
+
+    assert (
+        viability["available"]
+        is True
+    )
+
+    assert (
+        viability["state"]
+        == "RR_WOULD_FAIL"
+    )
+
+    assert (
+        viability[
+            "rr_gate_would_pass"
+        ]
+        is False
+    )
+
+    assert (
+        viability[
+            "rr_margin"
+        ]
+        == -0.571429
+    )
+
+
+def test_rr_viability_waits_for_plan():
+    shadow = (
+        build_post_shock_entry_shadow(
+            post_shock_context=context(
+                state="POST_SHOCK_ENTRY_MODE",
+                stop_distance=20.0,
+                m5_fresh_structure=True,
+            ),
+            setup=setup(),
+            current_price=4390.57,
+        )
+    )
+
+    viability = (
+        evaluate_post_shock_shadow_rr_viability(
+            shadow_result=shadow,
+            required_rr=1.10,
+        )
+    )
+
+    assert_rr_viability_observer_only(
+        viability
+    )
+
+    assert (
+        viability["available"]
+        is False
+    )
+
+    assert (
+        viability["state"]
+        == "PLAN_NOT_READY"
+    )
+
+    assert (
+        viability[
+            "rr_gate_would_pass"
+        ]
+        is None
+    )
+
+
+
 def test_live_integration_is_non_interventional():
     live_source = (
         ROOT
@@ -749,16 +980,13 @@ def test_live_integration_is_non_interventional():
         encoding="utf-8-sig"
     )
 
-    assert (
-        "build_post_shock_entry_shadow"
-        in live_source
+    recovery_source = (
+        ROOT
+        / "src"
+        / "candidate_rejection_recovery.py"
+    ).read_text(
+        encoding="utf-8-sig"
     )
-
-    assert (
-        '"post_shock_entry_shadow"'
-        in live_source
-    )
-
 
     assert (
         "build_post_shock_entry_shadow_fail_open("
@@ -775,7 +1003,6 @@ def test_live_integration_is_non_interventional():
         in live_source
     )
 
-
     assert (
         "_capture_post_shock_m1_closed_bars_fail_open("
         in live_source
@@ -787,12 +1014,64 @@ def test_live_integration_is_non_interventional():
     )
 
     assert (
-        "m1_closed_bars=("
+        "evaluate_post_shock_shadow_rr_viability"
         in live_source
     )
 
-    # Shadow output is attached, never used as a
-    # trading branch or execution authority.
+    assert (
+        "_attach_post_shock_shadow_rr_viability_fail_open("
+        in live_source
+    )
+
+    # The event name is intentionally split across
+    # adjacent Python string literals in live_bot.py.
+    # Check the raw source representation instead of
+    # searching for the runtime-concatenated string.
+    assert (
+        '"POST_SHOCK_ENTRY_SHADOW_"'
+        in live_source
+    )
+
+    assert (
+        '"RR_VIABILITY"'
+        in live_source
+    )
+
+    assert (
+        "required_rr=min_rr_required"
+        in live_source
+    )
+
+    # Verify the ACTUAL invocation order rather than
+    # accidentally matching the helper definition.
+    discount_position = live_source.rfind(
+        "min_rr_required = round("
+        "min_rr_required * EXTRA_RR_MULTIPLIER, 2)"
+    )
+
+    rr_attach_position = live_source.rfind(
+        "        _attach_post_shock_shadow_"
+        "rr_viability_fail_open("
+    )
+
+    rr_gate_position = live_source.rfind(
+        "        if not is_rr_valid("
+        "trade_plan, min_rr=min_rr_required"
+        "):"
+    )
+
+    assert discount_position >= 0
+    assert rr_attach_position >= 0
+    assert rr_gate_position >= 0
+
+    assert (
+        discount_position
+        < rr_attach_position
+        < rr_gate_position
+    )
+
+    # Shadow telemetry is never consumed as trading
+    # authority.
     assert (
         "if post_shock_entry_shadow"
         not in live_source
@@ -804,16 +1083,20 @@ def test_live_integration_is_non_interventional():
         not in live_source
     )
 
-    assert (
-        "post_shock_entry_shadow"
-        not in risk_source
-    )
+    for source in (
+        risk_source,
+        execution_source,
+        recovery_source,
+    ):
+        assert (
+            "post_shock_entry_shadow"
+            not in source
+        )
 
-    assert (
-        "post_shock_entry_shadow"
-        not in execution_source
-    )
-
+        assert (
+            "rr_gate_would_pass"
+            not in source
+        )
 
 
 def main():
@@ -827,13 +1110,17 @@ def main():
     test_targetless_plan_never_fabricates_tp()
     test_normal_context_is_inactive()
     test_fail_open_wrapper_never_raises()
+    test_rr_viability_would_pass()
+    test_rr_viability_would_fail()
+    test_rr_viability_waits_for_plan()
     test_live_integration_is_non_interventional()
 
     print(
-        "[PASS] Post-shock local-entry shadow "
-        "keeps live setup/risk/execution untouched, "
-        "and constructs hypothetical local entry, "
-        "structural stop and RR telemetry only."
+        "[PASS] Post-shock shadow compares "
+        "hypothetical local RR with the exact "
+        "final min_rr_required used by the normal "
+        "live RR gate, without changing decisions; "
+        "confirmation remains pending."
     )
 
 if __name__ == "__main__":

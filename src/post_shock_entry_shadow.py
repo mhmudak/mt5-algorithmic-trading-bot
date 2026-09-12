@@ -4,7 +4,7 @@ from typing import Any
 
 
 OBSERVER_VERSION = (
-    "post_shock_entry_shadow_v1_3"
+    "post_shock_entry_shadow_v1_4"
 )
 
 DEFAULT_SHOCK_SCALE_STOP_RATIO = 0.75
@@ -653,6 +653,213 @@ def _build_hypothetical_local_plan(
     return plan
 
 
+
+def _base_rr_viability() -> dict[str, Any]:
+    return {
+        "available": False,
+        "observer_only": True,
+        "decision_impact": "NONE",
+        "can_influence_decision": False,
+        "safe_for_execution": False,
+        "execution_allowed": False,
+        "state": "NOT_EVALUATED",
+        "reason": (
+            "normal_rr_gate_not_evaluated"
+        ),
+        "hypothetical_rr": None,
+        "required_rr": None,
+        "rr_gate_would_pass": None,
+        "rr_margin": None,
+        "threshold_source": None,
+        "threshold_scope": (
+            "NORMAL_LIVE_RR_GATE_FINAL_THRESHOLD"
+        ),
+        "normal_confirmation_gate_status": (
+            "PENDING_NORMAL_PIPELINE"
+        ),
+        "normal_confirmation_gate_would_pass": None,
+        "future_execution_authority_ready": False,
+    }
+
+
+def evaluate_post_shock_shadow_rr_viability(
+    *,
+    shadow_result: dict[str, Any] | None,
+    required_rr: Any,
+    threshold_source: str = (
+        "normal_live_rr_gate"
+    ),
+) -> dict[str, Any]:
+    """
+    Observe whether the hypothetical post-shock
+    local plan would satisfy the SAME final RR
+    threshold being used by the normal live RR gate.
+
+    This function does not:
+    - approve or block a setup,
+    - alter the live trade plan,
+    - alter entry / SL / TP,
+    - alter risk,
+    - run or bypass confirmation,
+    - authorize execution.
+
+    Normal confirmation remains explicitly pending.
+    """
+
+    result = (
+        _base_rr_viability()
+    )
+
+    shadow = (
+        shadow_result
+        if isinstance(
+            shadow_result,
+            dict,
+        )
+        else {}
+    )
+
+    if not shadow:
+        result.update(
+            {
+                "state": (
+                    "SHADOW_UNAVAILABLE"
+                ),
+                "reason": (
+                    "post_shock_shadow_unavailable"
+                ),
+            }
+        )
+
+        return result
+
+    plan = (
+        shadow.get(
+            "shadow_plan"
+        )
+        if isinstance(
+            shadow.get(
+                "shadow_plan"
+            ),
+            dict,
+        )
+        else {}
+    )
+
+    if (
+        plan.get(
+            "status"
+        )
+        != "HYPOTHETICAL_LOCAL_PLAN_CONSTRUCTED"
+    ):
+        result.update(
+            {
+                "state": (
+                    "PLAN_NOT_READY"
+                ),
+                "reason": (
+                    "hypothetical_local_plan_"
+                    "not_constructed"
+                ),
+            }
+        )
+
+        return result
+
+    hypothetical_rr = _safe_float(
+        plan.get(
+            "risk_reward"
+        )
+    )
+
+    required = _safe_float(
+        required_rr
+    )
+
+    result.update(
+        {
+            "hypothetical_rr": (
+                hypothetical_rr
+            ),
+            "required_rr": (
+                required
+            ),
+            "threshold_source": (
+                str(
+                    threshold_source
+                    or "unknown"
+                )
+            ),
+        }
+    )
+
+    if hypothetical_rr is None:
+        result.update(
+            {
+                "state": (
+                    "HYPOTHETICAL_RR_UNAVAILABLE"
+                ),
+                "reason": (
+                    "shadow_plan_rr_unavailable"
+                ),
+            }
+        )
+
+        return result
+
+    if required is None:
+        result.update(
+            {
+                "state": (
+                    "REQUIRED_RR_UNAVAILABLE"
+                ),
+                "reason": (
+                    "normal_required_rr_unavailable"
+                ),
+            }
+        )
+
+        return result
+
+    would_pass = bool(
+        hypothetical_rr
+        >= required
+    )
+
+    margin = round(
+        hypothetical_rr
+        - required,
+        6,
+    )
+
+    result.update(
+        {
+            "available": True,
+            "rr_gate_would_pass": (
+                would_pass
+            ),
+            "rr_margin": (
+                margin
+            ),
+            "state": (
+                "RR_WOULD_PASS"
+                if would_pass
+                else "RR_WOULD_FAIL"
+            ),
+            "reason": (
+                "hypothetical_rr_meets_"
+                "normal_final_rr_threshold"
+                if would_pass
+                else
+                "hypothetical_rr_below_"
+                "normal_final_rr_threshold"
+            ),
+        }
+    )
+
+    return result
+
+
 def _base_result() -> dict[str, Any]:
     return {
         "observer_version": OBSERVER_VERSION,
@@ -674,6 +881,9 @@ def _base_result() -> dict[str, Any]:
         "m5_fresh_structure": False,
         "m1_observation": (
             _base_m1_observation()
+        ),
+        "rr_viability": (
+            _base_rr_viability()
         ),
         "original_geometry": {
             "entry_price": None,
