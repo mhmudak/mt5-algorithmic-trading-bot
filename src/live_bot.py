@@ -631,6 +631,91 @@ def _capture_post_shock_context_fail_open(
         }
 
 
+
+def _capture_post_shock_m1_closed_bars_fail_open(
+    *,
+    post_shock_context,
+):
+    """
+    Research-only M1 snapshot.
+
+    MT5 bar position 0 is the current/incomplete
+    candle, so position 1 starts from the most
+    recently closed M1 candle.
+
+    This helper has no trading authority.
+    """
+
+    try:
+        if not isinstance(
+            post_shock_context,
+            dict,
+        ):
+            return []
+
+        if not bool(
+            post_shock_context.get(
+                "active_post_shock_mode",
+                False,
+            )
+        ):
+            return []
+
+        rates = mt5.copy_rates_from_pos(
+            SYMBOL,
+            mt5.TIMEFRAME_M1,
+            1,
+            3,
+        )
+
+        if (
+            rates is None
+            or len(rates) < 2
+        ):
+            return []
+
+        bars = []
+
+        for rate in rates:
+            bar_time = (
+                datetime.fromtimestamp(
+                    int(
+                        rate["time"]
+                    ),
+                    tz=timezone.utc,
+                ).isoformat()
+            )
+
+            bars.append(
+                {
+                    "time": bar_time,
+                    "open": float(
+                        rate["open"]
+                    ),
+                    "high": float(
+                        rate["high"]
+                    ),
+                    "low": float(
+                        rate["low"]
+                    ),
+                    "close": float(
+                        rate["close"]
+                    ),
+                }
+            )
+
+        return bars
+
+    except Exception as exc:
+        logger.warning(
+            "[POST SHOCK ENTRY SHADOW] "
+            "closed-M1 capture failed open "
+            f"| error={exc}"
+        )
+
+        return []
+
+
 def _log_post_shock_context_fail_open(
     *,
     signal_data,
@@ -13333,6 +13418,16 @@ def process_cycle(last_processed_candle_time):
                     )
                 )
 
+                post_shock_m1_closed_bars = (
+                    _capture_post_shock_m1_closed_bars_fail_open(
+                        post_shock_context=(
+                            selected_signal_data.get(
+                                "post_shock_context"
+                            )
+                        ),
+                    )
+                )
+
                 selected_signal_data[
                     "post_shock_entry_shadow"
                 ] = (
@@ -13347,6 +13442,9 @@ def process_cycle(last_processed_candle_time):
                         ),
                         current_price=(
                             close_price
+                        ),
+                        m1_closed_bars=(
+                            post_shock_m1_closed_bars
                         ),
                     )
                 )

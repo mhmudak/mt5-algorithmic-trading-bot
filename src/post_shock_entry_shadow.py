@@ -4,7 +4,7 @@ from typing import Any
 
 
 OBSERVER_VERSION = (
-    "post_shock_entry_shadow_v1"
+    "post_shock_entry_shadow_v1_2"
 )
 
 DEFAULT_SHOCK_SCALE_STOP_RATIO = 0.75
@@ -28,6 +28,290 @@ def _safe_float(
         return None
 
 
+def _base_m1_observation() -> dict[str, Any]:
+    return {
+        "available": False,
+        "observer_only": True,
+        "decision_impact": "NONE",
+        "safe_for_execution": False,
+        "state": "UNAVAILABLE",
+        "reason": "insufficient_closed_m1_bars",
+        "signal": None,
+        "closed_bar_count": 0,
+        "latest_closed_time": None,
+        "retrace_observed": False,
+        "reclaim_observed": False,
+        "directional_body": False,
+        "directional_pattern_observed": False,
+        "previous_bar": None,
+        "latest_bar": None,
+    }
+
+
+def _safe_bar(
+    value: Any,
+) -> dict[str, Any] | None:
+    if not isinstance(
+        value,
+        dict,
+    ):
+        return None
+
+    open_price = _safe_float(
+        value.get("open")
+    )
+
+    high_price = _safe_float(
+        value.get("high")
+    )
+
+    low_price = _safe_float(
+        value.get("low")
+    )
+
+    close_price = _safe_float(
+        value.get("close")
+    )
+
+    if any(
+        price is None
+        for price in (
+            open_price,
+            high_price,
+            low_price,
+            close_price,
+        )
+    ):
+        return None
+
+    if high_price < max(
+        open_price,
+        close_price,
+        low_price,
+    ):
+        return None
+
+    if low_price > min(
+        open_price,
+        close_price,
+        high_price,
+    ):
+        return None
+
+    time_value = value.get(
+        "time"
+    )
+
+    if time_value is not None:
+        time_value = str(
+            time_value
+        )
+
+    return {
+        "time": time_value,
+        "open": open_price,
+        "high": high_price,
+        "low": low_price,
+        "close": close_price,
+    }
+
+
+def build_m1_retrace_reclaim_observation(
+    *,
+    m1_closed_bars: Any,
+    signal: Any,
+) -> dict[str, Any]:
+    """
+    Observe closed M1 bars only.
+
+    This does not construct an entry, stop, target,
+    RR decision, risk decision or execution signal.
+    """
+
+    result = (
+        _base_m1_observation()
+    )
+
+    normalized_signal = str(
+        signal
+        or ""
+    ).upper()
+
+    result[
+        "signal"
+    ] = normalized_signal or None
+
+    if normalized_signal not in {
+        "BUY",
+        "SELL",
+    }:
+        result.update(
+            {
+                "state": (
+                    "INVALID_SIGNAL"
+                ),
+                "reason": (
+                    "m1_observer_requires_"
+                    "buy_or_sell"
+                ),
+            }
+        )
+
+        return result
+
+    if not isinstance(
+        m1_closed_bars,
+        (list, tuple),
+    ):
+        return result
+
+    result[
+        "closed_bar_count"
+    ] = len(
+        m1_closed_bars
+    )
+
+    if len(
+        m1_closed_bars
+    ) < 2:
+        return result
+
+    previous_bar = _safe_bar(
+        m1_closed_bars[-2]
+    )
+
+    latest_bar = _safe_bar(
+        m1_closed_bars[-1]
+    )
+
+    if (
+        previous_bar is None
+        or latest_bar is None
+    ):
+        result.update(
+            {
+                "state": (
+                    "INVALID_M1_BAR_DATA"
+                ),
+                "reason": (
+                    "invalid_closed_m1_ohlc"
+                ),
+            }
+        )
+
+        return result
+
+    result.update(
+        {
+            "available": True,
+            "latest_closed_time": (
+                latest_bar.get(
+                    "time"
+                )
+            ),
+            "previous_bar": (
+                previous_bar
+            ),
+            "latest_bar": (
+                latest_bar
+            ),
+        }
+    )
+
+    if (
+        normalized_signal
+        == "BUY"
+    ):
+        directional_body = bool(
+            latest_bar["close"]
+            > latest_bar["open"]
+        )
+
+        retrace_observed = bool(
+            latest_bar["low"]
+            <= previous_bar["close"]
+            and latest_bar["close"]
+            > previous_bar["close"]
+        )
+
+        reclaim_observed = bool(
+            latest_bar["close"]
+            > previous_bar["high"]
+        )
+
+    else:
+        directional_body = bool(
+            latest_bar["close"]
+            < latest_bar["open"]
+        )
+
+        retrace_observed = bool(
+            latest_bar["high"]
+            >= previous_bar["close"]
+            and latest_bar["close"]
+            < previous_bar["close"]
+        )
+
+        reclaim_observed = bool(
+            latest_bar["close"]
+            < previous_bar["low"]
+        )
+
+    directional_pattern = bool(
+        directional_body
+        and (
+            retrace_observed
+            or reclaim_observed
+        )
+    )
+
+    result.update(
+        {
+            "retrace_observed": (
+                retrace_observed
+            ),
+            "reclaim_observed": (
+                reclaim_observed
+            ),
+            "directional_body": (
+                directional_body
+            ),
+            "directional_pattern_observed": (
+                directional_pattern
+            ),
+        }
+    )
+
+    if directional_pattern:
+        result.update(
+            {
+                "state": (
+                    "M1_RETRACE_RECLAIM_OBSERVED"
+                ),
+                "reason": (
+                    "directional_closed_m1_"
+                    "retrace_or_reclaim_observed"
+                ),
+            }
+        )
+
+        return result
+
+    result.update(
+        {
+            "state": (
+                "M1_WAIT_DIRECTIONAL_PATTERN"
+            ),
+            "reason": (
+                "closed_m1_directional_pattern_"
+                "not_observed"
+            ),
+        }
+    )
+
+    return result
+
+
 def _base_result() -> dict[str, Any]:
     return {
         "observer_version": OBSERVER_VERSION,
@@ -47,6 +331,9 @@ def _base_result() -> dict[str, Any]:
         ),
         "post_shock_context_state": None,
         "m5_fresh_structure": False,
+        "m1_observation": (
+            _base_m1_observation()
+        ),
         "original_geometry": {
             "entry_price": None,
             "stop_loss": None,
@@ -75,6 +362,7 @@ def build_post_shock_entry_shadow(
     post_shock_context: dict[str, Any] | None,
     setup: dict[str, Any] | None,
     current_price: Any = None,
+    m1_closed_bars: Any = None,
     shock_scale_stop_ratio: float = (
         DEFAULT_SHOCK_SCALE_STOP_RATIO
     ),
@@ -218,6 +506,19 @@ def build_post_shock_entry_shadow(
         )
     )
 
+    m1_observation = (
+        build_m1_retrace_reclaim_observation(
+            m1_closed_bars=(
+                m1_closed_bars
+            ),
+            signal=(
+                setup_data.get(
+                    "signal"
+                )
+            ),
+        )
+    )
+
     result.update(
         {
             "available": True,
@@ -229,6 +530,9 @@ def build_post_shock_entry_shadow(
             ),
             "m5_fresh_structure": (
                 m5_fresh_structure
+            ),
+            "m1_observation": (
+                m1_observation
             ),
             "abnormal_stop_geometry": (
                 abnormal
@@ -319,6 +623,44 @@ def build_post_shock_entry_shadow(
 
             return result
 
+        if not m1_observation.get(
+            "available",
+            False,
+        ):
+            result.update(
+                {
+                    "state": (
+                        "WAIT_M1_DATA"
+                    ),
+                    "reason": (
+                        "shock_scale_stop_wait_"
+                        "closed_m1_data"
+                    ),
+                    "shadow_candidate": True,
+                }
+            )
+
+            return result
+
+        if not m1_observation.get(
+            "directional_pattern_observed",
+            False,
+        ):
+            result.update(
+                {
+                    "state": (
+                        "WAIT_M1_RETRACE_RECLAIM"
+                    ),
+                    "reason": (
+                        "shock_scale_stop_wait_"
+                        "m1_retrace_or_reclaim"
+                    ),
+                    "shadow_candidate": True,
+                }
+            )
+
+            return result
+
         result.update(
             {
                 "state": (
@@ -326,7 +668,7 @@ def build_post_shock_entry_shadow(
                 ),
                 "reason": (
                     "shock_scale_stop_with_"
-                    "fresh_m5_structure"
+                    "fresh_m5_and_m1_pattern"
                 ),
                 "shadow_candidate": True,
             }
@@ -356,6 +698,7 @@ def build_post_shock_entry_shadow_fail_open(
     post_shock_context: dict[str, Any] | None,
     setup: dict[str, Any] | None,
     current_price: Any = None,
+    m1_closed_bars: Any = None,
     shock_scale_stop_ratio: float = (
         DEFAULT_SHOCK_SCALE_STOP_RATIO
     ),
@@ -375,6 +718,9 @@ def build_post_shock_entry_shadow_fail_open(
             ),
             setup=setup,
             current_price=current_price,
+            m1_closed_bars=(
+                m1_closed_bars
+            ),
             shock_scale_stop_ratio=(
                 shock_scale_stop_ratio
             ),
