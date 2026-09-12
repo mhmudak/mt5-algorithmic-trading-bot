@@ -4,7 +4,7 @@ from typing import Any
 
 
 OBSERVER_VERSION = (
-    "post_shock_entry_shadow_v1_2"
+    "post_shock_entry_shadow_v1_3"
 )
 
 DEFAULT_SHOCK_SCALE_STOP_RATIO = 0.75
@@ -312,6 +312,347 @@ def build_m1_retrace_reclaim_observation(
     return result
 
 
+
+def _build_hypothetical_local_plan(
+    *,
+    m1_observation: dict[str, Any],
+    setup_data: dict[str, Any],
+    signal: Any,
+) -> dict[str, Any]:
+    """
+    Build research-only post-shock local geometry.
+
+    Entry:
+    - latest CLOSED M1 confirmation close.
+
+    Structural stop:
+    - BUY: lowest low across the previous and
+      latest closed M1 bars.
+    - SELL: highest high across those two bars.
+
+    Target:
+    - preserve an existing setup target only.
+    - never fabricate a target to force RR.
+
+    This output is telemetry only. It has no risk,
+    confirmation or execution authority.
+    """
+
+    plan = {
+        "status": "NOT_CONSTRUCTED",
+        "observer_only": True,
+        "decision_impact": "NONE",
+        "safe_for_execution": False,
+        "execution_allowed": False,
+        "entry_price": None,
+        "entry_source": None,
+        "stop_loss": None,
+        "stop_source": None,
+        "stop_distance": None,
+        "take_profit": None,
+        "original_target": None,
+        "target_source": None,
+        "target_valid_for_signal": False,
+        "reward_distance": None,
+        "risk_reward": None,
+        "local_structure_low": None,
+        "local_structure_high": None,
+        "requirements": [
+            "fresh_m5_structure",
+            "m1_retrace_or_reclaim",
+            "new_local_structural_stop",
+            "normal_rr_gate",
+            "normal_confirmation_gates",
+        ],
+    }
+
+    normalized_signal = str(
+        signal
+        or ""
+    ).upper()
+
+    if normalized_signal not in {
+        "BUY",
+        "SELL",
+    }:
+        plan["status"] = (
+            "INVALID_SIGNAL"
+        )
+
+        return plan
+
+    if not isinstance(
+        m1_observation,
+        dict,
+    ):
+        return plan
+
+    if not bool(
+        m1_observation.get(
+            "directional_pattern_observed",
+            False,
+        )
+    ):
+        return plan
+
+    previous_bar = (
+        m1_observation.get(
+            "previous_bar"
+        )
+    )
+
+    latest_bar = (
+        m1_observation.get(
+            "latest_bar"
+        )
+    )
+
+    if not isinstance(
+        previous_bar,
+        dict,
+    ):
+        return plan
+
+    if not isinstance(
+        latest_bar,
+        dict,
+    ):
+        return plan
+
+    previous_low = _safe_float(
+        previous_bar.get(
+            "low"
+        )
+    )
+
+    previous_high = _safe_float(
+        previous_bar.get(
+            "high"
+        )
+    )
+
+    latest_low = _safe_float(
+        latest_bar.get(
+            "low"
+        )
+    )
+
+    latest_high = _safe_float(
+        latest_bar.get(
+            "high"
+        )
+    )
+
+    entry_price = _safe_float(
+        latest_bar.get(
+            "close"
+        )
+    )
+
+    if any(
+        value is None
+        for value in (
+            previous_low,
+            previous_high,
+            latest_low,
+            latest_high,
+            entry_price,
+        )
+    ):
+        plan["status"] = (
+            "INVALID_LOCAL_STRUCTURE"
+        )
+
+        return plan
+
+    structure_low = min(
+        previous_low,
+        latest_low,
+    )
+
+    structure_high = max(
+        previous_high,
+        latest_high,
+    )
+
+    if normalized_signal == "BUY":
+        stop_loss = structure_low
+
+        geometry_valid = bool(
+            stop_loss
+            < entry_price
+        )
+
+    else:
+        stop_loss = structure_high
+
+        geometry_valid = bool(
+            stop_loss
+            > entry_price
+        )
+
+    if not geometry_valid:
+        plan.update(
+            {
+                "status": (
+                    "INVALID_LOCAL_STRUCTURE"
+                ),
+                "entry_price": (
+                    entry_price
+                ),
+                "entry_source": (
+                    "latest_closed_m1_close"
+                ),
+                "local_structure_low": (
+                    structure_low
+                ),
+                "local_structure_high": (
+                    structure_high
+                ),
+            }
+        )
+
+        return plan
+
+    stop_distance = abs(
+        entry_price
+        - stop_loss
+    )
+
+    if stop_distance <= 0:
+        plan["status"] = (
+            "INVALID_LOCAL_STRUCTURE"
+        )
+
+        return plan
+
+    target = None
+    target_source = None
+
+    for key in (
+        "tp_reference",
+        "pivot_target_level",
+        "take_profit",
+        "tp",
+    ):
+        candidate_target = _safe_float(
+            setup_data.get(
+                key
+            )
+        )
+
+        if candidate_target is not None:
+            target = candidate_target
+            target_source = key
+            break
+
+    plan.update(
+        {
+            "status": (
+                "LOCAL_GEOMETRY_CONSTRUCTED"
+            ),
+            "entry_price": (
+                entry_price
+            ),
+            "entry_source": (
+                "latest_closed_m1_close"
+            ),
+            "stop_loss": (
+                stop_loss
+            ),
+            "stop_source": (
+                "two_closed_m1_bar_structure"
+            ),
+            "stop_distance": (
+                round(
+                    stop_distance,
+                    6,
+                )
+            ),
+            "original_target": (
+                target
+            ),
+            "target_source": (
+                target_source
+            ),
+            "local_structure_low": (
+                structure_low
+            ),
+            "local_structure_high": (
+                structure_high
+            ),
+        }
+    )
+
+    if target is None:
+        plan["status"] = (
+            "LOCAL_GEOMETRY_CONSTRUCTED_"
+            "TARGET_UNAVAILABLE"
+        )
+
+        return plan
+
+    if normalized_signal == "BUY":
+        target_valid = bool(
+            target
+            > entry_price
+        )
+
+    else:
+        target_valid = bool(
+            target
+            < entry_price
+        )
+
+    plan[
+        "target_valid_for_signal"
+    ] = target_valid
+
+    if not target_valid:
+        plan["status"] = (
+            "LOCAL_GEOMETRY_CONSTRUCTED_"
+            "TARGET_INVALID"
+        )
+
+        return plan
+
+    reward_distance = abs(
+        target
+        - entry_price
+    )
+
+    risk_reward = (
+        reward_distance
+        / stop_distance
+    )
+
+    plan.update(
+        {
+            "status": (
+                "HYPOTHETICAL_LOCAL_PLAN_"
+                "CONSTRUCTED"
+            ),
+            "take_profit": (
+                target
+            ),
+            "reward_distance": (
+                round(
+                    reward_distance,
+                    6,
+                )
+            ),
+            "risk_reward": (
+                round(
+                    risk_reward,
+                    6,
+                )
+            ),
+        }
+    )
+
+    return plan
+
+
 def _base_result() -> dict[str, Any]:
     return {
         "observer_version": OBSERVER_VERSION,
@@ -342,10 +683,23 @@ def _base_result() -> dict[str, Any]:
         },
         "shadow_plan": {
             "status": "NOT_CONSTRUCTED",
+            "observer_only": True,
+            "decision_impact": "NONE",
+            "safe_for_execution": False,
+            "execution_allowed": False,
             "entry_price": None,
+            "entry_source": None,
             "stop_loss": None,
+            "stop_source": None,
+            "stop_distance": None,
             "take_profit": None,
+            "original_target": None,
+            "target_source": None,
+            "target_valid_for_signal": False,
+            "reward_distance": None,
             "risk_reward": None,
+            "local_structure_low": None,
+            "local_structure_high": None,
             "requirements": [
                 "fresh_m5_structure",
                 "m1_retrace_or_reclaim",
@@ -661,15 +1015,72 @@ def build_post_shock_entry_shadow(
 
             return result
 
+        local_plan = (
+            _build_hypothetical_local_plan(
+                m1_observation=(
+                    m1_observation
+                ),
+                setup_data=(
+                    setup_data
+                ),
+                signal=(
+                    setup_data.get(
+                        "signal"
+                    )
+                ),
+            )
+        )
+
+        result[
+            "shadow_plan"
+        ] = local_plan
+
+        plan_status = str(
+            local_plan.get(
+                "status"
+            )
+            or "NOT_CONSTRUCTED"
+        )
+
+        if (
+            plan_status
+            == "HYPOTHETICAL_LOCAL_PLAN_CONSTRUCTED"
+        ):
+            state = (
+                "SHADOW_LOCAL_PLAN_CONSTRUCTED"
+            )
+
+            reason = (
+                "hypothetical_local_plan_"
+                "constructed_observe_only"
+            )
+
+        elif plan_status.startswith(
+            "LOCAL_GEOMETRY_CONSTRUCTED"
+        ):
+            state = (
+                "SHADOW_LOCAL_GEOMETRY_CONSTRUCTED"
+            )
+
+            reason = (
+                "local_structure_constructed_"
+                "without_valid_target_rr"
+            )
+
+        else:
+            state = (
+                "SHADOW_LOCAL_REPLAN_CANDIDATE"
+            )
+
+            reason = (
+                "fresh_m5_and_m1_pattern_"
+                "local_plan_not_constructed"
+            )
+
         result.update(
             {
-                "state": (
-                    "SHADOW_LOCAL_REPLAN_CANDIDATE"
-                ),
-                "reason": (
-                    "shock_scale_stop_with_"
-                    "fresh_m5_and_m1_pattern"
-                ),
+                "state": state,
+                "reason": reason,
                 "shadow_candidate": True,
             }
         )
