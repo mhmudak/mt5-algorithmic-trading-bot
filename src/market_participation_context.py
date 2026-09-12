@@ -1074,6 +1074,355 @@ def classify_market_participation_alert(
     return result
 
 
+
+def build_market_participation_statistics_fields(
+    context: dict | None,
+) -> dict[str, Any]:
+    """
+    Convert a market-participation snapshot into
+    flat analytics fields for setup-outcome research.
+
+    Research only. These fields have no authority over
+    score, RR, risk, confirmation or execution.
+    """
+
+    fields = {
+        "participation_schema_version": SCHEMA_VERSION,
+        "participation_captured_at": None,
+        "participation_source_coverage": None,
+        "participation_combined_state": None,
+        "participation_signal_relation": None,
+
+        "participation_mt5_available": False,
+        "participation_mt5_activity_state": None,
+        "participation_mt5_pressure_state": None,
+        "participation_mt5_current_spread": None,
+
+        "participation_5s_sample_count": None,
+        "participation_5s_observed_span_seconds": None,
+        "participation_5s_directional_imbalance": None,
+        "participation_5s_mid_move": None,
+        "participation_activity_acceleration_ratio": None,
+
+        "participation_high_impact_severity": None,
+        "participation_high_impact_state": None,
+        "participation_direction_proxy": None,
+
+        "participation_rithmic_available": False,
+        "participation_rithmic_status": None,
+        "participation_rithmic_data_quality": None,
+        "participation_rithmic_aggression_state": None,
+        "participation_rithmic_dom_state": None,
+
+        "participation_rithmic_bid_volume": None,
+        "participation_rithmic_ask_volume": None,
+        "participation_rithmic_delta": None,
+        "participation_rithmic_cumulative_delta": None,
+        "participation_rithmic_footprint_imbalance": None,
+        "participation_rithmic_dom_bid_depth": None,
+        "participation_rithmic_dom_ask_depth": None,
+        "participation_rithmic_dom_depth_imbalance": None,
+        "participation_rithmic_volume_profile_poc": None,
+    }
+
+    if not isinstance(
+        context,
+        dict,
+    ):
+        return fields
+
+    mt5_context = (
+        context.get("mt5")
+        if isinstance(
+            context.get("mt5"),
+            dict,
+        )
+        else {}
+    )
+
+    windows = (
+        mt5_context.get("windows")
+        if isinstance(
+            mt5_context.get("windows"),
+            dict,
+        )
+        else {}
+    )
+
+    window_5s = (
+        windows.get("5s")
+        if isinstance(
+            windows.get("5s"),
+            dict,
+        )
+        else {}
+    )
+
+    rithmic = (
+        context.get("rithmic")
+        if isinstance(
+            context.get("rithmic"),
+            dict,
+        )
+        else {}
+    )
+
+    rithmic_metrics = (
+        rithmic.get("metrics")
+        if isinstance(
+            rithmic.get("metrics"),
+            dict,
+        )
+        else {}
+    )
+
+    alert = (
+        classify_market_participation_alert(
+            context
+        )
+    )
+
+    sample_count = None
+
+    try:
+        raw_sample_count = (
+            window_5s.get(
+                "sample_count"
+            )
+        )
+
+        if raw_sample_count is not None:
+            sample_count = int(
+                raw_sample_count
+            )
+    except Exception:
+        sample_count = None
+
+    rithmic_quality = (
+        rithmic.get(
+            "data_quality"
+        )
+    )
+
+    if isinstance(
+        rithmic_quality,
+        (
+            dict,
+            list,
+            tuple,
+            set,
+        ),
+    ):
+        try:
+            rithmic_quality = json.dumps(
+                _json_safe(
+                    rithmic_quality
+                ),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        except Exception:
+            rithmic_quality = str(
+                rithmic_quality
+            )
+
+    fields.update(
+        {
+            "participation_schema_version": (
+                context.get(
+                    "schema_version"
+                )
+                or SCHEMA_VERSION
+            ),
+            "participation_captured_at": (
+                context.get(
+                    "observed_at"
+                )
+            ),
+            "participation_source_coverage": (
+                context.get(
+                    "source_coverage"
+                )
+            ),
+            "participation_combined_state": (
+                context.get(
+                    "combined_state"
+                )
+            ),
+            "participation_signal_relation": (
+                context.get(
+                    "signal_relation"
+                )
+            ),
+
+            "participation_mt5_available": (
+                bool(
+                    mt5_context.get(
+                        "available"
+                    )
+                )
+            ),
+            "participation_mt5_activity_state": (
+                mt5_context.get(
+                    "activity_state"
+                )
+            ),
+            "participation_mt5_pressure_state": (
+                mt5_context.get(
+                    "pressure_state"
+                )
+            ),
+            "participation_mt5_current_spread": (
+                _safe_float(
+                    mt5_context.get(
+                        "current_spread"
+                    )
+                )
+            ),
+
+            "participation_5s_sample_count": (
+                sample_count
+            ),
+            "participation_5s_observed_span_seconds": (
+                _safe_float(
+                    window_5s.get(
+                        "observed_span_seconds"
+                    )
+                )
+            ),
+            "participation_5s_directional_imbalance": (
+                _safe_float(
+                    window_5s.get(
+                        "directional_imbalance"
+                    )
+                )
+            ),
+            "participation_5s_mid_move": (
+                _safe_float(
+                    window_5s.get(
+                        "mid_move"
+                    )
+                )
+            ),
+            "participation_activity_acceleration_ratio": (
+                _safe_float(
+                    mt5_context.get(
+                        "quote_activity_acceleration_ratio"
+                    )
+                )
+            ),
+
+            "participation_high_impact_severity": (
+                alert.get(
+                    "severity"
+                )
+            ),
+            "participation_high_impact_state": (
+                alert.get(
+                    "state"
+                )
+            ),
+            "participation_direction_proxy": (
+                alert.get(
+                    "direction"
+                )
+            ),
+
+            "participation_rithmic_available": (
+                bool(
+                    rithmic.get(
+                        "available"
+                    )
+                )
+            ),
+            "participation_rithmic_status": (
+                rithmic.get(
+                    "status"
+                )
+            ),
+            "participation_rithmic_data_quality": (
+                rithmic_quality
+            ),
+            "participation_rithmic_aggression_state": (
+                rithmic.get(
+                    "aggression_state"
+                )
+            ),
+            "participation_rithmic_dom_state": (
+                rithmic.get(
+                    "dom_state"
+                )
+            ),
+
+            "participation_rithmic_bid_volume": (
+                _safe_float(
+                    rithmic_metrics.get(
+                        "bid_volume"
+                    )
+                )
+            ),
+            "participation_rithmic_ask_volume": (
+                _safe_float(
+                    rithmic_metrics.get(
+                        "ask_volume"
+                    )
+                )
+            ),
+            "participation_rithmic_delta": (
+                _safe_float(
+                    rithmic_metrics.get(
+                        "delta"
+                    )
+                )
+            ),
+            "participation_rithmic_cumulative_delta": (
+                _safe_float(
+                    rithmic_metrics.get(
+                        "cumulative_delta"
+                    )
+                )
+            ),
+            "participation_rithmic_footprint_imbalance": (
+                _safe_float(
+                    rithmic_metrics.get(
+                        "footprint_imbalance"
+                    )
+                )
+            ),
+            "participation_rithmic_dom_bid_depth": (
+                _safe_float(
+                    rithmic_metrics.get(
+                        "dom_bid_depth"
+                    )
+                )
+            ),
+            "participation_rithmic_dom_ask_depth": (
+                _safe_float(
+                    rithmic_metrics.get(
+                        "dom_ask_depth"
+                    )
+                )
+            ),
+            "participation_rithmic_dom_depth_imbalance": (
+                _safe_float(
+                    rithmic_metrics.get(
+                        "dom_depth_imbalance"
+                    )
+                )
+            ),
+            "participation_rithmic_volume_profile_poc": (
+                _safe_float(
+                    rithmic_metrics.get(
+                        "volume_profile_poc"
+                    )
+                )
+            ),
+        }
+    )
+
+    return fields
+
+
 def claim_market_participation_high_impact_alert(
     context: dict | None,
     *,

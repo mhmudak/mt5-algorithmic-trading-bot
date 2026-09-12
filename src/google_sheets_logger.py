@@ -653,6 +653,111 @@ def build_setup_outcome_payload(item):
         "context_key": item.get("context_key"),
         "scenario_key": item.get("scenario_key"),
         "nearby_strategies": nearby_strategies,
+        "participation_capture_event": item.get(
+            "participation_capture_event"
+        ),
+        "participation_capture_source": item.get(
+            "participation_capture_source"
+        ),
+        "participation_schema_version": item.get(
+            "participation_schema_version"
+        ),
+        "participation_captured_at": item.get(
+            "participation_captured_at"
+        ),
+        "participation_source_coverage": item.get(
+            "participation_source_coverage"
+        ),
+        "participation_combined_state": item.get(
+            "participation_combined_state"
+        ),
+        "participation_signal_relation": item.get(
+            "participation_signal_relation"
+        ),
+
+        "participation_mt5_available": item.get(
+            "participation_mt5_available"
+        ),
+        "participation_mt5_activity_state": item.get(
+            "participation_mt5_activity_state"
+        ),
+        "participation_mt5_pressure_state": item.get(
+            "participation_mt5_pressure_state"
+        ),
+        "participation_mt5_current_spread": item.get(
+            "participation_mt5_current_spread"
+        ),
+
+        "participation_5s_sample_count": item.get(
+            "participation_5s_sample_count"
+        ),
+        "participation_5s_observed_span_seconds": item.get(
+            "participation_5s_observed_span_seconds"
+        ),
+        "participation_5s_directional_imbalance": item.get(
+            "participation_5s_directional_imbalance"
+        ),
+        "participation_5s_mid_move": item.get(
+            "participation_5s_mid_move"
+        ),
+        "participation_activity_acceleration_ratio": item.get(
+            "participation_activity_acceleration_ratio"
+        ),
+
+        "participation_high_impact_severity": item.get(
+            "participation_high_impact_severity"
+        ),
+        "participation_high_impact_state": item.get(
+            "participation_high_impact_state"
+        ),
+        "participation_direction_proxy": item.get(
+            "participation_direction_proxy"
+        ),
+
+        "participation_rithmic_available": item.get(
+            "participation_rithmic_available"
+        ),
+        "participation_rithmic_status": item.get(
+            "participation_rithmic_status"
+        ),
+        "participation_rithmic_data_quality": item.get(
+            "participation_rithmic_data_quality"
+        ),
+        "participation_rithmic_aggression_state": item.get(
+            "participation_rithmic_aggression_state"
+        ),
+        "participation_rithmic_dom_state": item.get(
+            "participation_rithmic_dom_state"
+        ),
+
+        "participation_rithmic_bid_volume": item.get(
+            "participation_rithmic_bid_volume"
+        ),
+        "participation_rithmic_ask_volume": item.get(
+            "participation_rithmic_ask_volume"
+        ),
+        "participation_rithmic_delta": item.get(
+            "participation_rithmic_delta"
+        ),
+        "participation_rithmic_cumulative_delta": item.get(
+            "participation_rithmic_cumulative_delta"
+        ),
+        "participation_rithmic_footprint_imbalance": item.get(
+            "participation_rithmic_footprint_imbalance"
+        ),
+        "participation_rithmic_dom_bid_depth": item.get(
+            "participation_rithmic_dom_bid_depth"
+        ),
+        "participation_rithmic_dom_ask_depth": item.get(
+            "participation_rithmic_dom_ask_depth"
+        ),
+        "participation_rithmic_dom_depth_imbalance": item.get(
+            "participation_rithmic_dom_depth_imbalance"
+        ),
+        "participation_rithmic_volume_profile_poc": item.get(
+            "participation_rithmic_volume_profile_poc"
+        ),
+
         "created_at": item.get("created_at"),
         "last_seen_at": item.get("last_seen_at"),
         "updated_at": item.get("updated_at"),

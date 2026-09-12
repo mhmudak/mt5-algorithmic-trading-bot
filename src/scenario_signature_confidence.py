@@ -175,6 +175,274 @@ def _currency_relevance(symbol, news_currency):
 
     return "NEWS_CURRENCY_SECONDARY"
 
+
+def _participation_activity_bucket(value):
+    value = _safe_text(value)
+
+    mapping = {
+        "ACCELERATING_QUOTE_ACTIVITY": (
+            "ACCELERATING"
+        ),
+        "ELEVATED_QUOTE_ACTIVITY": (
+            "ELEVATED"
+        ),
+        "NORMAL_OR_UNRESOLVED_QUOTE_ACTIVITY": (
+            "NORMAL_OR_UNRESOLVED"
+        ),
+        "INSUFFICIENT_MT5_TICK_SAMPLE": (
+            "INSUFFICIENT_SAMPLE"
+        ),
+    }
+
+    return mapping.get(
+        value,
+        value or "UNAVAILABLE",
+    )
+
+
+def _participation_pressure_bucket(value):
+    value = _safe_text(value)
+
+    mapping = {
+        "BUY_PRESSURE_PROXY": (
+            "BUY_PRESSURE"
+        ),
+        "SELL_PRESSURE_PROXY": (
+            "SELL_PRESSURE"
+        ),
+        "NEUTRAL_OR_MIXED_PRESSURE_PROXY": (
+            "NEUTRAL_OR_MIXED"
+        ),
+    }
+
+    return mapping.get(
+        value,
+        value or "UNAVAILABLE",
+    )
+
+
+def build_participation_key(item):
+    """
+    Build a stable categorical market-participation
+    research key.
+
+    The key intentionally excludes continuous values
+    such as delta, spread and imbalance so historical
+    cohorts do not fragment into nearly unique keys.
+
+    It is NOT used by current scenario matching,
+    scoring, risk or execution.
+    """
+
+    if not isinstance(
+        item,
+        dict,
+    ):
+        return None
+
+    source_coverage = _safe_text(
+        item.get(
+            "participation_source_coverage"
+        )
+    )
+
+    mt5_available = bool(
+        item.get(
+            "participation_mt5_available"
+        )
+    )
+
+    rithmic_available = bool(
+        item.get(
+            "participation_rithmic_available"
+        )
+    )
+
+    if (
+        not source_coverage
+        and not mt5_available
+        and not rithmic_available
+    ):
+        return None
+
+    if not source_coverage:
+        source_coverage = (
+            "MT5_PLUS_RITHMIC"
+            if rithmic_available
+            else "MT5_ONLY"
+        )
+
+    signal_relation = (
+        _safe_text(
+            item.get(
+                "participation_signal_relation"
+            )
+        )
+        or "UNRESOLVED"
+    )
+
+    activity = (
+        _participation_activity_bucket(
+            item.get(
+                "participation_mt5_activity_state"
+            )
+        )
+    )
+
+    pressure = (
+        _participation_pressure_bucket(
+            item.get(
+                "participation_mt5_pressure_state"
+            )
+        )
+    )
+
+    severity = (
+        _safe_text(
+            item.get(
+                "participation_high_impact_severity"
+            )
+        )
+        or "UNAVAILABLE"
+    )
+
+    direction = (
+        _safe_text(
+            item.get(
+                "participation_direction_proxy"
+            )
+        )
+        or "UNRESOLVED"
+    )
+
+    parts = [
+        "PART_V1",
+        source_coverage,
+        signal_relation,
+        activity,
+        pressure,
+    ]
+
+    if rithmic_available:
+        aggression = (
+            _safe_text(
+                item.get(
+                    "participation_rithmic_aggression_state"
+                )
+            )
+            or "UNAVAILABLE"
+        )
+
+        dom_state = (
+            _safe_text(
+                item.get(
+                    "participation_rithmic_dom_state"
+                )
+            )
+            or "UNAVAILABLE"
+        )
+
+        parts.extend(
+            [
+                aggression,
+                dom_state,
+            ]
+        )
+
+    parts.extend(
+        [
+            severity,
+            direction,
+        ]
+    )
+
+    return "|".join(
+        parts
+    )
+
+
+def build_scenario_participation_context(item):
+    """
+    Compact scenario research metadata.
+
+    Raw quantitative participation fields remain in
+    SetupOutcomes and are deliberately not embedded
+    into participation_key.
+    """
+
+    if not isinstance(
+        item,
+        dict,
+    ):
+        return {
+            "participation_key": None,
+        }
+
+    return {
+        "context_key": item.get(
+            "context_key"
+        ),
+        "scenario_key": item.get(
+            "scenario_key"
+        ),
+        "participation_key": (
+            build_participation_key(
+                item
+            )
+        ),
+        "participation_source_coverage": (
+            item.get(
+                "participation_source_coverage"
+            )
+        ),
+        "participation_combined_state": (
+            item.get(
+                "participation_combined_state"
+            )
+        ),
+        "participation_signal_relation": (
+            item.get(
+                "participation_signal_relation"
+            )
+        ),
+        "participation_mt5_activity_state": (
+            item.get(
+                "participation_mt5_activity_state"
+            )
+        ),
+        "participation_mt5_pressure_state": (
+            item.get(
+                "participation_mt5_pressure_state"
+            )
+        ),
+        "participation_high_impact_severity": (
+            item.get(
+                "participation_high_impact_severity"
+            )
+        ),
+        "participation_direction_proxy": (
+            item.get(
+                "participation_direction_proxy"
+            )
+        ),
+        "participation_rithmic_available": (
+            item.get(
+                "participation_rithmic_available"
+            )
+        ),
+        "participation_rithmic_aggression_state": (
+            item.get(
+                "participation_rithmic_aggression_state"
+            )
+        ),
+        "participation_rithmic_dom_state": (
+            item.get(
+                "participation_rithmic_dom_state"
+            )
+        ),
+    }
+
+
 def build_scenario_signature_keys(item):
     if not item:
         return []
@@ -354,6 +622,7 @@ def classify_scenario_signature(stats):
     return "NEUTRAL_SCENARIO_SIGNATURE"
 
 
+
 def analyze_scenario_signature(setup_id):
     if not ENABLE_SCENARIO_SIGNATURE_CONFIDENCE:
         return None
@@ -364,30 +633,74 @@ def analyze_scenario_signature(setup_id):
     if not current_item:
         return None
 
-    matches, signature_key = _signature_matches(current_item, items)
+    matches, signature_key = _signature_matches(
+        current_item,
+        items,
+    )
 
     if not signature_key:
         return None
 
-    stats = build_similarity_stats(matches)
+    stats = build_similarity_stats(
+        matches
+    )
 
     if not stats:
         return None
 
-    classification = classify_scenario_signature(stats)
+    classification = (
+        classify_scenario_signature(
+            stats
+        )
+    )
+
+    participation_context = (
+        build_scenario_participation_context(
+            current_item
+        )
+    )
 
     return {
         "setup_id": setup_id,
         "classification": classification,
         "signature_key": signature_key,
-        "strategy": current_item.get("strategy"),
-        "signal": current_item.get("signal"),
-        "session": current_item.get("session"),
-        "market_condition": current_item.get("market_condition"),
-        "nearby_strategies": current_item.get("nearby_strategies"),
+        "strategy": current_item.get(
+            "strategy"
+        ),
+        "signal": current_item.get(
+            "signal"
+        ),
+        "session": current_item.get(
+            "session"
+        ),
+        "market_condition": current_item.get(
+            "market_condition"
+        ),
+        "context_key": (
+            participation_context.get(
+                "context_key"
+            )
+        ),
+        "scenario_key": (
+            participation_context.get(
+                "scenario_key"
+            )
+        ),
+        "nearby_strategies": (
+            current_item.get(
+                "nearby_strategies"
+            )
+        ),
+        "participation_key": (
+            participation_context.get(
+                "participation_key"
+            )
+        ),
+        "participation_context": (
+            participation_context
+        ),
         "stats": stats,
     }
-
 
 def get_scenario_signature_score_adjustment(setup_id):
     if not ENABLE_SCENARIO_SIGNATURE_CONFIDENCE:

@@ -14076,6 +14076,9 @@ def process_cycle(last_processed_candle_time):
                         "news_context": news_context,
                         "news_tag": news_context.get("news_tag") if news_context else None,
                     },
+                    market_participation_context=(
+                        setup_participation_context
+                    ),
                 )
                 
                 if tracked:
@@ -14572,7 +14575,11 @@ def process_cycle(last_processed_candle_time):
                     "classification": signature_report.get("classification") if signature_report else None,
                     "signature_key": signature_report.get("signature_key") if signature_report else None,
                     "stats": signature_report.get("stats") if signature_report else None,
+                    "context_key": signature_report.get("context_key") if signature_report else None,
+                    "scenario_key": signature_report.get("scenario_key") if signature_report else None,
                     "nearby_strategies": signature_report.get("nearby_strategies") if signature_report else None,
+                    "participation_key": signature_report.get("participation_key") if signature_report else None,
+                    "participation_context": signature_report.get("participation_context") if signature_report else None,
                 },
             )
             

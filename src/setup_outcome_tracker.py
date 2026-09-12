@@ -15,6 +15,10 @@ from src.account_context import get_account_file
 from src.logger import logger
 
 from src.google_sheets_logger import send_setup_outcome_to_google_sheets
+from src.market_participation_context import (
+    build_market_participation_context,
+    build_market_participation_statistics_fields,
+)
 
 def get_setup_outcomes_file():
     return get_account_file("setup_outcomes.json")
@@ -143,6 +147,82 @@ def _get_nearby_strategies(items, scenario_key):
     return strategies
 
 
+
+def _capture_participation_statistics_fail_open(
+    *,
+    symbol,
+    signal,
+    event,
+    market_participation_context=None,
+):
+    """
+    Capture research features for a newly-created
+    setup-outcome row.
+
+    Existing rows are intentionally not overwritten
+    with later participation context, avoiding future
+    information leakage in later model research.
+    """
+
+    explicit_snapshot = isinstance(
+        market_participation_context,
+        dict,
+    )
+
+    try:
+        context = (
+            market_participation_context
+            if explicit_snapshot
+            else build_market_participation_context(
+                symbol=symbol,
+                signal=signal,
+            )
+        )
+
+        fields = (
+            build_market_participation_statistics_fields(
+                context
+            )
+        )
+
+        fields[
+            "participation_capture_event"
+        ] = event
+
+        fields[
+            "participation_capture_source"
+        ] = (
+            "EXACT_SETUP_SNAPSHOT"
+            if explicit_snapshot
+            else "TRACKER_EVENT_FALLBACK"
+        )
+
+        return fields
+
+    except Exception as exc:
+        logger.warning(
+            "[SETUP OUTCOME] "
+            "Market participation statistics "
+            f"failed open | error={exc}"
+        )
+
+        fields = (
+            build_market_participation_statistics_fields(
+                None
+            )
+        )
+
+        fields[
+            "participation_capture_event"
+        ] = event
+
+        fields[
+            "participation_capture_source"
+        ] = "FAILED_OPEN"
+
+        return fields
+
+
 def register_setup_outcome(
     *,
     symbol,
@@ -159,6 +239,7 @@ def register_setup_outcome(
     tp=None,
     reason=None,
     extra=None,
+    market_participation_context=None,
 ):
     if not ENABLE_SETUP_OUTCOME_TRACKER:
         return False
@@ -205,6 +286,17 @@ def register_setup_outcome(
     
         return True
     
+    participation_statistics = (
+        _capture_participation_statistics_fail_open(
+            symbol=symbol,
+            signal=signal,
+            event=event,
+            market_participation_context=(
+                market_participation_context
+            ),
+        )
+    )
+
     item = {
         "setup_id": setup_id,
         "symbol": symbol,
@@ -255,6 +347,10 @@ def register_setup_outcome(
     }
 
     item["context_key"] = build_context_key(item)
+
+    item.update(
+        participation_statistics
+    )
 
     items[setup_id] = item
 
