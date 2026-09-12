@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
 
 from src.post_shock_entry_shadow import (
     build_post_shock_entry_shadow,
+    build_post_shock_entry_shadow_fail_open,
 )
 
 
@@ -81,6 +82,63 @@ def assert_observer_only(result):
     assert plan["stop_loss"] is None
     assert plan["take_profit"] is None
     assert plan["risk_reward"] is None
+
+
+class ExplodingContext(dict):
+    def get(
+        self,
+        key,
+        default=None,
+    ):
+        raise RuntimeError(
+            "forced_shadow_classifier_failure"
+        )
+
+
+def test_fail_open_wrapper_never_raises():
+    result = (
+        build_post_shock_entry_shadow_fail_open(
+            post_shock_context=(
+                ExplodingContext(
+                    {
+                        "state": (
+                            "POST_SHOCK_ENTRY_MODE"
+                        ),
+                    }
+                )
+            ),
+            setup=setup(),
+            current_price=4390.57,
+        )
+    )
+
+    assert_observer_only(result)
+
+    assert (
+        result["available"]
+        is False
+    )
+
+    assert (
+        result["state"]
+        == "OBSERVER_ERROR"
+    )
+
+    assert (
+        result["reason"]
+        == "shadow_classifier_failed_open"
+    )
+
+    assert (
+        result["shadow_candidate"]
+        is False
+    )
+
+    assert (
+        result["abnormal_stop_geometry"]
+        is False
+    )
+
 
 
 def test_normal_geometry_is_untouched():
@@ -256,6 +314,22 @@ def test_live_integration_is_non_interventional():
         in live_source
     )
 
+
+    assert (
+        "build_post_shock_entry_shadow_fail_open("
+        in live_source
+    )
+
+    assert (
+        "build_post_shock_entry_shadow("
+        not in live_source
+    )
+
+    assert (
+        "POST_SHOCK_ENTRY_SHADOW_OBSERVATION"
+        in live_source
+    )
+
     # Shadow output is attached, never used as a
     # trading branch or execution authority.
     assert (
@@ -286,6 +360,7 @@ def main():
     test_post_shock_waits_for_m5()
     test_fresh_m5_becomes_shadow_candidate()
     test_normal_context_is_inactive()
+    test_fail_open_wrapper_never_raises()
     test_live_integration_is_non_interventional()
 
     print(

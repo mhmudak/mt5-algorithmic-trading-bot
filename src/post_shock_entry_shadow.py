@@ -350,3 +350,52 @@ def build_post_shock_entry_shadow(
     )
 
     return result
+
+def build_post_shock_entry_shadow_fail_open(
+    *,
+    post_shock_context: dict[str, Any] | None,
+    setup: dict[str, Any] | None,
+    current_price: Any = None,
+    shock_scale_stop_ratio: float = (
+        DEFAULT_SHOCK_SCALE_STOP_RATIO
+    ),
+) -> dict[str, Any]:
+    """
+    Guaranteed fail-open live integration wrapper.
+
+    Any observer/classifier failure must degrade to
+    inert telemetry and must never interrupt or
+    influence the trading decision path.
+    """
+
+    try:
+        return build_post_shock_entry_shadow(
+            post_shock_context=(
+                post_shock_context
+            ),
+            setup=setup,
+            current_price=current_price,
+            shock_scale_stop_ratio=(
+                shock_scale_stop_ratio
+            ),
+        )
+
+    except Exception as exc:
+        result = _base_result()
+
+        result.update(
+            {
+                "available": False,
+                "state": "OBSERVER_ERROR",
+                "reason": (
+                    "shadow_classifier_failed_open"
+                ),
+                "shadow_candidate": False,
+                "abnormal_stop_geometry": False,
+                "error_type": (
+                    type(exc).__name__
+                ),
+            }
+        )
+
+        return result

@@ -23,7 +23,7 @@ from src.post_shock_context import (
     build_post_shock_context,
 )
 from src.post_shock_entry_shadow import (
-    build_post_shock_entry_shadow,
+    build_post_shock_entry_shadow_fail_open,
 )
 
 from config.settings import (
@@ -701,6 +701,120 @@ def _log_post_shock_context_fail_open(
     except Exception as exc:
         logger.warning(
             "[POST SHOCK OBSERVER] "
+            "audit persistence failed open "
+            f"| error={exc}"
+        )
+
+        return False
+
+
+
+def _log_post_shock_entry_shadow_fail_open(
+    *,
+    signal_data,
+    strategy_name,
+    signal,
+    score,
+    session_name,
+    market_condition,
+    close_price,
+):
+    """
+    Persist post-shock entry-shadow telemetry only.
+
+    Failure here must never affect eligibility,
+    pricing, risk, confirmation or execution.
+    """
+
+    try:
+        shadow = (
+            signal_data.get(
+                "post_shock_entry_shadow"
+            )
+            if isinstance(
+                signal_data,
+                dict,
+            )
+            else None
+        )
+
+        if not isinstance(
+            shadow,
+            dict,
+        ):
+            return False
+
+        original_geometry = (
+            shadow.get(
+                "original_geometry"
+            )
+            if isinstance(
+                shadow.get(
+                    "original_geometry"
+                ),
+                dict,
+            )
+            else {}
+        )
+
+        shadow_plan = (
+            shadow.get(
+                "shadow_plan"
+            )
+            if isinstance(
+                shadow.get(
+                    "shadow_plan"
+                ),
+                dict,
+            )
+            else {}
+        )
+
+        log_setup_event(
+            setup_id=signal_data.get(
+                "setup_id"
+            ),
+            event=(
+                "POST_SHOCK_ENTRY_SHADOW_OBSERVATION"
+            ),
+            strategy=strategy_name,
+            signal=signal,
+            entry_model=(
+                signal_data.get(
+                    "entry_model"
+                )
+            ),
+            score=score,
+            session=session_name,
+            market_condition=(
+                market_condition
+            ),
+            entry=(
+                original_geometry.get(
+                    "entry_price"
+                )
+                or close_price
+            ),
+            sl=original_geometry.get(
+                "stop_loss"
+            ),
+            tp=shadow_plan.get(
+                "take_profit"
+            ),
+            rr=shadow_plan.get(
+                "risk_reward"
+            ),
+            reason=shadow.get(
+                "reason"
+            ),
+            extra=shadow,
+        )
+
+        return True
+
+    except Exception as exc:
+        logger.warning(
+            "[POST SHOCK ENTRY SHADOW] "
             "audit persistence failed open "
             f"| error={exc}"
         )
@@ -13222,7 +13336,7 @@ def process_cycle(last_processed_candle_time):
                 selected_signal_data[
                     "post_shock_entry_shadow"
                 ] = (
-                    build_post_shock_entry_shadow(
+                    build_post_shock_entry_shadow_fail_open(
                         post_shock_context=(
                             selected_signal_data.get(
                                 "post_shock_context"
@@ -13332,6 +13446,15 @@ def process_cycle(last_processed_candle_time):
                 )
                 
                 _log_post_shock_context_fail_open(
+                    signal_data=selected_signal_data,
+                    strategy_name=strategy_name,
+                    signal=signal,
+                    score=score,
+                    session_name=session_name,
+                    market_condition=market_condition,
+                    close_price=close_price,
+                )
+                _log_post_shock_entry_shadow_fail_open(
                     signal_data=selected_signal_data,
                     strategy_name=strategy_name,
                     signal=signal,
