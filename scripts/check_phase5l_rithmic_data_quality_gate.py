@@ -99,6 +99,12 @@ def validate_symbol(symbol: str, *, max_bbo_spread: float, min_trades: int, requ
     dom_bid_depth = as_int(metrics.get("dom_bid_depth"))
     dom_ask_depth = as_int(metrics.get("dom_ask_depth"))
 
+    retained_level_limit_reached = bool(
+        order_book.get(
+            "retained_level_limit_reached"
+        )
+    )
+
     checks = {
         "state_snapshot_exists": bool(state),
         "bridge_snapshot_exists": bool(bridge),
@@ -113,6 +119,9 @@ def validate_symbol(symbol: str, *, max_bbo_spread: float, min_trades: int, requ
         "spread_reasonable": spread is not None and spread <= max_bbo_spread,
         "order_book_seen": order_book_count > 0,
         "dom_available": dom_available,
+        "order_book_retention_intact": (
+            not retained_level_limit_reached
+        ),
         "two_sided_dom": dom_bid_depth > 0 and dom_ask_depth > 0,
         "decision_impact_none": state.get("decision_impact") == "NONE" and bridge.get("decision_impact") == "NONE",
         "cannot_influence_decision": bridge.get("can_influence_decision") is False,
@@ -143,6 +152,7 @@ def validate_symbol(symbol: str, *, max_bbo_spread: float, min_trades: int, requ
         "spread_reasonable",
         "order_book_seen",
         "dom_available",
+        "order_book_retention_intact",
     ]:
         if not checks[key]:
             quality_failures.append(key)

@@ -78,7 +78,17 @@ def main():
 
     assert '    elif not report["all_dom_quality_ok"]:\n        report["overall_status"] = "TRADE_FLOW_VALIDATED_DOM_NOT_READY"\n        report["recommendation"] = "Trade flow is usable for observe-only research, but DOM depth is not validated."\n    else:\n        report["overall_status"] = "OPEN_MARKET_RITHMIC_VALIDATED_OBSERVE_ONLY"\n        report["recommendation"] = "Rithmic open-market data is validated for observe-only research. Keep decision impact disabled."\n' in source
 
-    assert '    dom_quality_checks = [\n        "order_book_observed",\n        "dom_available",\n        "has_fresh_order_book",\n    ]\n' in source
+    assert '    dom_quality_checks = [\n        "order_book_observed",\n        "dom_available",\n        "has_fresh_order_book",\n        "order_book_retention_intact",\n    ]\n' in source
+
+    assert (
+        '"order_book_retention_intact": ('
+        in source
+    )
+
+    assert (
+        "retained_level_limit_reached = as_bool("
+        in source
+    )
 
     assert '"decision_impact": "NONE"' in source
     assert '"can_influence_decision": False' in source

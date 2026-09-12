@@ -145,6 +145,12 @@ def validate_symbol(symbol: str, *, stale_after_seconds: int) -> dict[str, Any]:
     metrics = state.get("adapter_compatible_metrics") or {}
     bridge_metrics = bridge.get("adapter_metrics") or {}
 
+    retained_level_limit_reached = as_bool(
+        order_book.get(
+            "retained_level_limit_reached"
+        )
+    )
+
     login_ok = as_bool(connection.get("login_ok"))
     market_data_ok = as_bool(connection.get("market_data_ok"))
     has_fresh_trade = freshness_with_threshold(
@@ -191,6 +197,9 @@ def validate_symbol(symbol: str, *, stale_after_seconds: int) -> dict[str, Any]:
         "nonzero_bbo_available": nonzero_bbo_count > 0 or (last_bid > 0 and last_ask > 0),
         "order_book_observed": order_book_count > 0,
         "dom_available": dom_available,
+        "order_book_retention_intact": (
+            not retained_level_limit_reached
+        ),
         "delta_available": delta is not None,
         "cumulative_delta_available": cumulative_delta is not None,
         "decision_impact_none": state.get("decision_impact") == "NONE" and bridge.get("decision_impact") == "NONE",
@@ -219,6 +228,7 @@ def validate_symbol(symbol: str, *, stale_after_seconds: int) -> dict[str, Any]:
         "order_book_observed",
         "dom_available",
         "has_fresh_order_book",
+        "order_book_retention_intact",
     ]
 
     critical_ok = all(checks.get(k) for k in critical_checks)

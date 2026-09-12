@@ -81,6 +81,7 @@ class RithmicRollingStateCache:
         bucket_seconds: int = 60,
         stale_after_seconds: int = 15,
         top_levels: int = 20,
+        max_order_book_levels: int = 1000,
     ) -> None:
         self.symbol = symbol
         self.exchange = exchange
@@ -89,6 +90,11 @@ class RithmicRollingStateCache:
         self.bucket_seconds = bucket_seconds
         self.stale_after_seconds = stale_after_seconds
         self.top_levels = top_levels
+        self.max_order_book_levels = max(
+            int(max_order_book_levels),
+            int(top_levels),
+            1,
+        )
 
         self.started_at_epoch = time.time()
         self.updated_at_epoch: float | None = None
@@ -109,6 +115,7 @@ class RithmicRollingStateCache:
         self.last_bbo_received_at_epoch: float | None = None
 
         self.order_book_count = 0
+        self.order_book_truncation_count = 0
         self.order_book_available = False
         self.last_order_book_received_at_epoch: float | None = None
         self.last_order_book_update_type: int | None = None
@@ -248,7 +255,17 @@ class RithmicRollingStateCache:
             }
 
         reverse = side == "bid"
-        merged = sorted(book_by_price.values(), key=lambda x: x["price"], reverse=reverse)
+        merged = sorted(
+            book_by_price.values(),
+            key=lambda x: x["price"],
+            reverse=reverse,
+        )
+
+        if len(merged) > self.max_order_book_levels:
+            self.order_book_truncation_count += 1
+            merged = merged[
+                : self.max_order_book_levels
+            ]
 
         return [
             {
@@ -282,6 +299,7 @@ class RithmicRollingStateCache:
         if update_type_name in {"CLEAR_ORDER_BOOK", "NO_BOOK"}:
             self.order_book_bid_levels = []
             self.order_book_ask_levels = []
+            self.order_book_truncation_count = 0
 
         else:
             has_bid_update = bool(presence_bits & 1) or bool(clean_bid_levels)
@@ -582,6 +600,11 @@ class RithmicRollingStateCache:
         elif not has_fresh_order_book:
             warnings.append("STALE_ORDER_BOOK_OBSERVATION_ONLY")
 
+        if self.order_book_truncation_count > 0:
+            warnings.append(
+                "ORDER_BOOK_RETAINED_LEVEL_LIMIT_REACHED"
+            )
+
         warnings.append("DECISION_IMPACT_DISABLED")
 
         if not self.login_ok:
@@ -665,6 +688,13 @@ class RithmicRollingStateCache:
                 "last_received_at_epoch": self.last_order_book_received_at_epoch,
                 "bid_level_count": len(self.order_book_bid_levels),
                 "ask_level_count": len(self.order_book_ask_levels),
+                "max_retained_levels_per_side": self.max_order_book_levels,
+                "retained_level_limit_reached": (
+                    self.order_book_truncation_count > 0
+                ),
+                "retained_level_truncation_count": (
+                    self.order_book_truncation_count
+                ),
                 "bid_depth": self.dom_bid_depth,
                 "ask_depth": self.dom_ask_depth,
                 "depth_imbalance": self.dom_depth_imbalance,
