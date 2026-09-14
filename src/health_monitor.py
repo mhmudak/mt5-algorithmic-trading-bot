@@ -5,6 +5,7 @@ from src.notifier import send_telegram_message
 from src.trade_tracker import load_trades
 from src.logger import logger
 from src.market_condition import get_market_condition_display
+from src.live_bias import get_live_bias_snapshot
 
 
 from src.market_outlook_engine import load_latest_market_outlook
@@ -234,11 +235,91 @@ def send_heartbeat(symbol: str, force=False):
 
     market_condition = get_market_condition_display()
 
+    # Live Bias is heartbeat/display context only.
+    # It has zero execution, risk, recovery, entry,
+    # SL or TP authority.
+    live_bias_text = "UNKNOWN"
+    live_bias_strength_text = "N/A"
+    live_bias_coverage = 0
+    live_bias_tf_text = (
+        "M15=UNKNOWN | "
+        "H1=UNKNOWN | "
+        "H4=UNKNOWN"
+    )
+
+    try:
+        live_bias_snapshot = get_live_bias_snapshot(
+            symbol,
+            market_condition,
+        )
+
+        live_bias_value = str(
+            live_bias_snapshot.get(
+                "bias",
+                "UNKNOWN",
+            )
+            or "UNKNOWN"
+        ).upper()
+
+        live_bias_strength = int(
+            live_bias_snapshot.get(
+                "directional_strength",
+                0,
+            )
+            or 0
+        )
+
+        live_bias_coverage = int(
+            live_bias_snapshot.get(
+                "coverage",
+                0,
+            )
+            or 0
+        )
+
+        timeframe_states = (
+            live_bias_snapshot.get(
+                "timeframes",
+                {},
+            )
+            or {}
+        )
+
+        live_bias_tf_text = " | ".join(
+            (
+                f"{timeframe}="
+                f"{str(timeframe_states.get(timeframe, {}).get('bias', 'UNKNOWN')).upper()}"
+            )
+            for timeframe in (
+                "M15",
+                "H1",
+                "H4",
+            )
+        )
+
+        live_bias_text = live_bias_value
+
+        if live_bias_value != "UNKNOWN":
+            live_bias_strength_text = (
+                f"{live_bias_strength}%"
+            )
+
+    except Exception as exc:
+        logger.warning(
+            "[LIVE BIAS] heartbeat calculation "
+            f"failed open | reason={exc}"
+        )
+
+
     message = (
         f"🟢 Bot Alive\n"
         f"Symbol: {symbol}\n"
         f"Price: {price_text}\n"
-        f"Bias: {bias}\n"
+        f"Live Bias: {live_bias_text}\n"
+        f"Directional Strength: {live_bias_strength_text}\n"
+        f"Live TF: {live_bias_tf_text}\n"
+        f"Data Coverage: {live_bias_coverage}%\n"
+        f"HTF Outlook: {bias}\n"
         f"Market Condition: {market_condition}\n"
         f"Open Trades: {open_trades_text}\n"
         f"MT5: {'Connected' if mt5_connected else 'Disconnected'}\n"
@@ -255,7 +336,7 @@ def send_heartbeat(symbol: str, force=False):
         f"symbol={symbol} "
         f"price={price_text} "
         f"price_source={market_context.get('price_source')} "
-        f"bias={bias} "
+        f"htf_outlook={bias} live_bias={live_bias_text} live_bias_strength={live_bias_strength_text} live_bias_coverage={live_bias_coverage} "
         f"physical_open={open_trades_text} "
         f"tracked_open={tracked_open_count} "
         f"pending_reconciliation={pending_reconciliation_count}"
