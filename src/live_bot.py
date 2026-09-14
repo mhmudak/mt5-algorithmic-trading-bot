@@ -2888,8 +2888,14 @@ def get_strategy_selection_priority(strategy_name, market_condition):
         "FAILED_FVG_REVERSAL": 4,
     }
 
-    if market_condition == "RANGING":
-        return ranging_priority.get(strategy_name, 0)
+    if market_condition in {
+        "RANGING",
+        "CONSOLIDATION",
+    }:
+        return ranging_priority.get(
+            strategy_name,
+            0,
+        )
 
     return default_priority.get(strategy_name, 0)
 
@@ -11851,13 +11857,70 @@ def process_cycle(last_processed_candle_time):
         update_mtf_conflict_opportunities(SYMBOL)
         
     # =========================
+    # LIVE MARKET REGIME TRANSITION OBSERVER
+    # =========================
+    # Runs every loop before the M15 new-candle gate.
+    #
+    # Observation only:
+    # - independent of intrabar trading toggles
+    # - does not execute trades
+    # - does not change risk
+    # - does not change the authoritative closed-candle regime
+    #
+    # Fail-open by design.
+    live_market_condition_display = "UNKNOWN"
+
+    try:
+        from src.market_condition import (
+            get_market_condition_display,
+            observe_intrabar_market_transition,
+        )
+
+        live_market_condition_display = (
+            get_market_condition_display()
+        )
+
+        intrabar_transition_price = (
+            float(tick.bid)
+            + float(tick.ask)
+        ) / 2.0
+
+        transition_status = (
+            observe_intrabar_market_transition(
+                intrabar_transition_price
+            )
+        )
+
+        live_market_condition_display = (
+            transition_status.get(
+                "display",
+                live_market_condition_display,
+            )
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "[MARKET TRANSITION] "
+            "observer failed open | "
+            f"reason={exc}"
+        )
+
+    # =========================
     # INTRABAR ORB DETECTOR
     # Runs before the M15 new-candle gate.
     # =========================
     if ENABLE_INTRABAR_ENGINE and ENABLE_INTRABAR_PRICE_EVENT_DETECTOR:
         from src.session_engine import detect_session
 
-        intrabar_session_name = detect_session(current_candle_time)
+        intrabar_session_name = detect_session(
+            current_candle_time
+        )
+
+        # Preserve the historical intrabar execution context.
+        #
+        # live_market_condition_display is observation-only and
+        # must not feed execution memory, recovery, risk, or
+        # downstream intrabar trading authority.
         intrabar_market_condition = "INTRABAR_PENDING"
 
         if process_intrabar_price_event_detector(
@@ -12613,6 +12676,30 @@ def process_cycle(last_processed_candle_time):
             ("LIQUIDITY_CANDLE", liquidity_candle_signal),
             ("SNIPER_V2", sniper_signal),
             ("STRICT", strict_signal),
+        ]
+
+    elif market_condition == "CONSOLIDATION":
+        # Dedicated compressed/rotational auction routing.
+        #
+        # Core principle:
+        # trade range edges, failed auctions, sweeps and value
+        # reversion -- not generic momentum in the middle.
+        #
+        # Broader continuation/breakout strategies remain outside
+        # this regime until the authoritative closed-candle market
+        # condition leaves CONSOLIDATION.
+        strategy_map = [
+            ("BALANCED_AUCTION_RANGE", balanced_auction_range_signal),
+            ("RANGE_SWEEP_RECLAIM", range_sweep_reclaim_signal),
+            ("VWAP_RANGE_MEAN_REVERSION", vwap_range_mean_reversion_signal),
+            ("CRT_TBS", crt_tbs_signal),
+            ("LIQUIDITY_TRAP", liquidity_trap_signal),
+            ("LIQUIDITY_SWEEP", liquidity_sweep_signal),
+            ("MICRO_SR_SWEEP_RECLAIM", micro_sr_sweep_reclaim_signal),
+            ("FAILED_BREAKOUT_REVERSAL", failed_breakout_reversal_signal),
+            ("FAILED_FVG_REVERSAL", failed_fvg_reversal_signal),
+            ("FRACTAL_SWEEP", fractal_sweep_signal),
+            ("VWAP_RECLAIM", vwap_reclaim_signal),
         ]
 
     elif market_condition == "RANGING":

@@ -4,6 +4,7 @@ from datetime import datetime
 from src.notifier import send_telegram_message
 from src.trade_tracker import load_trades
 from src.logger import logger
+from src.market_condition import get_market_condition_display
 
 
 from src.market_outlook_engine import load_latest_market_outlook
@@ -231,11 +232,14 @@ def send_heartbeat(symbol: str, force=False):
     except Exception:
         mt5_connected = False
 
+    market_condition = get_market_condition_display()
+
     message = (
         f"🟢 Bot Alive\n"
         f"Symbol: {symbol}\n"
         f"Price: {price_text}\n"
         f"Bias: {bias}\n"
+        f"Market Condition: {market_condition}\n"
         f"Open Trades: {open_trades_text}\n"
         f"MT5: {'Connected' if mt5_connected else 'Disconnected'}\n"
         f"Time: {now.strftime('%H:%M:%S')}"
