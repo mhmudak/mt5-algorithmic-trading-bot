@@ -201,6 +201,13 @@ def _flush_google_sheets_retry_queue_sync(
 ):
     """
     WORKER-ONLY persistent retry processing.
+
+    Fairness invariants:
+    - max_items limits HTTP ATTEMPTS, not only successes.
+    - one failed retry pauses the current batch so a Google
+      outage cannot monopolize the single async worker.
+    - the failed item is rotated to the tail so one poison/
+      slow payload cannot permanently starve the backlog.
     """
 
     if not ENABLE_GOOGLE_SHEETS_LOGGING:
@@ -211,13 +218,23 @@ def _flush_google_sheets_retry_queue_sync(
     if not retry_items:
         return 0
 
+    max_items = max(
+        1,
+        int(max_items),
+    )
+
     remaining = []
     flushed = 0
+    attempted = 0
 
-    for item in retry_items:
-        if flushed >= max_items:
-            remaining.append(item)
-            continue
+    for index, item in enumerate(retry_items):
+        if attempted >= max_items:
+            remaining.extend(
+                retry_items[index:]
+            )
+            break
+
+        attempted += 1
 
         payload = item.get("payload", {})
         queue_key = item.get("queue_key")
@@ -250,8 +267,6 @@ def _flush_google_sheets_retry_queue_sync(
             datetime.now().isoformat()
         )
 
-        remaining.append(item)
-
         logger.warning(
             f"[GOOGLE SHEETS QUEUE] "
             f"Retry failed | "
@@ -260,6 +275,25 @@ def _flush_google_sheets_retry_queue_sync(
             f"error={error}"
         )
 
+        # Preserve all untouched items in their current order,
+        # then rotate the failed item to the tail. Most
+        # importantly, stop this retry batch immediately so
+        # fresh PAYLOAD work can return to the worker.
+        remaining.extend(
+            retry_items[index + 1:]
+        )
+        remaining.append(item)
+
+        logger.warning(
+            "[GOOGLE SHEETS QUEUE] "
+            "Retry batch paused after failure | "
+            f"attempted={attempted} "
+            f"flushed={flushed} "
+            f"remaining={len(remaining)}"
+        )
+
+        break
+
     save_google_sheets_retry_queue(
         remaining
     )
@@ -267,11 +301,11 @@ def _flush_google_sheets_retry_queue_sync(
     if flushed:
         logger.info(
             f"[GOOGLE SHEETS QUEUE] "
-            f"Flushed count={flushed}"
+            f"Flushed count={flushed} "
+            f"attempted={attempted}"
         )
 
     return flushed
-
 
 def _google_sheets_worker_main():
     logger.info(
