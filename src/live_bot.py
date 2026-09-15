@@ -3052,6 +3052,87 @@ def _format_telegram_tp123_from_trade_plan(
 
 
 
+def _setup_quality_alert_prefix(
+    *,
+    signal_data,
+    signal,
+    strategy_name,
+    score,
+    session_name,
+    market_condition,
+    status,
+    entry=None,
+    sl=None,
+    tp=None,
+    reason=None,
+    entry_model=None,
+):
+    """
+    Build a fail-open informational quality prefix.
+
+    IMPORTANT:
+    - display only
+    - does not change score
+    - does not block or allow execution
+    - does not change entry / SL / TP
+    - does not change risk or recovery authority
+    """
+
+    try:
+        from src.notifier import (
+            build_setup_quality_alert_block,
+        )
+
+        payload = dict(
+            signal_data or {}
+        )
+
+        payload.update(
+            {
+                "symbol": SYMBOL,
+                "signal": signal,
+                "strategy": strategy_name,
+                "score": score,
+                "session": session_name,
+                "market_condition": market_condition,
+            }
+        )
+
+        if entry_model is not None:
+            payload["entry_model"] = (
+                entry_model
+            )
+
+        if entry is not None:
+            payload["entry"] = entry
+
+        if sl is not None:
+            payload["sl"] = sl
+
+        if tp is not None:
+            payload["tp"] = tp
+
+        if reason is not None:
+            payload["reason"] = reason
+
+        block = (
+            build_setup_quality_alert_block(
+                payload,
+                status=status,
+            )
+        )
+
+        if not block:
+            return ""
+
+        return (
+            f"{block}\n\n"
+        )
+
+    except Exception:
+        return ""
+
+
 def notify_rejected_candidate_if_relevant(
     *,
     setup_id,
@@ -3390,7 +3471,38 @@ def register_generic_rejected_candidate_recovery_if_eligible(
     
     if GENERIC_REJECTED_CANDIDATE_NOTIFY_TELEGRAM:
         send_telegram_message(
-            f"⚠️ Generic Rejected Candidate Tracked\n"
+            _setup_quality_alert_prefix(
+                signal_data=candidate,
+                signal=candidate_signal,
+                strategy_name=candidate_strategy,
+                score=candidate.get(
+                    "score",
+                    0,
+                ),
+                session_name=candidate.get(
+                    "session",
+                    "UNKNOWN",
+                ),
+                market_condition=candidate.get(
+                    "market_condition",
+                    "UNKNOWN",
+                ),
+                status="❌ REJECTED — GENERIC",
+                entry=trade_plan.get(
+                    "entry_price"
+                ),
+                sl=trade_plan.get(
+                    "stop_loss"
+                ),
+                tp=trade_plan.get(
+                    "take_profit"
+                ),
+                reason=rejection_reason,
+                entry_model=candidate.get(
+                    "entry_model"
+                ),
+            )
+            + f"⚠️ Generic Rejected Candidate Tracked\n"
             f"Symbol: {SYMBOL}\n"
             f"Strategy: {candidate_strategy}\n"
             f"Signal: {candidate_signal}\n"
@@ -5719,7 +5831,35 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
             )
 
             intrabar_rejected_message = (
-                f"⚠️ Intrabar Candidate Rejected — Low RR\n"
+                _setup_quality_alert_prefix(
+                    signal_data=signal_data,
+                    signal=signal,
+                    strategy_name=strategy_name,
+                    score=signal_data.get(
+                        "score",
+                        0,
+                    ),
+                    session_name=session_name,
+                    market_condition=market_condition,
+                    status=(
+                        "❌ REJECTED — "
+                        "LOW RR (INTRABAR)"
+                    ),
+                    entry=trade_plan.get(
+                        "entry_price"
+                    ),
+                    sl=trade_plan.get(
+                        "stop_loss"
+                    ),
+                    tp=trade_plan.get(
+                        "take_profit"
+                    ),
+                    reason=rejection_reason,
+                    entry_model=signal_data.get(
+                        "entry_model"
+                    ),
+                )
+                + f"⚠️ Intrabar Candidate Rejected — Low RR\n"
                 f"Symbol: {SYMBOL}\n"
                 f"Strategy: {strategy_name}\n"
                 f"Signal: {signal}\n"
@@ -10621,7 +10761,21 @@ def process_candidate_rejection_recovery_setups(
                 )
 
                 send_telegram_message(
-                    f"? Candidate Recovery Waiting for Better Entry\n"
+                    _setup_quality_alert_prefix(
+                        signal_data=signal_data,
+                        signal=signal,
+                        strategy_name=strategy_name,
+                        score=signal_data.get("score", 0),
+                        session_name=session_name,
+                        market_condition=market_condition,
+                        status="⏳ WAITING — BETTER ENTRY",
+                        entry=trade_plan.get("entry_price"),
+                        sl=trade_plan.get("stop_loss"),
+                        tp=trade_plan.get("take_profit"),
+                        reason=f"candidate recovery from {reason_type}",
+                        entry_model=signal_data.get("entry_model"),
+                    )
+                    +                     f"? Candidate Recovery Waiting for Better Entry\n"
                     f"Symbol: {SYMBOL}\n"
                     f"Strategy: {strategy_name}\n"
                     f"Signal: {signal}\n"
@@ -10635,7 +10789,21 @@ def process_candidate_rejection_recovery_setups(
                 continue
 
         send_telegram_message(
-            f"♻️ Candidate Recovery Executing\n"
+            _setup_quality_alert_prefix(
+                signal_data=signal_data,
+                signal=signal,
+                strategy_name=strategy_name,
+                score=signal_data.get("score", 0),
+                session_name=session_name,
+                market_condition=market_condition,
+                status="♻️ RECOVERY — EXECUTION ATTEMPT",
+                entry=trade_plan.get("entry_price"),
+                sl=trade_plan.get("stop_loss"),
+                tp=trade_plan.get("take_profit"),
+                reason=f"candidate recovery from {reason_type}",
+                entry_model=signal_data.get("entry_model"),
+            )
+            +             f"♻️ Candidate Recovery Executing\n"
             f"Symbol: {SYMBOL}\n"
             f"Strategy: {strategy_name}\n"
             f"Signal: {signal}\n"
@@ -10868,7 +11036,21 @@ def process_candidate_rejection_recovery_setups(
         )
 
         send_telegram_message(
-            f"❌ Candidate Recovery Execution Failed\n"
+            _setup_quality_alert_prefix(
+                signal_data=signal_data,
+                signal=signal,
+                strategy_name=strategy_name,
+                score=signal_data.get("score", 0),
+                session_name=session_name,
+                market_condition=market_condition,
+                status="❌ RECOVERY EXECUTION FAILED",
+                entry=trade_plan.get("entry_price"),
+                sl=trade_plan.get("stop_loss"),
+                tp=trade_plan.get("take_profit"),
+                reason="candidate recovery execution failed",
+                entry_model=signal_data.get("entry_model"),
+            )
+            +             f"❌ Candidate Recovery Execution Failed\n"
             f"Symbol: {SYMBOL}\n"
             f"Strategy: {strategy_name}\n"
             f"Signal: {signal}\n"
@@ -13508,7 +13690,18 @@ def process_cycle(last_processed_candle_time):
                     )
 
                     rejected_message = (
-                        f"🚫 Candidate Rejected\n"
+                        _setup_quality_alert_prefix(
+                            signal_data=candidate,
+                            signal=candidate.get("signal"),
+                            strategy_name=candidate.get("strategy"),
+                            score=candidate.get("score", 0),
+                            session_name=session_name,
+                            market_condition=market_condition,
+                            status="❌ REJECTED",
+                            reason=rejection_reason,
+                            entry_model=candidate.get("entry_model"),
+                        )
+                        +                         f"🚫 Candidate Rejected\n"
                         f"Symbol: {SYMBOL}\n"
                         f"Strategy: {candidate.get('strategy')}\n"
                         f"Signal: {candidate.get('signal')}\n"
@@ -13716,7 +13909,21 @@ def process_cycle(last_processed_candle_time):
                     )
 
                     low_rr_message = (
-                        f"⚠️ Candidate Rejected — Low RR\n"
+                        _setup_quality_alert_prefix(
+                            signal_data=validated_candidate,
+                            signal=candidate_signal,
+                            strategy_name=candidate_strategy,
+                            score=validated_candidate.get("score", 0),
+                            session_name=session_name,
+                            market_condition=market_condition,
+                            status="❌ REJECTED — LOW RR",
+                            entry=candidate_trade_plan.get("entry_price"),
+                            sl=candidate_trade_plan.get("stop_loss"),
+                            tp=candidate_trade_plan.get("take_profit"),
+                            reason=rejection_reason,
+                            entry_model=validated_candidate.get("entry_model"),
+                        )
+                        +                         f"⚠️ Candidate Rejected — Low RR\n"
                         f"Symbol: {SYMBOL}\n"
                         f"Strategy: {candidate_strategy}\n"
                         f"Signal: {candidate_signal}\n"
@@ -14058,6 +14265,7 @@ def process_cycle(last_processed_candle_time):
 
                 detected_data = {
                     "stage": f"SETUP DETECTED #{selected_signal_data.get('setup_id')}",
+                    "symbol": SYMBOL,
                     "signal": signal,
                     "strategy": strategy_name,
                     "entry_model": selected_signal_data.get("entry_model", "RAW"),
@@ -14070,6 +14278,27 @@ def process_cycle(last_processed_candle_time):
                     ),
                     "score": score,
                     "session": session_name,
+                    "market_condition": market_condition,
+                    "confluence_strategies": selected_signal_data.get(
+                        "confluence_strategies",
+                        [],
+                    ),
+                    "smc": selected_signal_data.get(
+                        "smc",
+                        [],
+                    ),
+                    "structure_liquidity_reasons": selected_signal_data.get(
+                        "structure_liquidity_reasons",
+                        [],
+                    ),
+                    "supply_demand_reasons": selected_signal_data.get(
+                        "supply_demand_reasons",
+                        [],
+                    ),
+                    "elliott_fib_reasons": selected_signal_data.get(
+                        "elliott_fib_reasons",
+                        [],
+                    ),
                     "reason": reason,
                 }
 
@@ -14518,7 +14747,22 @@ def process_cycle(last_processed_candle_time):
                 )
 
                 send_telegram_message(
-                    f"🚫 Ready Setup Rejected by Final HTF Liquidity\n"
+                    _setup_quality_alert_prefix(
+                        signal_data=setup_data,
+                        signal=setup_signal,
+                        strategy_name=setup_strategy,
+                        score=setup_score,
+                        session_name=session_name,
+                        market_condition=market_condition,
+                        status="❌ REJECTED — HTF LIQUIDITY",
+                        reason=(
+                            final_liquidity_context.get("reason")
+                            if final_liquidity_context
+                            else "N/A"
+                        ),
+                        entry_model=setup_data.get("entry_model"),
+                    )
+                    +                     f"🚫 Ready Setup Rejected by Final HTF Liquidity\n"
                     f"Symbol: {SYMBOL}\n"
                     f"Strategy: {setup_strategy}\n"
                     f"Signal: {setup_signal}\n"

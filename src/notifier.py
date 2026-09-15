@@ -55,6 +55,71 @@ TP: {tp}
     return send_telegram_message(message)
 
 
+def build_setup_quality_alert_block(
+    data: dict,
+    status=None,
+) -> str:
+    """
+    Build an informational premium setup-quality block.
+
+    DISPLAY ONLY:
+    - cannot execute
+    - cannot block
+    - cannot change score
+    - cannot change risk
+    - cannot change entry / SL / TP
+    """
+
+    try:
+        from src.setup_quality_grade import (
+            build_setup_quality_grade,
+            format_setup_quality_block,
+        )
+
+        result = build_setup_quality_grade(
+            data
+        )
+
+        block = format_setup_quality_block(
+            result
+        )
+
+        if not block:
+            return ""
+
+        if status:
+            block = block.replace(
+                " SETUP\n",
+                " SETUP QUALITY\n",
+                1,
+            )
+
+            block += (
+                f"\nStatus: {status}"
+            )
+
+        return block
+
+    except Exception:
+        # Notification path must remain fail-open.
+        return ""
+
+
+def _build_setup_quality_block(
+    data: dict,
+    stage,
+) -> str:
+    if (
+        "SETUP DETECTED"
+        not in str(stage or "").upper()
+    ):
+        return ""
+
+    return build_setup_quality_alert_block(
+        data
+    )
+
+
 def build_trade_message(data: dict) -> str:
     def has_value(value):
         return value is not None and value != "N/A"
@@ -63,6 +128,13 @@ def build_trade_message(data: dict) -> str:
     strategy = data.get("strategy")
     entry_model = data.get("entry_model", "N/A")
     stage = data.get("stage", "SIGNAL DETECTED")
+
+    setup_quality_block = (
+        _build_setup_quality_block(
+            data,
+            stage,
+        )
+    )
 
     entry = data.get("entry")
     sl = data.get("sl")
@@ -138,5 +210,11 @@ def build_trade_message(data: dict) -> str:
 
     if reason:
         message += f"\n\n🧠 Reason:\n{reason}"
+
+    if setup_quality_block:
+        message = (
+            f"{setup_quality_block}\n"
+            f"{message}"
+        )
 
     return message
