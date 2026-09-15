@@ -7755,6 +7755,28 @@ def process_mtf_conflict_candidate(
                     )
                 )
 
+                # Display-only TP context for strong tracked MTF conflicts.
+                # This must never alter execution permission, RR authority,
+                # risk, entry, SL, TP1-TP3, recovery, or promotion logic.
+                mtf_entry_tp_block = ""
+
+                if (
+                    isinstance(
+                        shadow_trade_plan,
+                        dict,
+                    )
+                    and shadow_trade_plan
+                ):
+                    mtf_entry_tp_block = (
+                        _entry_tp_opportunity_block_fail_open(
+                            df=df,
+                            signal_data=candidate,
+                            trade_plan=shadow_trade_plan,
+                            signal=signal,
+                            required_rr=required_rr,
+                        )
+                    )
+
                 mtf_message = (
                     "📌 STRONG MTF CONFLICT TRACKED\n"
                     f"Symbol: {SYMBOL}\n"
@@ -7779,6 +7801,12 @@ def process_mtf_conflict_candidate(
                     f"Required RR: {required_rr}\n\n"
                     "Action: tracked for promotion ? execution only if RR and confirmation gate pass; low RR waits for better entry."
                 )
+
+                if mtf_entry_tp_block:
+                    mtf_message += (
+                        "\n\n"
+                        + mtf_entry_tp_block
+                    )
 
                 if mtf_participation_block:
                     mtf_message += (

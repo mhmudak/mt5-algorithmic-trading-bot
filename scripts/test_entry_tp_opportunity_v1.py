@@ -890,7 +890,51 @@ def test_live_bot_native_d1_integration():
         text.count(
             "_entry_tp_opportunity_block_fail_open("
         )
-        == 3
+        == 4
+    )
+
+    mtf_start = text.index(
+        "            if strong_mtf_candidate:"
+    )
+
+    mtf_end = text.index(
+        "        if not execution_allowed:",
+        mtf_start,
+    )
+
+    mtf_block = text[
+        mtf_start:
+        mtf_end
+    ]
+
+    assert (
+        "_entry_tp_opportunity_block_fail_open("
+        in mtf_block
+    )
+
+    assert (
+        "signal_data=candidate"
+        in mtf_block
+    )
+
+    assert (
+        "trade_plan=shadow_trade_plan"
+        in mtf_block
+    )
+
+    assert (
+        "required_rr=required_rr"
+        in mtf_block
+    )
+
+    assert (
+        "if mtf_entry_tp_block:"
+        in mtf_block
+    )
+
+    assert (
+        "+ mtf_entry_tp_block"
+        in mtf_block
     )
 
 
