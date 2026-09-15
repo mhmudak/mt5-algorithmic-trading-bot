@@ -36,6 +36,13 @@ HIGH_IMPACT_MIN_5S_SAMPLES = 5
 HIGH_IMPACT_MIN_OBSERVED_SPAN_SECONDS = 2.0
 HIGH_IMPACT_MIN_DIRECTIONAL_IMBALANCE = 0.60
 
+# Display-only V1.1 short-horizon persistence context.
+# These values describe the sampled MT5 quote tape only and never
+# influence execution, risk, RR, entry, SL, TP, recovery, or scoring.
+PERSISTENCE_BUCKET_SECONDS = 5.0
+PERSISTENCE_BUCKET_COUNT = 5
+PERSISTENCE_MIN_DIRECTIONAL_IMBALANCE = 0.20
+
 
 def _safe_float(value: Any) -> Optional[float]:
     try:
@@ -204,6 +211,171 @@ def _window_snapshot(samples: list[dict], now_epoch: float, seconds: float) -> D
     }
 
 
+def _persistence_bucket_snapshot(
+    samples: list[dict],
+    *,
+    start_epoch: float,
+    end_epoch: float,
+) -> Dict[str, Any]:
+    """Build one non-overlapping short-horizon persistence bucket.
+
+    The interval is (start_epoch, end_epoch]. Using an open lower
+    boundary prevents a quote exactly on a bucket boundary from being
+    counted in two adjacent buckets.
+    """
+
+    window = [
+        row
+        for row in samples
+        if (
+            row["epoch"] > start_epoch
+            and row["epoch"] <= end_epoch
+        )
+    ]
+
+    if not window:
+        return {
+            "sample_count": 0,
+            "mid_move": None,
+            "directional_imbalance": None,
+            "direction": "UNRESOLVED",
+        }
+
+    mids = [row["mid"] for row in window]
+
+    up = 0
+    down = 0
+
+    for previous, current in zip(mids, mids[1:]):
+        if current > previous:
+            up += 1
+        elif current < previous:
+            down += 1
+
+    directional_total = up + down
+    imbalance = (
+        (up - down) / directional_total
+        if directional_total > 0
+        else 0.0
+    )
+
+    move = mids[-1] - mids[0]
+    direction = "UNRESOLVED"
+
+    if len(window) >= MIN_SHORT_WINDOW_SAMPLES:
+        if (
+            move > 0
+            and imbalance >= PERSISTENCE_MIN_DIRECTIONAL_IMBALANCE
+        ):
+            direction = "BUY"
+        elif (
+            move < 0
+            and imbalance <= -PERSISTENCE_MIN_DIRECTIONAL_IMBALANCE
+        ):
+            direction = "SELL"
+
+    return {
+        "sample_count": len(window),
+        "mid_move": round(move, 6),
+        "directional_imbalance": round(imbalance, 4),
+        "direction": direction,
+    }
+
+
+def _build_direction_persistence(
+    samples: list[dict],
+    now_epoch: float,
+) -> Dict[str, Any]:
+    """Summarize direction across five non-overlapping 5-second buckets.
+
+    This is a persistence descriptor, not a probability or execution
+    signal. Buckets with too few samples remain UNRESOLVED.
+    """
+
+    buckets = []
+
+    for index in range(PERSISTENCE_BUCKET_COUNT):
+        end_epoch = (
+            now_epoch
+            - (
+                index
+                * PERSISTENCE_BUCKET_SECONDS
+            )
+        )
+        start_epoch = (
+            end_epoch
+            - PERSISTENCE_BUCKET_SECONDS
+        )
+
+        bucket = _persistence_bucket_snapshot(
+            samples,
+            start_epoch=start_epoch,
+            end_epoch=end_epoch,
+        )
+        bucket["bucket_index"] = index
+        bucket["seconds_ago_start"] = round(
+            index * PERSISTENCE_BUCKET_SECONDS,
+            3,
+        )
+        bucket["seconds_ago_end"] = round(
+            (index + 1) * PERSISTENCE_BUCKET_SECONDS,
+            3,
+        )
+        buckets.append(bucket)
+
+    directions = [
+        bucket.get("direction")
+        for bucket in buckets
+    ]
+
+    buy_count = sum(
+        direction == "BUY"
+        for direction in directions
+    )
+    sell_count = sum(
+        direction == "SELL"
+        for direction in directions
+    )
+    unresolved_count = (
+        PERSISTENCE_BUCKET_COUNT
+        - buy_count
+        - sell_count
+    )
+
+    if buy_count > sell_count and buy_count > 0:
+        dominant_direction = "BUY"
+        dominant_count = buy_count
+    elif sell_count > buy_count and sell_count > 0:
+        dominant_direction = "SELL"
+        dominant_count = sell_count
+    else:
+        dominant_direction = "UNRESOLVED"
+        dominant_count = max(
+            buy_count,
+            sell_count,
+        )
+
+    label = (
+        f"{dominant_count}/{PERSISTENCE_BUCKET_COUNT} "
+        f"{dominant_direction}"
+    )
+
+    return {
+        "bucket_seconds": PERSISTENCE_BUCKET_SECONDS,
+        "bucket_count": PERSISTENCE_BUCKET_COUNT,
+        "buy_count": buy_count,
+        "sell_count": sell_count,
+        "unresolved_count": unresolved_count,
+        "dominant_direction": dominant_direction,
+        "dominant_count": dominant_count,
+        "label": label,
+        "buckets": buckets,
+        "decision_impact": "NONE",
+        "can_influence_decision": False,
+        "safe_for_execution": False,
+    }
+
+
 def build_mt5_tick_participation_context(*, now_epoch: Optional[float] = None) -> Dict[str, Any]:
     now_epoch = float(now_epoch if now_epoch is not None else time.time())
 
@@ -214,6 +386,10 @@ def build_mt5_tick_participation_context(*, now_epoch: Optional[float] = None) -
     w5 = _window_snapshot(samples, now_epoch, 5.0)
     w15 = _window_snapshot(samples, now_epoch, 15.0)
     w60 = _window_snapshot(samples, now_epoch, 60.0)
+    direction_persistence = _build_direction_persistence(
+        samples,
+        now_epoch,
+    )
 
     short_rate = _safe_float(w5.get("quote_change_rate_proxy_hz"))
     baseline_rate = _safe_float(w60.get("quote_change_rate_proxy_hz"))
@@ -266,6 +442,7 @@ def build_mt5_tick_participation_context(*, now_epoch: Optional[float] = None) -
             if acceleration_ratio is not None
             else None
         ),
+        "direction_persistence": direction_persistence,
         "current_bid": round(current["bid"], 6) if current else None,
         "current_ask": round(current["ask"], 6) if current else None,
         "current_mid": round(current["mid"], 6) if current else None,
@@ -656,6 +833,56 @@ def _short_pressure_state(
     )
 
 
+def _participation_imbalance_direction(value: Any) -> str:
+    imbalance = _safe_float(value)
+
+    if imbalance is None:
+        return "UNRESOLVED"
+
+    if imbalance >= PERSISTENCE_MIN_DIRECTIONAL_IMBALANCE:
+        return "BUY"
+
+    if imbalance <= -PERSISTENCE_MIN_DIRECTIONAL_IMBALANCE:
+        return "SELL"
+
+    return "NEUTRAL"
+
+
+def _format_participation_imbalance(
+    value: Any,
+) -> str:
+    return (
+        _format_participation_value(
+            value,
+            digits=2,
+        )
+        + " | "
+        + _participation_imbalance_direction(
+            value
+        )
+    )
+
+
+def _format_participation_acceleration(
+    value: Any,
+) -> str:
+    numeric = _safe_float(value)
+
+    if numeric is None:
+        return _format_participation_value(
+            value,
+            digits=2,
+        )
+
+    return (
+        _format_participation_value(
+            numeric,
+            digits=2,
+        )
+        + "x"
+    )
+
+
 def format_market_participation_telegram_block(
     context: dict | None,
 ) -> str:
@@ -739,11 +966,10 @@ def format_market_participation_telegram_block(
         ),
         (
             "5s Imbalance: "
-            + _format_participation_value(
+            + _format_participation_imbalance(
                 window_5s.get(
                     "directional_imbalance"
-                ),
-                digits=2,
+                )
             )
         ),
         (
@@ -757,11 +983,24 @@ def format_market_participation_telegram_block(
         ),
         (
             "Activity Acceleration: "
-            + _format_participation_value(
+            + _format_participation_acceleration(
                 mt5_context.get(
                     "quote_activity_acceleration_ratio"
+                )
+            )
+        ),
+        (
+            "Persistence: "
+            + _safe_text(
+                (
+                    mt5_context.get(
+                        "direction_persistence"
+                    )
+                    or {}
+                ).get(
+                    "label"
                 ),
-                digits=2,
+                "0/5 UNRESOLVED",
             )
         ),
         (
