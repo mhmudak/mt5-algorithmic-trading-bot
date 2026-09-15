@@ -2337,6 +2337,58 @@ UNIVERSAL_TP2_REWARD_FRACTION = 0.75
 
 
 # =========================
+# ENTRY / TP OPPORTUNITY OBSERVER V1
+# =========================
+# Observation / Telegram context only.
+# Must never alter entry, SL, TP, risk, RR requirements,
+# execution permission, or recovery authority.
+ENABLE_ENTRY_TP_OPPORTUNITY_OBSERVER = True
+ENTRY_TP_OPPORTUNITY_LOOKBACK_BARS = 120
+ENTRY_TP_OPPORTUNITY_SWING_WINDOW = 2
+
+# TP Context V1.1.
+#
+# Keep the original levels.mq5 thresholds/formula unchanged
+# so the Python observer can reproduce the MT5 indicator.
+# These levels are context only and are not probabilities.
+ENTRY_TP_DAILY_LEVEL_HIGH_DIAP = 2000.0
+ENTRY_TP_DAILY_LEVEL_LOW_DIAP = 500.0
+
+# Treat support/resistance as a zone, not an exact tick.
+ENTRY_TP_LEVEL_MATCH_TOLERANCE_PRICE = 1.00
+
+# Collapse nearly identical structural sources while
+# preferring the stronger HTF source.
+ENTRY_TP_LEVEL_DEDUPE_PRICE = 0.35
+
+# TP4 must be meaningfully beyond TP3 rather than an
+# almost-identical level.
+ENTRY_TP_EXTENSION_MIN_DISTANCE_PRICE = 1.00
+
+# Target Reach Score V1.
+#
+# 0-100 heuristic score for CURRENT target reach conditions.
+# This is explicitly NOT a calibrated probability.
+#
+# Inputs:
+# - target distance normalized by closed-candle ATR
+# - structural barriers between executable entry and target
+# - recent closed-M15 directional momentum/efficiency
+# - relative broker tick activity on the latest closed M15
+# - entry degradation / improvement
+ENTRY_TP_TARGET_REACH_SCORE_ENABLED = True
+ENTRY_TP_TARGET_REACH_MOMENTUM_LOOKBACK = 5
+ENTRY_TP_TARGET_REACH_VOLUME_LOOKBACK = 30
+ENTRY_TP_TARGET_REACH_DISTANCE_DECAY = 0.45
+
+ENTRY_TP_TARGET_REACH_WEIGHT_DISTANCE = 0.35
+ENTRY_TP_TARGET_REACH_WEIGHT_STRUCTURE = 0.30
+ENTRY_TP_TARGET_REACH_WEIGHT_MOMENTUM = 0.20
+ENTRY_TP_TARGET_REACH_WEIGHT_TICK_ACTIVITY = 0.10
+ENTRY_TP_TARGET_REACH_WEIGHT_ENTRY = 0.05
+
+
+# =========================
 # PHASE 6G - AUTO STRUCTURAL LEVEL SCALP
 # =========================
 ENABLE_AUTO_STRUCTURAL_LEVEL_SCALP = True

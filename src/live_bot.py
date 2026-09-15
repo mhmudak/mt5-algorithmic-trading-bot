@@ -3133,6 +3133,82 @@ def _setup_quality_alert_prefix(
         return ""
 
 
+def _entry_tp_opportunity_block_fail_open(
+    *,
+    df,
+    signal_data,
+    trade_plan,
+    signal,
+    required_rr,
+):
+    """
+    Display-only entry / TP opportunity observer.
+
+    No execution, risk, recovery, entry, SL, TP,
+    score, or RR-requirement authority.
+    """
+
+    try:
+        from src.entry_tp_opportunity import (
+            build_entry_tp_opportunity,
+            format_entry_tp_opportunity,
+        )
+
+        d1_df = None
+
+        try:
+            d1_rates = mt5.copy_rates_from_pos(
+                SYMBOL,
+                mt5.TIMEFRAME_D1,
+                0,
+                3,
+            )
+
+            if (
+                d1_rates is not None
+                and len(d1_rates) >= 2
+            ):
+                d1_df = pd.DataFrame(
+                    d1_rates
+                )
+
+                if "time" in d1_df.columns:
+                    d1_df["time"] = pd.to_datetime(
+                        d1_df["time"],
+                        unit="s",
+                    )
+
+        except Exception:
+            # D1 context is optional.
+            # Observer remains fail-open.
+            d1_df = None
+
+        result = build_entry_tp_opportunity(
+            df=df,
+            signal=signal,
+            signal_data=signal_data,
+            trade_plan=trade_plan,
+            required_rr=required_rr,
+            d1_df=d1_df,
+        )
+
+        block = (
+            format_entry_tp_opportunity(
+                result
+            )
+        )
+
+        return block or ""
+
+    except Exception as exc:
+        logger.warning(
+            "[ENTRY TP OPPORTUNITY] "
+            f"observer failed open: {exc}"
+        )
+
+        return ""
+
+
 def notify_rejected_candidate_if_relevant(
     *,
     setup_id,
@@ -5875,6 +5951,22 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
                 f"Recovery ID: {recovery_id or 'not_registered'}\n"
                 f"Action: moved to intrabar candidate recovery if eligible."
             )
+
+            intrabar_entry_tp_block = (
+                _entry_tp_opportunity_block_fail_open(
+                    df=df,
+                    signal_data=signal_data,
+                    trade_plan=trade_plan,
+                    signal=signal,
+                    required_rr=required_rr,
+                )
+            )
+
+            if intrabar_entry_tp_block:
+                intrabar_rejected_message += (
+                    "\n\n"
+                    + intrabar_entry_tp_block
+                )
 
             if intrabar_participation_block:
                 intrabar_rejected_message += (
@@ -13937,6 +14029,22 @@ def process_cycle(last_processed_candle_time):
                         f"RR: {rr_value} / Required: {min_rr_required}\n\n"
                         f"Action: moved to candidate recovery if eligible."
                     )
+
+                    low_rr_entry_tp_block = (
+                        _entry_tp_opportunity_block_fail_open(
+                            df=df,
+                            signal_data=validated_candidate,
+                            trade_plan=candidate_trade_plan,
+                            signal=candidate_signal,
+                            required_rr=min_rr_required,
+                        )
+                    )
+
+                    if low_rr_entry_tp_block:
+                        low_rr_message += (
+                            "\n\n"
+                            + low_rr_entry_tp_block
+                        )
 
                     if low_rr_participation_block:
                         low_rr_message += (
