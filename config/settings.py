@@ -1386,6 +1386,28 @@ SESSION_ORB_DAILY_LEVEL_MIN_BREAK_PRICE = 0.30
 SESSION_ORB_DAILY_LEVEL_REQUIRE_M5_CONFIRMATION = True
 
 # =========================
+# Daily Level Ladder Breakout V1
+# =========================
+# M5-native strategy:
+# - latest completed broker D1 supplies Pivot + daily levels
+# - latest CLOSED M5 candle is the execution signal
+# - no M15-close dependency
+# - TP is the next unresolved daily structural level/cluster
+# - SL is 40% of the source->target structural zone
+ENABLE_DAILY_LEVEL_LADDER_BREAKOUT = True
+DAILY_LEVEL_LADDER_M5_BARS = 80
+DAILY_LEVEL_LADDER_CLUSTER_ATR = 0.40
+DAILY_LEVEL_LADDER_CLUSTER_MIN_PRICE = 0.50
+DAILY_LEVEL_LADDER_CLUSTER_MAX_PRICE = 3.00
+DAILY_LEVEL_LADDER_MIN_BREAK_ATR = 0.05
+DAILY_LEVEL_LADDER_MIN_BREAK_PRICE = 0.30
+DAILY_LEVEL_LADDER_MIN_BODY_ATR = 0.20
+DAILY_LEVEL_LADDER_MIN_CLOSE_LOCATION = 0.70
+DAILY_LEVEL_LADDER_SL_TARGET_ZONE_PCT = 0.40
+DAILY_LEVEL_LADDER_MIN_RR = 1.20
+DAILY_LEVEL_LADDER_SKIP_FIRST_M5_AFTER_STARTUP = True
+
+# =========================
 # Intrabar Execution Engine
 # =========================
 # Master kill switch for the intrabar execution architecture.

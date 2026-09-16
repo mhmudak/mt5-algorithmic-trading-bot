@@ -1864,6 +1864,17 @@ def is_rr_valid(trade_plan, min_rr=1.2):
 
 
 def get_min_rr(strategy_name, entry_model=None, sl_model=None):
+    if strategy_name == "DAILY_LEVEL_LADDER_BREAKOUT":
+        from config import settings as _dllb_settings
+
+        return float(
+            getattr(
+                _dllb_settings,
+                "DAILY_LEVEL_LADDER_MIN_RR",
+                1.20,
+            )
+        )
+
     if strategy_name == "BREAKER_BLOCK":
         if sl_model == "RETEST_CANDLE_STRUCTURE_SL":
             return 1.25
@@ -12263,6 +12274,1054 @@ PHASE6W_M15_DIRECTION_LOCK = {}
 
 PHASE6H_INTRABAR_SCALP_MEMORY = {}
 
+
+def _daily_level_ladder_execution_memory_blocked_fail_closed(
+    *,
+    strategy_name,
+    signal,
+    session_name,
+    market_condition,
+    setup_id,
+    entry_model,
+    trade_plan,
+    signal_data,
+):
+    try:
+        import inspect
+
+        checker = globals().get(
+            "is_trade_blocked_by_execution_memory"
+        )
+
+        if not callable(
+            checker
+        ):
+            return (
+                True,
+                "execution_memory_checker_unavailable",
+            )
+
+        mapping = {
+            "symbol": SYMBOL,
+            "strategy_name": strategy_name,
+            "strategy": strategy_name,
+            "signal": signal,
+            "session_name": session_name,
+            "session": session_name,
+            "market_condition": market_condition,
+            "setup_id": setup_id,
+            "entry_model": entry_model,
+            "trade_plan": trade_plan,
+            "signal_data": signal_data,
+            "candidate": signal_data,
+        }
+
+        signature = inspect.signature(
+            checker
+        )
+
+        positional = []
+        keyword = {}
+
+        for name, parameter in (
+            signature.parameters.items()
+        ):
+            if parameter.kind in {
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            }:
+                continue
+
+            if name not in mapping:
+                if (
+                    parameter.default
+                    is inspect.Parameter.empty
+                ):
+                    return (
+                        True,
+                        (
+                            "execution_memory_unsupported_required_"
+                            f"parameter:{name}"
+                        ),
+                    )
+
+                continue
+
+            value = mapping[
+                name
+            ]
+
+            if (
+                parameter.kind
+                is inspect.Parameter.POSITIONAL_ONLY
+            ):
+                positional.append(
+                    value
+                )
+            else:
+                keyword[
+                    name
+                ] = value
+
+        result = checker(
+            *positional,
+            **keyword,
+        )
+
+        if isinstance(
+            result,
+            tuple,
+        ):
+            return (
+                bool(
+                    result[
+                        0
+                    ]
+                ),
+                (
+                    result[
+                        1
+                    ]
+                    if len(
+                        result
+                    )
+                    > 1
+                    else None
+                ),
+            )
+
+        if isinstance(
+            result,
+            dict,
+        ):
+            if "blocked" in result:
+                blocked = bool(
+                    result.get(
+                        "blocked"
+                    )
+                )
+
+            elif "is_blocked" in result:
+                blocked = bool(
+                    result.get(
+                        "is_blocked"
+                    )
+                )
+
+            elif "allowed" in result:
+                blocked = not bool(
+                    result.get(
+                        "allowed"
+                    )
+                )
+
+            else:
+                blocked = False
+
+            return (
+                blocked,
+                result.get(
+                    "reason"
+                ),
+            )
+
+        return (
+            bool(
+                result
+            ),
+            None,
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "[DAILY LEVEL LADDER] "
+            "execution-memory check failed closed "
+            f"| error={exc}"
+        )
+
+        return (
+            True,
+            f"execution_memory_error:{exc}",
+        )
+
+
+def process_daily_level_ladder_breakout_v1(
+    *,
+    df,
+    tick,
+    account_info,
+):
+    from config import settings as _dllb_settings
+
+    if not bool(
+        getattr(
+            _dllb_settings,
+            "ENABLE_DAILY_LEVEL_LADDER_BREAKOUT",
+            False,
+        )
+    ):
+        return False
+
+    runtime = getattr(
+        process_daily_level_ladder_breakout_v1,
+        "_runtime",
+        None,
+    )
+
+    if not isinstance(
+        runtime,
+        dict,
+    ):
+        runtime = {
+            "last_closed_m5_time": None,
+            "daily_source_time": None,
+            "consumed_setup_ids": set(),
+        }
+
+        process_daily_level_ladder_breakout_v1._runtime = (
+            runtime
+        )
+
+    m5_bars = max(
+        30,
+        int(
+            getattr(
+                _dllb_settings,
+                "DAILY_LEVEL_LADDER_M5_BARS",
+                80,
+            )
+        ),
+    )
+
+    m5_rates = mt5.copy_rates_from_pos(
+        SYMBOL,
+        mt5.TIMEFRAME_M5,
+        0,
+        m5_bars,
+    )
+
+    if (
+        m5_rates is None
+        or len(
+            m5_rates
+        )
+        < 20
+    ):
+        return False
+
+    m5_df = pd.DataFrame(
+        m5_rates
+    )
+
+    m5_df[
+        "time"
+    ] = pd.to_datetime(
+        m5_df[
+            "time"
+        ],
+        unit="s",
+    )
+
+    m5_df[
+        "atr_14"
+    ] = calculate_atr(
+        m5_df,
+        ATR_PERIOD,
+    )
+
+    latest_closed_time = (
+        m5_df.iloc[
+            -2
+        ][
+            "time"
+        ]
+    )
+
+    previous_seen = runtime.get(
+        "last_closed_m5_time"
+    )
+
+    if previous_seen is None:
+        runtime[
+            "last_closed_m5_time"
+        ] = latest_closed_time
+
+        if bool(
+            getattr(
+                _dllb_settings,
+                "DAILY_LEVEL_LADDER_SKIP_FIRST_M5_AFTER_STARTUP",
+                True,
+            )
+        ):
+            logger.info(
+                "[DAILY LEVEL LADDER] "
+                "startup armed on latest closed M5; "
+                "no retroactive execution"
+            )
+            return False
+
+    elif (
+        latest_closed_time
+        == previous_seen
+    ):
+        return False
+
+    # Do not consume the newly closed M5 yet.
+    #
+    # If D1 retrieval or daily-context evaluation fails
+    # temporarily, the same newly closed M5 must remain
+    # eligible for evaluation on the next bot loop.
+    d1_rates = mt5.copy_rates_from_pos(
+        SYMBOL,
+        mt5.TIMEFRAME_D1,
+        0,
+        3,
+    )
+
+    if (
+        d1_rates is None
+        or len(
+            d1_rates
+        )
+        < 2
+    ):
+        return False
+
+    d1_df = pd.DataFrame(
+        d1_rates
+    )
+
+    if "time" in d1_df.columns:
+        d1_df[
+            "time"
+        ] = pd.to_datetime(
+            d1_df[
+                "time"
+            ],
+            unit="s",
+        )
+
+    from src.daily_level_context import (
+        calculate_daily_context_from_d1,
+    )
+
+    daily_context = (
+        calculate_daily_context_from_d1(
+            d1_df,
+            high_diap=(
+                _dllb_settings.ENTRY_TP_DAILY_LEVEL_HIGH_DIAP
+            ),
+            low_diap=(
+                _dllb_settings.ENTRY_TP_DAILY_LEVEL_LOW_DIAP
+            ),
+        )
+    )
+
+    if not isinstance(
+        daily_context,
+        dict,
+    ):
+        return False
+
+    daily_source_time = str(
+        daily_context.get(
+            "time"
+        )
+    )
+
+    if (
+        runtime.get(
+            "daily_source_time"
+        )
+        != daily_source_time
+    ):
+        runtime[
+            "daily_source_time"
+        ] = daily_source_time
+
+        runtime[
+            "consumed_setup_ids"
+        ] = set()
+
+        logger.info(
+            "[DAILY LEVEL LADDER] "
+            "completed-D1 source changed; "
+            "daily setup memory reset "
+            f"| source={daily_source_time}"
+        )
+
+    from src.strategies.strategy_daily_level_ladder_breakout import (
+        evaluate_daily_level_ladder_breakout,
+    )
+
+    try:
+        candidate = (
+            evaluate_daily_level_ladder_breakout(
+                m5_df=m5_df,
+                daily_context=daily_context,
+            )
+        )
+
+    except Exception as exc:
+        # Infrastructure/evaluation failure remains retryable
+        # while this is still the latest closed M5 candle.
+        #
+        # Do not consume this M5: otherwise a legitimate
+        # breakout could be lost because of a temporary
+        # data/context failure.
+        logger.warning(
+            "[DAILY LEVEL LADDER] "
+            "M5 evaluation failed; closed M5 remains unconsumed "
+            f"| m5={latest_closed_time} error={exc}"
+        )
+        return False
+
+    # D1 retrieval, daily-context calculation and strategy
+    # evaluation completed successfully.
+    #
+    # Consume this closed M5 exactly once here.
+    #
+    # Downstream RR/news/time/guard/execution-memory rejection
+    # intentionally remains one-shot. Do not chase an old
+    # M5 breakout later at a materially different live price.
+    runtime[
+        "last_closed_m5_time"
+    ] = latest_closed_time
+
+    if not isinstance(
+        candidate,
+        dict,
+    ):
+        return False
+
+    signal = candidate.get(
+        "signal"
+    )
+
+    if signal not in {
+        "BUY",
+        "SELL",
+    }:
+        return False
+
+    setup_id = candidate.get(
+        "setup_id"
+    )
+
+    consumed = runtime.get(
+        "consumed_setup_ids"
+    )
+
+    if not isinstance(
+        consumed,
+        set,
+    ):
+        consumed = set()
+
+        runtime[
+            "consumed_setup_ids"
+        ] = consumed
+
+    if setup_id in consumed:
+        return False
+
+    try:
+        from src.session_engine import (
+            detect_session,
+        )
+
+        session_name = detect_session(
+            latest_closed_time
+        )
+
+    except Exception:
+        session_name = "UNKNOWN"
+
+    try:
+        from src.market_condition import (
+            detect_market_condition,
+        )
+
+        market_condition = (
+            detect_market_condition(
+                df
+            )
+        )
+
+    except Exception:
+        market_condition = "UNKNOWN"
+
+    candidate[
+        "session"
+    ] = session_name
+
+    candidate[
+        "market_condition"
+    ] = market_condition
+
+    trade_plan = calculate_trade_plan(
+        df=m5_df,
+        signal=signal,
+        tick=tick,
+        account_balance=(
+            account_info.balance
+        ),
+        signal_data=candidate,
+    )
+
+    if not isinstance(
+        trade_plan,
+        dict,
+    ):
+        logger.info(
+            "[DAILY LEVEL LADDER] "
+            "fresh trade plan invalid "
+            f"| setup_id={setup_id}"
+        )
+        return False
+
+    authoritative_tp = candidate.get(
+        "tp_reference"
+    )
+
+    try:
+        if (
+            round(
+                float(
+                    trade_plan.get(
+                        "take_profit"
+                    )
+                ),
+                2,
+            )
+            != round(
+                float(
+                    authoritative_tp
+                ),
+                2,
+            )
+        ):
+            logger.warning(
+                "[DAILY LEVEL LADDER] "
+                "authoritative next-level TP was not preserved; "
+                "execution blocked"
+            )
+            return False
+
+    except Exception:
+        return False
+
+    trade_plan[
+        "score"
+    ] = candidate.get(
+        "score"
+    )
+
+    trade_plan[
+        "strategy"
+    ] = candidate.get(
+        "strategy"
+    )
+
+    trade_plan[
+        "entry_model"
+    ] = candidate.get(
+        "entry_model"
+    )
+
+    trade_plan[
+        "sl_model"
+    ] = candidate.get(
+        "sl_model"
+    )
+
+    trade_plan[
+        "tp_model"
+    ] = candidate.get(
+        "tp_model"
+    )
+
+    trade_plan[
+        "market_condition"
+    ] = market_condition
+
+    trade_plan[
+        "session"
+    ] = session_name
+
+    trade_plan[
+        "setup_id"
+    ] = setup_id
+
+    trade_plan[
+        "reason"
+    ] = candidate.get(
+        "reason"
+    )
+
+    trade_plan[
+        "daily_source_time"
+    ] = candidate.get(
+        "daily_source_time"
+    )
+
+    trade_plan[
+        "daily_pivot"
+    ] = candidate.get(
+        "daily_pivot"
+    )
+
+    trade_plan[
+        "broken_level"
+    ] = candidate.get(
+        "broken_level"
+    )
+
+    trade_plan[
+        "target_level"
+    ] = candidate.get(
+        "target_level"
+    )
+
+    rr_value = calculate_rr_value(
+        trade_plan
+    )
+
+    required_rr = get_min_rr(
+        candidate.get(
+            "strategy"
+        ),
+        candidate.get(
+            "entry_model"
+        ),
+        candidate.get(
+            "sl_model"
+        ),
+    )
+
+    if (
+        rr_value is None
+        or rr_value
+        < required_rr
+    ):
+        logger.info(
+            "[DAILY LEVEL LADDER] "
+            "fresh live RR below requirement "
+            f"| setup_id={setup_id} "
+            f"rr={rr_value} "
+            f"required={required_rr}"
+        )
+
+        try:
+            log_setup_event(
+                setup_id=setup_id,
+                event=(
+                    "DAILY_LEVEL_LADDER_LOW_RR"
+                ),
+                strategy=(
+                    candidate.get(
+                        "strategy"
+                    )
+                ),
+                signal=signal,
+                entry_model=(
+                    candidate.get(
+                        "entry_model"
+                    )
+                ),
+                score=(
+                    candidate.get(
+                        "score"
+                    )
+                ),
+                session=session_name,
+                market_condition=(
+                    market_condition
+                ),
+                entry=(
+                    trade_plan.get(
+                        "entry_price"
+                    )
+                ),
+                sl=(
+                    trade_plan.get(
+                        "stop_loss"
+                    )
+                ),
+                tp=(
+                    trade_plan.get(
+                        "take_profit"
+                    )
+                ),
+                rr=rr_value,
+                required_rr=required_rr,
+                reason=(
+                    "fresh executable RR "
+                    "below strategy minimum"
+                ),
+                extra={
+                    "broken_level": (
+                        candidate.get(
+                            "broken_level"
+                        )
+                    ),
+                    "target_level": (
+                        candidate.get(
+                            "target_level"
+                        )
+                    ),
+                },
+            )
+
+        except Exception:
+            pass
+
+        return False
+
+    trade_plan[
+        "rr"
+    ] = rr_value
+
+    trade_plan[
+        "risk_reward"
+    ] = rr_value
+
+    news_blocked, news_reason = (
+        is_news_blackout_active()
+    )
+
+    if news_blocked:
+        logger.info(
+            "[DAILY LEVEL LADDER] "
+            "news blocked "
+            f"| setup_id={setup_id} "
+            f"reason={news_reason}"
+        )
+        return False
+
+    time_blocked, time_reason = (
+        is_trading_blackout_active()
+    )
+
+    if time_blocked:
+        logger.info(
+            "[DAILY LEVEL LADDER] "
+            "time blocked "
+            f"| setup_id={setup_id} "
+            f"reason={time_reason}"
+        )
+        return False
+
+    trade_allowed, guard_reason = (
+        check_trade_guard(
+            signal,
+            tick,
+        )
+    )
+
+    if not trade_allowed:
+        logger.info(
+            "[DAILY LEVEL LADDER] "
+            "trade guard blocked "
+            f"| setup_id={setup_id} "
+            f"reason={guard_reason}"
+        )
+        return False
+
+    from src.position_guard import (
+        has_same_direction_position,
+    )
+
+    opposite = (
+        "SELL"
+        if signal == "BUY"
+        else "BUY"
+    )
+
+    if has_same_direction_position(
+        SYMBOL,
+        opposite,
+    ):
+        logger.info(
+            "[DAILY LEVEL LADDER] "
+            "opposite position exists "
+            f"| setup_id={setup_id}"
+        )
+        return False
+
+    memory_blocked, memory_reason = (
+        _daily_level_ladder_execution_memory_blocked_fail_closed(
+            strategy_name=(
+                candidate.get(
+                    "strategy"
+                )
+            ),
+            signal=signal,
+            session_name=session_name,
+            market_condition=(
+                market_condition
+            ),
+            setup_id=setup_id,
+            entry_model=(
+                candidate.get(
+                    "entry_model"
+                )
+            ),
+            trade_plan=trade_plan,
+            signal_data=candidate,
+        )
+    )
+
+    if memory_blocked:
+        logger.info(
+            "[DAILY LEVEL LADDER] "
+            "execution memory blocked "
+            f"| setup_id={setup_id} "
+            f"reason={memory_reason}"
+        )
+        return False
+
+    logger.info(
+        "[DAILY LEVEL LADDER] "
+        "execution attempt "
+        f"| setup_id={setup_id} "
+        f"signal={signal} "
+        f"broken={candidate.get('broken_level')} "
+        f"target={candidate.get('target_level')} "
+        f"entry={trade_plan.get('entry_price')} "
+        f"sl={trade_plan.get('stop_loss')} "
+        f"tp={trade_plan.get('take_profit')} "
+        f"rr={rr_value}"
+    )
+
+    try:
+        log_setup_event(
+            setup_id=setup_id,
+            event=(
+                "DAILY_LEVEL_LADDER_EXECUTION_ATTEMPT"
+            ),
+            strategy=(
+                candidate.get(
+                    "strategy"
+                )
+            ),
+            signal=signal,
+            entry_model=(
+                candidate.get(
+                    "entry_model"
+                )
+            ),
+            score=(
+                candidate.get(
+                    "score"
+                )
+            ),
+            session=session_name,
+            market_condition=(
+                market_condition
+            ),
+            entry=(
+                trade_plan.get(
+                    "entry_price"
+                )
+            ),
+            sl=(
+                trade_plan.get(
+                    "stop_loss"
+                )
+            ),
+            tp=(
+                trade_plan.get(
+                    "take_profit"
+                )
+            ),
+            rr=rr_value,
+            required_rr=required_rr,
+            reason=(
+                candidate.get(
+                    "reason"
+                )
+            ),
+            extra={
+                "daily_source_time": (
+                    candidate.get(
+                        "daily_source_time"
+                    )
+                ),
+                "daily_pivot": (
+                    candidate.get(
+                        "daily_pivot"
+                    )
+                ),
+                "broken_cluster_names": (
+                    candidate.get(
+                        "broken_cluster_names"
+                    )
+                ),
+                "target_cluster_names": (
+                    candidate.get(
+                        "target_cluster_names"
+                    )
+                ),
+                "m5_closed_time": (
+                    candidate.get(
+                        "m5_closed_time"
+                    )
+                ),
+            },
+        )
+
+    except Exception:
+        pass
+
+    execution_result = execute_trade(
+        signal,
+        trade_plan,
+        SYMBOL,
+    )
+
+    if not execution_result:
+        logger.info(
+            "[DAILY LEVEL LADDER] "
+            "execute_trade returned False "
+            f"| setup_id={setup_id}"
+        )
+
+        try:
+            log_setup_event(
+                setup_id=setup_id,
+                event=(
+                    "DAILY_LEVEL_LADDER_EXECUTION_FAILED"
+                ),
+                strategy=(
+                    candidate.get(
+                        "strategy"
+                    )
+                ),
+                signal=signal,
+                entry_model=(
+                    candidate.get(
+                        "entry_model"
+                    )
+                ),
+                score=(
+                    candidate.get(
+                        "score"
+                    )
+                ),
+                session=session_name,
+                market_condition=(
+                    market_condition
+                ),
+                entry=(
+                    trade_plan.get(
+                        "entry_price"
+                    )
+                ),
+                sl=(
+                    trade_plan.get(
+                        "stop_loss"
+                    )
+                ),
+                tp=(
+                    trade_plan.get(
+                        "take_profit"
+                    )
+                ),
+                rr=rr_value,
+                required_rr=required_rr,
+                reason=(
+                    "execute_trade returned False"
+                ),
+            )
+
+        except Exception:
+            pass
+
+        return False
+
+    consumed.add(
+        setup_id
+    )
+
+    try:
+        log_setup_event(
+            setup_id=setup_id,
+            event=(
+                "DAILY_LEVEL_LADDER_EXECUTED"
+            ),
+            strategy=(
+                candidate.get(
+                    "strategy"
+                )
+            ),
+            signal=signal,
+            entry_model=(
+                candidate.get(
+                    "entry_model"
+                )
+            ),
+            score=(
+                candidate.get(
+                    "score"
+                )
+            ),
+            session=session_name,
+            market_condition=(
+                market_condition
+            ),
+            entry=(
+                trade_plan.get(
+                    "entry_price"
+                )
+            ),
+            sl=(
+                trade_plan.get(
+                    "stop_loss"
+                )
+            ),
+            tp=(
+                trade_plan.get(
+                    "take_profit"
+                )
+            ),
+            rr=rr_value,
+            required_rr=required_rr,
+            reason=(
+                candidate.get(
+                    "reason"
+                )
+            ),
+        )
+
+    except Exception:
+        pass
+
+    try:
+        send_telegram_message(
+            "✅ Daily Level Ladder Breakout\n"
+            f"Symbol: {SYMBOL}\n"
+            f"Signal: {signal}\n"
+            f"Setup ID: {setup_id}\n"
+            f"M5 Closed: {candidate.get('m5_closed_time')}\n"
+            f"D1 Source: {candidate.get('daily_source_time')}\n"
+            f"Daily Pivot: {candidate.get('daily_pivot')}\n\n"
+            f"Broken: {candidate.get('broken_cluster_names')} "
+            f"@ {candidate.get('broken_level')}\n"
+            f"Target: {candidate.get('target_cluster_names')} "
+            f"@ {candidate.get('target_level')}\n"
+            f"Entry: {trade_plan.get('entry_price')}\n"
+            f"SL: {trade_plan.get('stop_loss')}\n"
+            f"TP: {trade_plan.get('take_profit')}\n"
+            f"RR: {rr_value} / Required: {required_rr}"
+        )
+
+    except Exception:
+        pass
+
+    return True
+
+
 def process_cycle(last_processed_candle_time):
     global last_signal, reversal_count
 
@@ -12367,7 +13426,7 @@ def process_cycle(last_processed_candle_time):
             session_name="PENDING",
         ):
             return current_candle_time
-        
+
     # =========================
     # FVG STAGED ENTRY CHECK
     # Runs every loop, not only on a new M15 candle.
@@ -12381,7 +13440,7 @@ def process_cycle(last_processed_candle_time):
             session_name="PENDING",
         ):
             return current_candle_time
-        
+
     # =========================
     # ORB TICK BREAKOUT WATCHER
     # Runs every loop, not only on a new M15 candle.
@@ -12423,7 +13482,7 @@ def process_cycle(last_processed_candle_time):
             session_name="PENDING",
         ):
             return current_candle_time
-        
+
     # =========================
     # SETUP OUTCOME TRACKER
     # Runs every loop, not only on a new M15 candle.
@@ -13083,6 +14142,19 @@ def process_cycle(last_processed_candle_time):
 
             return current_candle_time
 
+
+    # =========================
+    # DAILY LEVEL LADDER BREAKOUT V1
+    # =========================
+    # M5-native execution strategy.
+    # Runs before the M15 new-candle gate and evaluates once per
+    # newly closed M5 candle. No M15 close is required.
+    if process_daily_level_ladder_breakout_v1(
+        df=df,
+        tick=tick,
+        account_info=account_info,
+    ):
+        return current_candle_time
 
     # =========================
     # NEW CANDLE CHECK
