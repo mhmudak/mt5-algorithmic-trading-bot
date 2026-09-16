@@ -221,6 +221,24 @@ class ExecutionEngine:
         last_closed = df.iloc[-2]
 
         for setup in self.active_setups:
+            # SESSION_ORB_RETEST daily-level acceptance reuses
+            # WAIT_ORB_TICK_BREAKOUT for every-loop monitoring.
+            #
+            # Do not let the normal M15 process_setups() path
+            # promote that special watcher back to READY.
+            #
+            # The marker keeps legacy ORB / ORB_V00 behavior
+            # unchanged.
+            if (
+                setup.get("state") == "WAIT_ORB_TICK_BREAKOUT"
+                and (
+                    setup.get("data", {})
+                    or {}
+                ).get("daily_level_acceptance_level")
+                is not None
+            ):
+                continue
+
             if setup["state"] in [
                 "EXECUTED",
                 "INVALIDATED",

@@ -1373,6 +1373,19 @@ ORB_TICK_BREAKOUT_MIN_RR = 2.0
 ORB_TICK_BREAKOUT_REQUIRE_M5_CONFIRMATION = False
 
 # =========================
+# SESSION ORB Daily-Level Acceptance V1
+# =========================
+# Narrow execution gate for SESSION_ORB_RETEST only.
+# Reuses the proven ORB tick-watcher execution lifecycle.
+# Persistence remains observation-only and has no authority here.
+ENABLE_SESSION_ORB_DAILY_LEVEL_ACCEPTANCE = True
+SESSION_ORB_DAILY_LEVEL_ACCEPTANCE_EXPIRY_MINUTES = 75
+SESSION_ORB_DAILY_LEVEL_MAX_DISTANCE_ATR = 0.30
+SESSION_ORB_DAILY_LEVEL_MIN_BREAK_ATR = 0.05
+SESSION_ORB_DAILY_LEVEL_MIN_BREAK_PRICE = 0.30
+SESSION_ORB_DAILY_LEVEL_REQUIRE_M5_CONFIRMATION = True
+
+# =========================
 # Intrabar Execution Engine
 # =========================
 # Master kill switch for the intrabar execution architecture.

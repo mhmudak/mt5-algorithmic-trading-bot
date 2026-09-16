@@ -3595,6 +3595,202 @@ def register_generic_rejected_candidate_recovery_if_eligible(
 
     return True
 
+def daily_level_m5_acceptance_confirmation_ok(
+    signal,
+    level,
+):
+    # Closed-M5 confirmation tied to the actual D1 level.
+    # This is intentionally separate from the generic
+    # extra_entry_confirmation_ok() directional check.
+
+    try:
+        level = float(
+            level
+        )
+
+    except Exception:
+        return (
+            False,
+            "invalid_daily_level",
+        )
+
+    rates = mt5.copy_rates_from_pos(
+        SYMBOL,
+        mt5.TIMEFRAME_M5,
+        0,
+        max(
+            EXTRA_ENTRY_CONFIRMATION_BARS,
+            20,
+        ),
+    )
+
+    if (
+        rates is None
+        or len(rates) < 16
+    ):
+        return (
+            False,
+            "no_m5_daily_level_data",
+        )
+
+    confirm_df = pd.DataFrame(
+        rates
+    )
+
+    confirm_df["time"] = pd.to_datetime(
+        confirm_df["time"],
+        unit="s",
+    )
+
+    confirm_df["atr_14"] = calculate_atr(
+        confirm_df,
+        ATR_PERIOD,
+    )
+
+    candle = confirm_df.iloc[-2]
+
+    try:
+        atr = float(
+            candle[
+                "atr_14"
+            ]
+        )
+
+        body = abs(
+            float(
+                candle[
+                    "close"
+                ]
+            )
+            - float(
+                candle[
+                    "open"
+                ]
+            )
+        )
+
+        candle_range = (
+            float(
+                candle[
+                    "high"
+                ]
+            )
+            - float(
+                candle[
+                    "low"
+                ]
+            )
+        )
+
+    except Exception:
+        return (
+            False,
+            "invalid_m5_daily_level_values",
+        )
+
+    if (
+        atr <= 0
+        or candle_range <= 0
+    ):
+        return (
+            False,
+            "invalid_m5_daily_level_atr",
+        )
+
+    if signal == "BUY":
+        confirmed = (
+            float(
+                candle[
+                    "close"
+                ]
+            )
+            > level
+            and float(
+                candle[
+                    "low"
+                ]
+            )
+            >= level
+            - atr
+            * 0.10
+            and float(
+                candle[
+                    "close"
+                ]
+            )
+            >= float(
+                candle[
+                    "low"
+                ]
+            )
+            + candle_range
+            * 0.70
+            and body
+            > atr
+            * 0.20
+        )
+
+        if confirmed:
+            return (
+                True,
+                "m5_daily_level_buy_hold",
+            )
+
+        return (
+            False,
+            "m5_daily_level_buy_not_held",
+        )
+
+    if signal == "SELL":
+        confirmed = (
+            float(
+                candle[
+                    "close"
+                ]
+            )
+            < level
+            and float(
+                candle[
+                    "high"
+                ]
+            )
+            <= level
+            + atr
+            * 0.10
+            and float(
+                candle[
+                    "close"
+                ]
+            )
+            <= float(
+                candle[
+                    "high"
+                ]
+            )
+            - candle_range
+            * 0.70
+            and body
+            > atr
+            * 0.20
+        )
+
+        if confirmed:
+            return (
+                True,
+                "m5_daily_level_sell_hold",
+            )
+
+        return (
+            False,
+            "m5_daily_level_sell_not_held",
+        )
+
+    return (
+        False,
+        "invalid_signal",
+    )
+
+
 def extra_entry_confirmation_ok(signal):
     if not REQUIRE_M5_CONFIRMATION_FOR_EXTRA:
         return True, "extra_confirmation_disabled"
@@ -4691,16 +4887,86 @@ def should_use_orb_tick_breakout_watcher(strategy_name, signal_data):
     return entry_model in ["WAIT_RETEST", "BREAKOUT", "FAST_CONTINUATION"]
 
 
+def _session_orb_daily_level_watch_fail_open(
+    *,
+    signal,
+    entry_price,
+    atr,
+):
+    # Fail-open: D1 lookup failure preserves pre-V1 behavior.
+    try:
+        from src.daily_level_acceptance import (
+            build_session_orb_daily_level_watch,
+        )
+
+        d1_rates = mt5.copy_rates_from_pos(
+            SYMBOL,
+            mt5.TIMEFRAME_D1,
+            0,
+            3,
+        )
+
+        if (
+            d1_rates is None
+            or len(d1_rates) < 2
+        ):
+            return {
+                "available": False,
+                "required": False,
+                "state": "D1_UNAVAILABLE",
+            }
+
+        d1_df = pd.DataFrame(
+            d1_rates
+        )
+
+        return (
+            build_session_orb_daily_level_watch(
+                d1_df=d1_df,
+                signal=signal,
+                entry_price=entry_price,
+                atr=atr,
+            )
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "[DAILY LEVEL ACCEPTANCE] "
+            "D1 context failed open | "
+            f"error={exc}"
+        )
+
+        return {
+            "available": False,
+            "required": False,
+            "state": "FAILED_OPEN",
+        }
+
+
 def orb_tick_breakout_ready(signal, tick, signal_data, min_distance):
     orb_high = signal_data.get("orb_high")
     orb_low = signal_data.get("orb_low")
 
-    if orb_high is None or orb_low is None:
+    daily_level_override = signal_data.get(
+        "daily_level_acceptance_level"
+    )
+
+    if (
+        daily_level_override is None
+        and (
+            orb_high is None
+            or orb_low is None
+        )
+    ):
         return False, None, None, None
 
     if signal == "BUY":
         current_price = float(tick.ask)
-        breakout_level = float(orb_high)
+        breakout_level = float(
+            daily_level_override
+            if daily_level_override is not None
+            else orb_high
+        )
         breakout_distance = current_price - breakout_level
 
         if breakout_distance >= float(min_distance):
@@ -4710,7 +4976,11 @@ def orb_tick_breakout_ready(signal, tick, signal_data, min_distance):
 
     if signal == "SELL":
         current_price = float(tick.bid)
-        breakout_level = float(orb_low)
+        breakout_level = float(
+            daily_level_override
+            if daily_level_override is not None
+            else orb_low
+        )
         breakout_distance = breakout_level - current_price
 
         if breakout_distance >= float(min_distance):
@@ -9214,6 +9484,43 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
         strategy_name = setup_data.get("strategy")
         setup_id = setup_data.get("setup_id", "N/A")
 
+        is_daily_level_acceptance = (
+            setup_data.get(
+                "daily_level_acceptance_level"
+            )
+            is not None
+        )
+
+        watcher_label = (
+            "DAILY LEVEL ACCEPTANCE"
+            if is_daily_level_acceptance
+            else "ORB TICK WATCHER"
+        )
+
+        watcher_event_prefix = (
+            "DAILY_LEVEL_ACCEPTANCE"
+            if is_daily_level_acceptance
+            else "ORB_TICK_BREAKOUT"
+        )
+
+        watcher_reason_tag = (
+            "DAILY_LEVEL_ACCEPTANCE"
+            if is_daily_level_acceptance
+            else "ORB_TICK_BREAKOUT"
+        )
+
+        watcher_reason_text = (
+            "daily-level acceptance"
+            if is_daily_level_acceptance
+            else "orb tick breakout"
+        )
+
+        watcher_source_bucket = (
+            "DAILY_LEVEL_ACCEPTANCE"
+            if is_daily_level_acceptance
+            else "ORB_TICK_WATCHER"
+        )
+
         if signal not in ["BUY", "SELL"]:
             continue
 
@@ -9231,7 +9538,7 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
 
         if not breakout_ready:
             logger.info(
-                f"[ORB TICK WATCHER] Not ready | "
+                f"[{watcher_label}] Not ready | "
                 f"setup_id={setup_id} strategy={strategy_name} signal={signal} "
                 f"current={current_price} level={breakout_level} "
                 f"distance={breakout_distance} required={min_distance}"
@@ -9246,11 +9553,19 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
         )
 
         if require_orb_m5_confirmation:
-            m5_confirmed, m5_reason = (
-                extra_entry_confirmation_ok(
-                    signal
+            if is_daily_level_acceptance:
+                m5_confirmed, m5_reason = (
+                    daily_level_m5_acceptance_confirmation_ok(
+                        signal,
+                        breakout_level,
+                    )
                 )
-            )
+            else:
+                m5_confirmed, m5_reason = (
+                    extra_entry_confirmation_ok(
+                        signal
+                    )
+                )
 
             if not m5_confirmed:
                 setup[
@@ -9258,7 +9573,7 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
                 ] = m5_reason
 
                 logger.info(
-                    f"[ORB TICK WATCHER] "
+                    f"[{watcher_label}] "
                     f"M5 confirmation pending | "
                     f"setup_id={setup_id} "
                     f"signal={signal} "
@@ -9280,7 +9595,7 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
 
         if trade_plan is None:
             logger.info(
-                f"[ORB TICK WATCHER] Trade plan invalid | "
+                f"[{watcher_label}] Trade plan invalid | "
                 f"setup_id={setup_id} strategy={strategy_name}"
             )
             continue
@@ -9290,7 +9605,7 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
         trade_plan["market_condition"] = market_condition
         trade_plan["reason"] = (
             f"{setup_data.get('reason', 'N/A')} | "
-            f"ORB_TICK_BREAKOUT distance={breakout_distance}"
+            f"{watcher_reason_tag} distance={breakout_distance}"
         )
         trade_plan["session"] = setup_data.get("session", session_name)
         trade_plan["setup_id"] = setup_id
@@ -9300,7 +9615,7 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
 
         if rr_value is None or rr_value < required_rr:
             logger.info(
-                f"[ORB TICK WATCHER] RR too low | "
+                f"[{watcher_label}] RR too low | "
                 f"setup_id={setup_id} rr={rr_value} required={required_rr}"
             )
             continue
@@ -9309,7 +9624,7 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
 
         if not trade_allowed:
             logger.info(
-                f"[ORB TICK WATCHER] Guard blocked | "
+                f"[{watcher_label}] Guard blocked | "
                 f"setup_id={setup_id} reason={guard_reason}"
             )
             continue
@@ -9318,7 +9633,7 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
 
         if news_blocked:
             logger.info(
-                f"[ORB TICK WATCHER] News blocked | "
+                f"[{watcher_label}] News blocked | "
                 f"setup_id={setup_id} reason={news_reason}"
             )
             continue
@@ -9327,7 +9642,7 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
 
         if time_blocked:
             logger.info(
-                f"[ORB TICK WATCHER] Time blocked | "
+                f"[{watcher_label}] Time blocked | "
                 f"setup_id={setup_id} reason={time_reason}"
             )
             continue
@@ -9346,10 +9661,10 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
                 score=setup_data.get("score"),
                 session_name=session_name,
                 market_condition=market_condition,
-                reason="orb tick breakout skipped by execution memory",
+                reason=f"{watcher_reason_text} skipped by execution memory",
                 trade_plan=trade_plan,
-                decision="ORB_TICK_BREAKOUT_BLOCKED_BY_MEMORY",
-                decision_reason="ORB tick breakout skipped by execution memory",
+                decision=f"{watcher_event_prefix}_BLOCKED_BY_MEMORY",
+                decision_reason=f"{watcher_reason_text} skipped by execution memory",
                 rr_value=rr_value,
                 required_rr=required_rr,
                 extra={
@@ -9361,13 +9676,13 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
             return True
 
         send_telegram_message(
-            f"🔥 ORB Tick Breakout Executing\n"
+            f"🔥 {'Daily Level Acceptance' if is_daily_level_acceptance else 'ORB Tick Breakout'} Executing\n"
             f"Symbol: {SYMBOL}\n"
             f"Strategy: {strategy_name}\n"
             f"Signal: {signal}\n"
             f"Setup ID: {setup_id}\n\n"
             f"Current: {current_price}\n"
-            f"Breakout Level: {breakout_level}\n"
+            f"{'Daily Level' if is_daily_level_acceptance else 'Breakout Level'}: {breakout_level}\n"
             f"Distance: {breakout_distance}\n"
             f"Entry: {trade_plan['entry_price']}\n"
             f"SL: {trade_plan['stop_loss']}\n"
@@ -9379,7 +9694,7 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
 
         log_setup_event(
             setup_id=setup_id,
-            event="ORB_TICK_BREAKOUT_EXECUTION_ATTEMPT",
+            event=f"{watcher_event_prefix}_EXECUTION_ATTEMPT",
             strategy=strategy_name,
             signal=signal,
             entry_model=setup_data.get("entry_model"),
@@ -9391,7 +9706,7 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
             tp=trade_plan.get("take_profit"),
             rr=rr_value,
             required_rr=required_rr,
-            reason="orb tick breakout watcher",
+            reason=f"{watcher_reason_text} watcher",
             extra={
                 "current_price": current_price,
                 "breakout_level": breakout_level,
@@ -9406,10 +9721,10 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
             score=setup_data.get("score"),
             session_name=session_name,
             market_condition=market_condition,
-            reason="orb tick breakout execution attempt",
+            reason=f"{watcher_reason_text} execution attempt",
             trade_plan=trade_plan,
-            decision="ORB_TICK_BREAKOUT_EXECUTION_ATTEMPT",
-            decision_reason="sending ORB tick breakout order to MT5",
+            decision=f"{watcher_event_prefix}_EXECUTION_ATTEMPT",
+            decision_reason=f"sending {watcher_reason_text} order to MT5",
             rr_value=rr_value,
             required_rr=required_rr,
             extra={
@@ -9432,7 +9747,7 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
         apply_strategy_advisory_note(
             signal_data=setup_data,
             strategy_name=strategy_name,
-            setup_source_bucket="ORB_TICK_WATCHER",
+            setup_source_bucket=watcher_source_bucket,
         )
 
         _live_execute_start_ts = time.perf_counter()
@@ -9457,10 +9772,10 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
                 score=setup_data.get("score"),
                 session_name=session_name,
                 market_condition=market_condition,
-                reason="orb tick breakout execution success",
+                reason=f"{watcher_reason_text} execution success",
                 trade_plan=trade_plan,
-                decision="ORB_TICK_BREAKOUT_EXECUTION_SUCCESS",
-                decision_reason="ORB tick breakout MT5 order returned success",
+                decision=f"{watcher_event_prefix}_EXECUTION_SUCCESS",
+                decision_reason=f"{watcher_reason_text} MT5 order returned success",
                 rr_value=rr_value,
                 required_rr=required_rr,
                 execution_result=execution_result,
@@ -9474,7 +9789,7 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
 
             log_setup_event(
                 setup_id=setup_id,
-                event="ORB_TICK_BREAKOUT_EXECUTED",
+                event=f"{watcher_event_prefix}_EXECUTED",
                 strategy=strategy_name,
                 signal=signal,
                 entry_model=setup_data.get("entry_model"),
@@ -9486,7 +9801,7 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
                 tp=trade_plan.get("take_profit"),
                 rr=rr_value,
                 required_rr=required_rr,
-                reason="orb tick breakout executed",
+                reason=f"{watcher_reason_text} executed",
             )
 
             return True
@@ -9498,10 +9813,10 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
             score=setup_data.get("score"),
             session_name=session_name,
             market_condition=market_condition,
-            reason="orb tick breakout execution failed",
+            reason=f"{watcher_reason_text} execution failed",
             trade_plan=trade_plan,
-            decision="ORB_TICK_BREAKOUT_EXECUTION_FAILED",
-            decision_reason="ORB tick breakout execute_trade returned False",
+            decision=f"{watcher_event_prefix}_EXECUTION_FAILED",
+            decision_reason=f"{watcher_reason_text} execute_trade returned False",
             rr_value=rr_value,
             required_rr=required_rr,
             execution_result=execution_result,
@@ -9514,15 +9829,15 @@ def process_wait_orb_tick_breakout_setups(df, tick, account_info, market_conditi
         if hasattr(execution_engine, "mark_execution_failed"):
             execution_engine.mark_execution_failed(
                 setup,
-                "ORB tick breakout execution failed",
+                f"{watcher_reason_text} execution failed",
             )
         else:
             setup["state"] = "EXECUTION_FAILED"
-            setup["wait_reason"] = "ORB tick breakout execution failed"
+            setup["wait_reason"] = f"{watcher_reason_text} execution failed"
 
         log_setup_event(
             setup_id=setup_id,
-            event="ORB_TICK_BREAKOUT_EXECUTION_FAILED",
+            event=f"{watcher_event_prefix}_EXECUTION_FAILED",
             strategy=strategy_name,
             signal=signal,
             entry_model=setup_data.get("entry_model"),
@@ -16392,6 +16707,236 @@ def process_cycle(last_processed_candle_time):
                 rr_value=rr_value,
             )
             
+            if (
+                strategy_name == "SESSION_ORB_RETEST"
+                and isinstance(
+                    best_setup,
+                    dict,
+                )
+                and isinstance(
+                    selected_signal_data,
+                    dict,
+                )
+            ):
+                from config.settings import (
+                    ENABLE_SESSION_ORB_DAILY_LEVEL_ACCEPTANCE,
+                    SESSION_ORB_DAILY_LEVEL_ACCEPTANCE_EXPIRY_MINUTES,
+                    SESSION_ORB_DAILY_LEVEL_REQUIRE_M5_CONFIRMATION,
+                )
+
+                if ENABLE_SESSION_ORB_DAILY_LEVEL_ACCEPTANCE:
+                    daily_level_watch = (
+                        _session_orb_daily_level_watch_fail_open(
+                            signal=signal,
+                            entry_price=(
+                                trade_plan.get(
+                                    "entry_price"
+                                )
+                            ),
+                            atr=atr,
+                        )
+                    )
+
+                    if (
+                        isinstance(
+                            daily_level_watch,
+                            dict,
+                        )
+                        and daily_level_watch.get(
+                            "required"
+                        )
+                    ):
+                        if not selected_signal_data.get(
+                            "session"
+                        ):
+                            selected_signal_data[
+                                "session"
+                            ] = session_name
+
+                        if not selected_signal_data.get(
+                            "market_condition"
+                        ):
+                            selected_signal_data[
+                                "market_condition"
+                            ] = market_condition
+
+                        daily_fields = {
+                            "daily_level_acceptance_level": (
+                                daily_level_watch.get(
+                                    "level_price"
+                                )
+                            ),
+                            "daily_level_acceptance_level_name": (
+                                daily_level_watch.get(
+                                    "level_name"
+                                )
+                            ),
+                            "daily_level_acceptance_level_source": (
+                                daily_level_watch.get(
+                                    "level_source"
+                                )
+                            ),
+                            "daily_level_acceptance_context": (
+                                daily_level_watch
+                            ),
+                        }
+
+                        selected_signal_data.update(
+                            daily_fields
+                        )
+
+                        best_setup.setdefault(
+                            "data",
+                            {},
+                        ).update(
+                            daily_fields
+                        )
+
+                        execution_engine.mark_wait_orb_tick_breakout(
+                            setup=best_setup,
+                            expiry_minutes=(
+                                SESSION_ORB_DAILY_LEVEL_ACCEPTANCE_EXPIRY_MINUTES
+                            ),
+                            min_rr=(
+                                min_rr_required
+                            ),
+                            min_distance=(
+                                daily_level_watch.get(
+                                    "min_break_distance"
+                                )
+                            ),
+                        )
+
+                        best_setup[
+                            "orb_tick_require_m5_confirmation"
+                        ] = bool(
+                            SESSION_ORB_DAILY_LEVEL_REQUIRE_M5_CONFIRMATION
+                        )
+
+                        best_setup[
+                            "wait_reason"
+                        ] = (
+                            "Waiting for SESSION_ORB_RETEST "
+                            "daily-level acceptance"
+                        )
+
+                        level_name = (
+                            daily_level_watch.get(
+                                "level_name"
+                            )
+                        )
+
+                        level_price = (
+                            daily_level_watch.get(
+                                "level_price"
+                            )
+                        )
+
+                        min_break = (
+                            daily_level_watch.get(
+                                "min_break_distance"
+                            )
+                        )
+
+                        logger.info(
+                            "[DAILY LEVEL ACCEPTANCE] "
+                            "Setup preserved in existing "
+                            "tick-watcher lifecycle | "
+                            f"setup_id="
+                            f"{selected_signal_data.get('setup_id')} "
+                            f"signal={signal} "
+                            f"level={level_name} "
+                            f"price={level_price} "
+                            f"required_break={min_break}"
+                        )
+
+                        log_setup_event(
+                            setup_id=(
+                                selected_signal_data.get(
+                                    "setup_id"
+                                )
+                            ),
+                            event=(
+                                "DAILY_LEVEL_ACCEPTANCE_WATCHING"
+                            ),
+                            strategy=strategy_name,
+                            signal=signal,
+                            entry_model=(
+                                selected_signal_data.get(
+                                    "entry_model"
+                                )
+                            ),
+                            score=score,
+                            session=session_name,
+                            market_condition=market_condition,
+                            entry=trade_plan.get(
+                                "entry_price"
+                            ),
+                            sl=trade_plan.get(
+                                "stop_loss"
+                            ),
+                            tp=trade_plan.get(
+                                "take_profit"
+                            ),
+                            rr=rr_value,
+                            required_rr=(
+                                min_rr_required
+                            ),
+                            reason=(
+                                "SESSION_ORB_RETEST waiting "
+                                "for completed-D1 level acceptance"
+                            ),
+                            extra={
+                                "daily_level_name": (
+                                    level_name
+                                ),
+                                "daily_level_price": (
+                                    level_price
+                                ),
+                                "daily_level_source": (
+                                    daily_level_watch.get(
+                                        "level_source"
+                                    )
+                                ),
+                                "distance_atr": (
+                                    daily_level_watch.get(
+                                        "distance_atr"
+                                    )
+                                ),
+                                "required_break": (
+                                    min_break
+                                ),
+                                "m5_confirmation_required": (
+                                    SESSION_ORB_DAILY_LEVEL_REQUIRE_M5_CONFIRMATION
+                                ),
+                            },
+                        )
+
+                        send_telegram_message(
+                            f"⏳ SESSION ORB Waiting for Daily Level Acceptance\n"
+                            f"Symbol: {SYMBOL}\n"
+                            f"Strategy: {strategy_name}\n"
+                            f"Signal: {signal}\n"
+                            f"Setup ID: "
+                            f"{selected_signal_data.get('setup_id', 'N/A')}\n\n"
+                            f"Daily Level: "
+                            f"{level_name} {level_price}\n"
+                            f"Source: "
+                            f"{daily_level_watch.get('level_source')}\n"
+                            f"Entry: "
+                            f"{trade_plan.get('entry_price')}\n"
+                            f"Distance / ATR: "
+                            f"{daily_level_watch.get('distance_atr')}\n"
+                            f"Required Break: {min_break}\n"
+                            f"M5 Confirmation: "
+                            f"{'REQUIRED' if SESSION_ORB_DAILY_LEVEL_REQUIRE_M5_CONFIRMATION else 'NOT REQUIRED'}\n"
+                            f"Action: setup remains active and "
+                            f"is rechecked by the existing "
+                            f"tick watcher."
+                        )
+
+                        return current_candle_time
+
             if should_use_orb_tick_breakout_watcher(strategy_name, selected_signal_data):
                 execution_engine.mark_wait_orb_tick_breakout(
                     setup=best_setup,
