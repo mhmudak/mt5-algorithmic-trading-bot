@@ -14444,6 +14444,36 @@ def process_cycle(last_processed_candle_time):
                     )
                 )
 
+                # Display-only Entry/TP Context for normal setup-detected
+                # notifications. This must never alter entry, SL, TP1-TP3,
+                # RR acceptance, risk, recovery, scoring, or execution.
+                detected_trade_plan = {
+                    "entry_price": close_price,
+                    "stop_loss": (
+                        selected_signal_data.get(
+                            "sl_reference"
+                        )
+                    ),
+                    "take_profit": (
+                        selected_signal_data.get(
+                            "tp_reference"
+                        )
+                        or selected_signal_data.get(
+                            "pivot_target_level"
+                        )
+                    ),
+                }
+
+                detected_entry_tp_block = (
+                    _entry_tp_opportunity_block_fail_open(
+                        df=df,
+                        signal_data=selected_signal_data,
+                        trade_plan=detected_trade_plan,
+                        signal=signal,
+                        required_rr=min_rr_required,
+                    )
+                )
+
                 detected_participation_block = (
                     _market_participation_telegram_block_fail_open(
                         signal=signal,
@@ -14452,6 +14482,12 @@ def process_cycle(last_processed_candle_time):
                         ),
                     )
                 )
+
+                if detected_entry_tp_block:
+                    detected_message += (
+                        "\n\n"
+                        + detected_entry_tp_block
+                    )
 
                 if detected_participation_block:
                     detected_message += (

@@ -890,7 +890,7 @@ def test_live_bot_native_d1_integration():
         text.count(
             "_entry_tp_opportunity_block_fail_open("
         )
-        == 4
+        == 5
     )
 
     mtf_start = text.index(
