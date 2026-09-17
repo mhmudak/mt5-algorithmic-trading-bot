@@ -2939,3 +2939,23 @@ PROP_FIRM_PROFILES = {
         "notify_telegram": True,
     },
 }
+
+# Daily Ladder Provider V1
+# ------------------------
+# Two deliberately separate contracts:
+#
+# 1) DISPLAY_MODE:
+#    AUTO_COMPOSITE_DAILY_LADDER is broker-native observation/context only.
+#    It may be shown in logs/setup alerts but MUST NOT authorize DLLB trades.
+#
+# 2) DLLB_EXECUTION_MODE:
+#    MANUAL_AVO_DAILY_LADDER is the authoritative Avo scalping ladder input.
+#    It must match the current broker date; stale/missing/invalid input must
+#    fail closed for DLLB only while the rest of the bot continues normally.
+DAILY_LEVEL_LADDER_DISPLAY_MODE = "AUTO_COMPOSITE_DAILY_LADDER"
+DAILY_LEVEL_LADDER_DLLB_EXECUTION_MODE = "MANUAL_AVO_DAILY_LADDER"
+DAILY_LEVEL_LADDER_MANUAL_PATH = "config/daily_ladder_manual.json"
+DAILY_LEVEL_LADDER_MANUAL_REQUIRE_CURRENT_BROKER_DATE = True
+DAILY_LEVEL_LADDER_AUTO_SHADOW_ENABLED = True
+DAILY_LEVEL_LADDER_SHADOW_PIVOT_EXCLUSION_RANGE_PCT = 0.015
+DAILY_LEVEL_LADDER_SHADOW_CLUSTER_RANGE_PCT = 0.070
