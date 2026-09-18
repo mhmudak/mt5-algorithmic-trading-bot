@@ -12600,6 +12600,7 @@ def process_daily_level_ladder_breakout_v1(
         MANUAL_AVO_MODE,
         DailyLadderValidationError,
         build_auto_composite_execution_ladder,
+        build_daily_ladder_shadow,
         build_shadow_observations,
         calculate_shadow_levels,
         derive_broker_date_from_current_d1_time,
@@ -12796,6 +12797,67 @@ def process_daily_level_ladder_breakout_v1(
             f"upper={[round(float(value), 2) for value in approved_ladder.upper]} "
             f"lower={[round(float(value), 2) for value in approved_ladder.lower]}"
         )
+
+        # Diagnostic-only AUTO cluster evidence. This never changes the
+        # approved ladder or DLLB execution decision.
+        if execution_mode == AUTO_COMPOSITE_MODE:
+            diagnostic_shadow = build_daily_ladder_shadow(
+                previous_open=float(previous_d1["open"]),
+                previous_high=float(previous_d1["high"]),
+                previous_low=float(previous_d1["low"]),
+                previous_close=float(previous_d1["close"]),
+                current_open=float(current_d1["open"]),
+                pivot_exclusion_range_pct=float(
+                    getattr(
+                        _dllb_settings,
+                        "DAILY_LEVEL_LADDER_SHADOW_PIVOT_EXCLUSION_RANGE_PCT",
+                        0.015,
+                    )
+                ),
+                cluster_range_pct=float(
+                    getattr(
+                        _dllb_settings,
+                        "DAILY_LEVEL_LADDER_SHADOW_CLUSTER_RANGE_PCT",
+                        0.070,
+                    )
+                ),
+            )
+
+            for side_name, clusters in (
+                ("UPPER", diagnostic_shadow.upper),
+                ("LOWER", diagnostic_shadow.lower),
+            ):
+                for cluster in clusters:
+                    families = sorted(
+                        {
+                            str(member.family)
+                            for member in cluster.members
+                        }
+                    )
+                    members = [
+                        (
+                            f"{member.family}:{member.name}"
+                            f"@{round(float(member.price), 2)}"
+                        )
+                        for member in cluster.members
+                    ]
+                    representative = cluster.representative
+                    logger.info(
+                        "[DAILY LADDER CANDIDATE] "
+                        f"side={side_name} "
+                        f"price={round(float(representative.price), 2)} "
+                        f"representative={representative.family}:{representative.name} "
+                        f"family_count={len(families)} "
+                        f"member_count={len(cluster.members)} "
+                        f"cluster_low={round(float(cluster.low), 2)} "
+                        f"cluster_high={round(float(cluster.high), 2)} "
+                        f"cluster_width={round(float(cluster.high - cluster.low), 2)} "
+                        f"pivot_distance={round(abs(float(representative.price) - float(diagnostic_shadow.pivot)), 2)} "
+                        f"families={families} "
+                        f"members={members} "
+                        "execution_authority=False"
+                    )
+
         runtime["provider_state_key"] = valid_provider_key
 
         if broker_date_changed or previous_provider_state_key is not None:

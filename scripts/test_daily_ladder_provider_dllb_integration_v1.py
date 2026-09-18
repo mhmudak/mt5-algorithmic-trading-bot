@@ -191,6 +191,14 @@ def test_live_authority_boundary_is_explicit():
     assert '"[DAILY LADDER LEVELS] "' in block
     assert "approved_ladder.upper" in block
     assert "approved_ladder.lower" in block
+    assert '"[DAILY LADDER CANDIDATE] "' in block
+    assert "build_daily_ladder_shadow(" in block
+    assert "family_count=" in block
+    assert "member_count=" in block
+    assert "cluster_width=" in block
+    assert "pivot_distance=" in block
+    assert "families=" in block
+    assert "members=" in block
 
     evaluator_call = block[block.index("candidate = evaluate_daily_level_ladder_breakout("):]
     evaluator_call = evaluator_call[:evaluator_call.index(")\n    except Exception")]
