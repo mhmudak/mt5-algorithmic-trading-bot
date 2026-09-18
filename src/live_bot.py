@@ -12789,6 +12789,13 @@ def process_daily_level_ladder_breakout_v1(
             f"lower_count={len(approved_ladder.lower)} "
             f"source={provider_source_label}"
         )
+        logger.info(
+            "[DAILY LADDER LEVELS] "
+            f"broker_date={broker_date_text} "
+            f"pivot={round(float(approved_ladder.pivot), 2)} "
+            f"upper={[round(float(value), 2) for value in approved_ladder.upper]} "
+            f"lower={[round(float(value), 2) for value in approved_ladder.lower]}"
+        )
         runtime["provider_state_key"] = valid_provider_key
 
         if broker_date_changed or previous_provider_state_key is not None:

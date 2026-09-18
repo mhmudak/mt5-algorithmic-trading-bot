@@ -188,6 +188,9 @@ def test_live_authority_boundary_is_explicit():
     assert "calculate_shadow_levels(" in block
     assert 'runtime["last_shadow_observations"]' in block
     assert "execution_authority=False" in block
+    assert '"[DAILY LADDER LEVELS] "' in block
+    assert "approved_ladder.upper" in block
+    assert "approved_ladder.lower" in block
 
     evaluator_call = block[block.index("candidate = evaluate_daily_level_ladder_breakout("):]
     evaluator_call = evaluator_call[:evaluator_call.index(")\n    except Exception")]
