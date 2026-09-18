@@ -12823,6 +12823,10 @@ def process_daily_level_ladder_breakout_v1(
                 ),
             )
 
+            strong_upper: list[float] = []
+            strong_lower: list[float] = []
+            strong_distance_limit = float(diagnostic_shadow.day_range) * 0.60
+
             for side_name, clusters in (
                 ("UPPER", diagnostic_shadow.upper),
                 ("LOWER", diagnostic_shadow.lower),
@@ -12842,21 +12846,60 @@ def process_daily_level_ladder_breakout_v1(
                         for member in cluster.members
                     ]
                     representative = cluster.representative
+                    representative_price = float(representative.price)
+                    pivot_distance = abs(
+                        representative_price
+                        - float(diagnostic_shadow.pivot)
+                    )
+
+                    name_upper = str(representative.name).upper()
+                    side_semantics_ok = (
+                        (side_name == "UPPER" and ":R" in name_upper)
+                        or (side_name == "LOWER" and ":S" in name_upper)
+                    )
+                    core_or_confluent = (
+                        str(representative.family) == "CAM_CORE"
+                        or len(families) >= 2
+                    )
+                    strong_candidate = (
+                        side_semantics_ok
+                        and core_or_confluent
+                        and pivot_distance <= strong_distance_limit
+                    )
+
+                    if strong_candidate:
+                        rounded_price = round(representative_price, 2)
+                        if side_name == "UPPER":
+                            strong_upper.append(rounded_price)
+                        else:
+                            strong_lower.append(rounded_price)
+
                     logger.info(
                         "[DAILY LADDER CANDIDATE] "
                         f"side={side_name} "
-                        f"price={round(float(representative.price), 2)} "
+                        f"price={round(representative_price, 2)} "
                         f"representative={representative.family}:{representative.name} "
                         f"family_count={len(families)} "
                         f"member_count={len(cluster.members)} "
                         f"cluster_low={round(float(cluster.low), 2)} "
                         f"cluster_high={round(float(cluster.high), 2)} "
                         f"cluster_width={round(float(cluster.high - cluster.low), 2)} "
-                        f"pivot_distance={round(abs(float(representative.price) - float(diagnostic_shadow.pivot)), 2)} "
+                        f"pivot_distance={round(pivot_distance, 2)} "
+                        f"strong_candidate={strong_candidate} "
                         f"families={families} "
                         f"members={members} "
                         "execution_authority=False"
                     )
+
+            logger.info(
+                "[DAILY LADDER STRONG CANDIDATES] "
+                f"broker_date={broker_date_text} "
+                f"pivot={round(float(diagnostic_shadow.pivot), 2)} "
+                f"upper={strong_upper} "
+                f"lower={strong_lower} "
+                "rule=CAM_CORE_OR_2PLUS_FAMILIES+SIDE_MATCH+WITHIN_60PCT_D1_RANGE "
+                "execution_authority=False"
+            )
 
         runtime["provider_state_key"] = valid_provider_key
 

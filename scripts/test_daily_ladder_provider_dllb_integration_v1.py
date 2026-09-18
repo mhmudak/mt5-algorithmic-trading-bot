@@ -197,8 +197,13 @@ def test_live_authority_boundary_is_explicit():
     assert "member_count=" in block
     assert "cluster_width=" in block
     assert "pivot_distance=" in block
+    assert "strong_candidate=" in block
     assert "families=" in block
     assert "members=" in block
+    assert '"[DAILY LADDER STRONG CANDIDATES] "' in block
+    assert "strong_distance_limit" in block
+    assert "diagnostic_shadow.day_range" in block
+    assert "0.60" in block
 
     evaluator_call = block[block.index("candidate = evaluate_daily_level_ladder_breakout("):]
     evaluator_call = evaluator_call[:evaluator_call.index(")\n    except Exception")]
