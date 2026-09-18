@@ -9,6 +9,8 @@ from src.daily_ladder_provider import (
     AUTO_COMPOSITE_MODE,
     MANUAL_AVO_MODE,
     DailyLadderValidationError,
+    build_auto_composite_execution_ladder,
+    build_daily_ladder_shadow,
     build_shadow_observations,
     calculate_shadow_levels,
     derive_broker_date_from_current_d1_time,
@@ -159,6 +161,39 @@ def test_broker_date_reconstructs_broker_midnight_from_mt5_utc_open():
     ) == date(2026, 9, 21)
 
 
+
+def test_auto_composite_execution_adapter_uses_existing_clusters():
+    kwargs = {
+        "previous_open": 4292.62,
+        "previous_high": 4366.73,
+        "previous_low": 4235.24,
+        "previous_close": 4262.63,
+        "current_open": 4260.26,
+    }
+
+    shadow = build_daily_ladder_shadow(**kwargs)
+    ladder = build_auto_composite_execution_ladder(
+        symbol="XAUUSD",
+        broker_date=date(2026, 9, 17),
+        **kwargs,
+    )
+
+    assert ladder.symbol == "XAUUSD"
+    assert ladder.broker_date == date(2026, 9, 17)
+    assert ladder.source == AUTO_COMPOSITE_MODE
+    assert ladder.pivot == shadow.pivot
+    assert ladder.upper == tuple(
+        cluster.representative.price
+        for cluster in shadow.upper
+    )
+    assert ladder.lower == tuple(
+        cluster.representative.price
+        for cluster in shadow.lower
+    )
+    assert ladder.upper
+    assert ladder.lower
+
+
 def test_shadow_reproduces_sep17_structure_and_has_no_authority():
     pivot, raw = calculate_shadow_levels(
         previous_open=4292.62,
@@ -201,6 +236,7 @@ if __name__ == "__main__":
     test_variable_counts_and_validation()
     test_missing_malformed_and_valid_files()
     test_broker_date_reconstructs_broker_midnight_from_mt5_utc_open()
+    test_auto_composite_execution_adapter_uses_existing_clusters()
     test_shadow_reproduces_sep17_structure_and_has_no_authority()
 
     print("PASS: Daily Ladder Provider V1")
@@ -209,5 +245,6 @@ if __name__ == "__main__":
     print("PASS: ordering/side/duplicate/symbol validation")
     print("PASS: missing/malformed manual files fail closed")
     print("PASS: broker date reconstructs broker midnight from MT5 UTC D1 open")
+    print("PASS: AUTO composite converts existing clusters to DLLB ladder")
     print("PASS: AUTO shadow reproduces Sep 17 diagnostic structure")
-    print("PASS: no DLLB execution authority added")
+    print("PASS: raw shadow observations remain execution_authority=False")

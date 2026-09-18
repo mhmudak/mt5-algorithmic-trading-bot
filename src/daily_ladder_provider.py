@@ -513,6 +513,72 @@ def auto_composite_display_levels(
         pivot_exclusion_range_pct=pivot_exclusion_range_pct,
         cluster_range_pct=cluster_range_pct,
     )
+
+def build_auto_composite_execution_ladder(
+    *,
+    symbol: str,
+    broker_date: date,
+    previous_open: float,
+    previous_high: float,
+    previous_low: float,
+    previous_close: float,
+    current_open: float,
+    pivot_exclusion_range_pct: float = 0.015,
+    cluster_range_pct: float = 0.070,
+) -> DailyLadder:
+    # Build the approved DLLB ladder from existing AUTO composite clusters.
+    # Raw family levels and shadow observations remain diagnostic only. DLLB
+    # receives only the representative price of each validated composite cluster.
+    if not isinstance(broker_date, date) or isinstance(broker_date, datetime):
+        raise DailyLadderValidationError(
+            "broker_date must be a datetime.date"
+        )
+
+    shadow = build_daily_ladder_shadow(
+        previous_open=previous_open,
+        previous_high=previous_high,
+        previous_low=previous_low,
+        previous_close=previous_close,
+        current_open=current_open,
+        pivot_exclusion_range_pct=pivot_exclusion_range_pct,
+        cluster_range_pct=cluster_range_pct,
+    )
+
+    upper = [
+        float(cluster.representative.price)
+        for cluster in shadow.upper
+    ]
+    lower = [
+        float(cluster.representative.price)
+        for cluster in shadow.lower
+    ]
+
+    if not upper or not lower:
+        raise DailyLadderValidationError(
+            "AUTO composite ladder requires at least one upper and one lower level"
+        )
+
+    validated = validate_manual_avo_ladder(
+        {
+            "symbol": symbol,
+            "broker_date": broker_date.isoformat(),
+            "pivot": float(shadow.pivot),
+            "upper": upper,
+            "lower": lower,
+        },
+        expected_symbol=symbol,
+        expected_broker_date=broker_date,
+    )
+
+    return DailyLadder(
+        symbol=validated.symbol,
+        broker_date=validated.broker_date,
+        pivot=validated.pivot,
+        upper=validated.upper,
+        lower=validated.lower,
+        source=AUTO_COMPOSITE_MODE,
+    )
+
 def _coerce_mt5_utc_datetime(value: Any) -> datetime:
     """Normalize an MT5 bar-open value to a naive UTC datetime."""
     from datetime import timezone

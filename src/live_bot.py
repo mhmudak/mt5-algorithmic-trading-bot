@@ -12596,8 +12596,10 @@ def process_daily_level_ladder_breakout_v1(
         )
 
     from src.daily_ladder_provider import (
+        AUTO_COMPOSITE_MODE,
         MANUAL_AVO_MODE,
         DailyLadderValidationError,
+        build_auto_composite_execution_ladder,
         build_shadow_observations,
         calculate_shadow_levels,
         derive_broker_date_from_current_d1_time,
@@ -12647,7 +12649,7 @@ def process_daily_level_ladder_breakout_v1(
         getattr(
             _dllb_settings,
             "DAILY_LEVEL_LADDER_DLLB_EXECUTION_MODE",
-            MANUAL_AVO_MODE,
+            AUTO_COMPOSITE_MODE,
         )
     ).strip().upper()
 
@@ -12667,20 +12669,72 @@ def process_daily_level_ladder_breakout_v1(
         )
     )
 
-    if execution_mode != MANUAL_AVO_MODE or not require_current_date:
+    previous_d1 = d1_df.iloc[-2]
+    current_d1 = d1_df.iloc[-1]
+    provider_source_label = execution_mode
+
+    try:
+        if execution_mode == AUTO_COMPOSITE_MODE:
+            approved_ladder = build_auto_composite_execution_ladder(
+                symbol=SYMBOL,
+                broker_date=broker_date,
+                previous_open=float(previous_d1["open"]),
+                previous_high=float(previous_d1["high"]),
+                previous_low=float(previous_d1["low"]),
+                previous_close=float(previous_d1["close"]),
+                current_open=float(current_d1["open"]),
+                pivot_exclusion_range_pct=float(
+                    getattr(
+                        _dllb_settings,
+                        "DAILY_LEVEL_LADDER_SHADOW_PIVOT_EXCLUSION_RANGE_PCT",
+                        0.015,
+                    )
+                ),
+                cluster_range_pct=float(
+                    getattr(
+                        _dllb_settings,
+                        "DAILY_LEVEL_LADDER_SHADOW_CLUSTER_RANGE_PCT",
+                        0.070,
+                    )
+                ),
+            )
+            provider_source_label = AUTO_COMPOSITE_MODE
+
+        elif execution_mode == MANUAL_AVO_MODE:
+            if not require_current_date:
+                raise DailyLadderValidationError(
+                    "manual DLLB execution requires current broker-date validation"
+                )
+
+            approved_ladder = load_manual_avo_ladder(
+                manual_path,
+                expected_symbol=SYMBOL,
+                expected_broker_date=broker_date,
+            )
+            provider_source_label = manual_path
+
+        else:
+            raise DailyLadderValidationError(
+                f"unsupported DLLB execution mode: {execution_mode}"
+            )
+
+    except DailyLadderValidationError as exc:
         runtime["last_closed_m5_time"] = latest_closed_time
         provider_state_key = (
-            "UNSAFE_EXECUTION_CONFIG",
+            "PROVIDER_INVALID",
             broker_date_text,
             execution_mode,
-            require_current_date,
+            provider_source_label,
+            str(exc),
         )
         if runtime.get("provider_state_key") != provider_state_key:
             logger.warning(
                 "[DAILY LADDER PROVIDER] "
-                "DLLB execution configuration rejected; "
-                f"mode={execution_mode} "
-                f"require_current_broker_date={require_current_date}"
+                "execution ladder unavailable/invalid "
+                f"| mode={execution_mode} "
+                f"broker_date={broker_date_text} "
+                f"source={provider_source_label} "
+                f"error={exc}"
             )
             logger.info(
                 "[DAILY LEVEL LADDER] "
@@ -12690,60 +12744,36 @@ def process_daily_level_ladder_breakout_v1(
             runtime["provider_state_key"] = provider_state_key
         return False
 
-    try:
-        approved_ladder = load_manual_avo_ladder(
-            manual_path,
-            expected_symbol=SYMBOL,
-            expected_broker_date=broker_date,
-        )
-    except DailyLadderValidationError as exc:
-        runtime["last_closed_m5_time"] = latest_closed_time
-        provider_state_key = (
-            "MANUAL_INVALID",
-            broker_date_text,
-            manual_path,
-            str(exc),
-        )
-        if runtime.get("provider_state_key") != provider_state_key:
-            logger.warning(
-                "[DAILY LADDER PROVIDER] "
-                "manual ladder unavailable/invalid "
-                f"| mode={execution_mode} "
-                f"broker_date={broker_date_text} "
-                f"source={manual_path} error={exc}"
-            )
-            logger.info(
-                "[DAILY LEVEL LADDER] "
-                "execution disabled for current broker date "
-                f"| broker_date={broker_date_text}"
-            )
-            runtime["provider_state_key"] = provider_state_key
-        return False
     except Exception as exc:
         runtime["last_closed_m5_time"] = latest_closed_time
         provider_state_key = (
             "PROVIDER_ERROR",
             broker_date_text,
-            manual_path,
+            execution_mode,
+            provider_source_label,
             str(exc),
         )
         if runtime.get("provider_state_key") != provider_state_key:
             logger.warning(
                 "[DAILY LADDER PROVIDER] "
                 "provider failure; DLLB disabled only "
-                f"| broker_date={broker_date_text} error={exc}"
+                f"| mode={execution_mode} "
+                f"broker_date={broker_date_text} "
+                f"source={provider_source_label} "
+                f"error={exc}"
             )
             runtime["provider_state_key"] = provider_state_key
         return False
 
     valid_provider_key = (
         "VALID",
+        execution_mode,
         approved_ladder.broker_date.isoformat(),
         approved_ladder.source,
         float(approved_ladder.pivot),
         tuple(float(value) for value in approved_ladder.upper),
         tuple(float(value) for value in approved_ladder.lower),
-        manual_path,
+        provider_source_label,
     )
 
     previous_provider_state_key = runtime.get("provider_state_key")
@@ -12757,14 +12787,10 @@ def process_daily_level_ladder_breakout_v1(
             f"pivot={approved_ladder.pivot} "
             f"upper_count={len(approved_ladder.upper)} "
             f"lower_count={len(approved_ladder.lower)} "
-            f"source={manual_path}"
+            f"source={provider_source_label}"
         )
         runtime["provider_state_key"] = valid_provider_key
 
-        # If a provider state already existed, or the broker date rolled while
-        # this process was running, arm on this already-closed M5 and wait for
-        # the next closed M5.  This prevents a repaired/edited/new-day ladder
-        # from retroactively authorizing a breakout that closed before reload.
         if broker_date_changed or previous_provider_state_key is not None:
             runtime["last_closed_m5_time"] = latest_closed_time
             logger.info(
@@ -12775,8 +12801,9 @@ def process_daily_level_ladder_breakout_v1(
             )
             return False
 
-    # AUTO shadow is diagnostic only.  Its output is stored/logged but is
-    # never passed to the DLLB evaluator and can never replace manual levels.
+    # Raw AUTO-family shadow observations are diagnostic only. Their raw
+    # levels are never passed to the DLLB evaluator. In AUTO execution mode,
+    # DLLB receives only the validated representative composite ladder above.
     if bool(
         getattr(
             _dllb_settings,
@@ -12885,7 +12912,7 @@ def process_daily_level_ladder_breakout_v1(
         )
         return False
 
-    # D1 retrieval, manual-provider validation and strategy
+    # D1 retrieval, execution-provider validation and strategy
     # evaluation completed successfully.
     #
     # Consume this closed M5 exactly once here.

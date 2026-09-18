@@ -285,31 +285,46 @@ def test_live_execution_preserves_next_level_tp_and_guards():
     assert "candidate.get('target_level')" in block
 
 
-def test_transient_d1_failure_and_manual_invalid_semantics():
+def test_transient_d1_failure_and_provider_invalid_semantics():
     text = (ROOT / "src" / "live_bot.py").read_text(encoding="utf-8")
     start = text.index("def process_daily_level_ladder_breakout_v1(")
     end = text.index("def process_cycle(last_processed_candle_time):", start)
     block = text[start:end]
 
     d1_index = block.index("d1_rates = mt5.copy_rates_from_pos(")
-    manual_load_index = block.index("approved_ladder = load_manual_avo_ladder(")
-    manual_invalid_index = block.index("except DailyLadderValidationError as exc:")
-    evaluator_index = block.index("evaluate_daily_level_ladder_breakout(")
+    auto_build_index = block.index(
+        "approved_ladder = build_auto_composite_execution_ladder("
+    )
+    manual_load_index = block.index(
+        "approved_ladder = load_manual_avo_ladder("
+    )
+    provider_invalid_index = block.index(
+        "except DailyLadderValidationError as exc:"
+    )
+    evaluator_index = block.index(
+        "evaluate_daily_level_ladder_breakout("
+    )
     final_consume_index = block.index(
-        "# D1 retrieval, manual-provider validation and strategy"
+        "# D1 retrieval, execution-provider validation and strategy"
     )
 
-    # MT5/D1 retrieval failure returns before normal consumption.
-    d1_failure_region = block[d1_index:manual_load_index]
-    assert "closed M5 remains unconsumed" in d1_failure_region
+    # MT5/D1 retrieval / broker-date failure stays retryable and must happen
+    # before either AUTO or MANUAL execution-provider construction.
+    pre_provider_region = block[d1_index:auto_build_index]
+    assert "closed M5 remains unconsumed" in pre_provider_region
+    assert d1_index < auto_build_index < manual_load_index
 
-    # Invalid manual data consumes the M5 to prevent later retro-trading.
-    invalid_region = block[manual_invalid_index:evaluator_index]
+    # Any provider/configuration invalidity (AUTO or MANUAL) consumes the
+    # already-closed M5 so a later repair cannot retroactively trade it.
+    invalid_region = block[provider_invalid_index:evaluator_index]
     assert 'runtime["last_closed_m5_time"] = latest_closed_time' in invalid_region
     assert "execution disabled for current broker date" in invalid_region
+    assert "PROVIDER_INVALID" in invalid_region
 
-    # Successful evaluation still consumes before downstream guard decisions.
+    # Successful evaluation still consumes once before all downstream guards.
     assert evaluator_index < final_consume_index
+    post_evaluation = block[final_consume_index:]
+    assert '"last_closed_m5_time"' in post_evaluation
     assert "Downstream RR/news/time/guard/execution-memory rejection" in block
     assert "Do not chase an old" in block
 
@@ -348,11 +363,11 @@ if __name__ == "__main__":
     test_strategy_has_no_legacy_level_authority()
     test_live_integration_is_pre_m15_and_once_per_closed_m5()
     test_live_execution_preserves_next_level_tp_and_guards()
-    test_transient_d1_failure_and_manual_invalid_semantics()
+    test_transient_d1_failure_and_provider_invalid_semantics()
     test_risk_fixed_lot_and_sources_parse()
 
     print("PASS: Daily Level Ladder Breakout V1")
-    print("PASS: approved manual pivot + variable ladder are sole execution levels")
+    print("PASS: approved variable ladder is sole DLLB execution input")
     print("PASS: legacy Five-Level / PDH / PDL execution authority removed")
     print("PASS: BUY/SELL approved-ladder direction")
     print("PASS: next approved daily level is authoritative TP")
@@ -368,7 +383,7 @@ if __name__ == "__main__":
     print("PASS: Universal TP ladder does not replace approved next-level TP")
     print("PASS: fresh crossing required; already-cleared level cannot retrade")
     print("PASS: transient D1/evaluation failure can retry")
-    print("PASS: invalid manual ladder consumes M5 and cannot be retro-traded")
+    print("PASS: invalid AUTO/MANUAL provider state consumes M5 and cannot be retro-traded")
     print("PASS: downstream rejection remains one-shot / no chasing")
     print("PASS: AUTO shadow has observation only")
     print("PASS: FIXED_LOT remains 0.25")

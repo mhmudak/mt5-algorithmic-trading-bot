@@ -7,8 +7,10 @@ import tempfile
 import pandas as pd
 
 from src.daily_ladder_provider import (
+    AUTO_COMPOSITE_MODE,
     MANUAL_AVO_MODE,
     DailyLadderValidationError,
+    build_auto_composite_execution_ladder,
     build_shadow_observations,
     calculate_shadow_levels,
     load_manual_avo_ladder,
@@ -78,6 +80,36 @@ def test_manual_provider_feeds_dllb_and_shadow_stays_separate():
         assert result["target_level"] == 4315.0
 
 
+
+def test_auto_composite_provider_feeds_dllb():
+    approved = build_auto_composite_execution_ladder(
+        symbol="XAUUSD",
+        broker_date=date(2026, 9, 17),
+        previous_open=4292.62,
+        previous_high=4366.73,
+        previous_low=4235.24,
+        previous_close=4262.63,
+        current_open=4260.26,
+    )
+
+    assert approved.source == AUTO_COMPOSITE_MODE
+    assert len(approved.upper) >= 2
+
+    source = float(approved.upper[0])
+    target = float(approved.upper[1])
+
+    result = evaluate_daily_level_ladder_breakout(
+        m5_df=_frame(source - 1.0, source + 1.2),
+        approved_ladder=approved,
+    )
+
+    assert result is not None
+    assert result["signal"] == "BUY"
+    assert abs(float(result["broken_level"]) - round(source, 2)) < 0.011
+    assert abs(float(result["target_level"]) - round(target, 2)) < 0.011
+    assert result["daily_approved_source"] == AUTO_COMPOSITE_MODE
+
+
 def test_wrong_date_symbol_and_malformed_fail_closed():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -130,14 +162,23 @@ def test_wrong_date_symbol_and_malformed_fail_closed():
 
 def test_live_authority_boundary_is_explicit():
     live = (ROOT / "src" / "live_bot.py").read_text(encoding="utf-8")
+    settings = (ROOT / "config" / "settings.py").read_text(encoding="utf-8")
     start = live.index("def process_daily_level_ladder_breakout_v1(")
     end = live.index("def process_cycle(last_processed_candle_time):", start)
     block = live[start:end]
 
+    assert (
+        'DAILY_LEVEL_LADDER_DLLB_EXECUTION_MODE = "AUTO_COMPOSITE_DAILY_LADDER"'
+        in settings
+    )
     assert "DAILY_LEVEL_LADDER_DLLB_EXECUTION_MODE" in block
+    assert "if execution_mode == AUTO_COMPOSITE_MODE:" in block
+    assert "build_auto_composite_execution_ladder(" in block
+    assert "elif execution_mode == MANUAL_AVO_MODE:" in block
     assert "DAILY_LEVEL_LADDER_MANUAL_REQUIRE_CURRENT_BROKER_DATE" in block
     assert "load_manual_avo_ladder(" in block
     assert "expected_broker_date=broker_date" in block
+    assert "unsupported DLLB execution mode" in block
     assert "approved_ladder=approved_ladder" in block
     assert "broker_date_changed = (" in block
     assert 'previous_provider_state_key = runtime.get("provider_state_key")' in block
@@ -156,12 +197,14 @@ def test_live_authority_boundary_is_explicit():
 
 if __name__ == "__main__":
     test_manual_provider_feeds_dllb_and_shadow_stays_separate()
+    test_auto_composite_provider_feeds_dllb()
     test_wrong_date_symbol_and_malformed_fail_closed()
     test_live_authority_boundary_is_explicit()
 
     print("PASS: Daily Ladder Provider <-> DLLB Integration V1")
-    print("PASS: manual approved ladder is DLLB execution authority")
-    print("PASS: stale/wrong-symbol/malformed manual ladder fails closed")
-    print("PASS: AUTO shadow remains observation-only")
+    print("PASS: AUTO composite is default DLLB execution authority")
+    print("PASS: manual Avo remains explicit override")
+    print("PASS: stale/wrong-symbol/malformed manual ladder fails closed in manual mode")
+    print("PASS: raw AUTO shadow remains observation-only")
     print("PASS: next approved level remains authoritative TP")
     print("PASS: broker-date/provider changes arm current M5 and prevent retro-trading")
