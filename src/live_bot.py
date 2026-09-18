@@ -12827,6 +12827,61 @@ def process_daily_level_ladder_breakout_v1(
             strong_lower: list[float] = []
             strong_distance_limit = float(diagnostic_shadow.day_range) * 0.60
 
+            # Research-only DeMark pivot reference. The existing AUTO
+            # calculator already emits DM:R1 / DM:S1 but not X/4 itself.
+            previous_open_value = float(previous_d1["open"])
+            previous_high_value = float(previous_d1["high"])
+            previous_low_value = float(previous_d1["low"])
+            previous_close_value = float(previous_d1["close"])
+
+            if previous_close_value < previous_open_value:
+                demark_x = (
+                    previous_high_value
+                    + (2.0 * previous_low_value)
+                    + previous_close_value
+                )
+            elif previous_close_value > previous_open_value:
+                demark_x = (
+                    (2.0 * previous_high_value)
+                    + previous_low_value
+                    + previous_close_value
+                )
+            else:
+                demark_x = (
+                    previous_high_value
+                    + previous_low_value
+                    + (2.0 * previous_close_value)
+                )
+
+            demark_pivot = demark_x / 4.0
+            demark_distance = abs(
+                demark_pivot - float(diagnostic_shadow.pivot)
+            )
+            demark_side = "AT_PIVOT"
+            demark_added = False
+
+            if demark_distance <= strong_distance_limit:
+                rounded_demark_pivot = round(demark_pivot, 2)
+                if demark_pivot > float(diagnostic_shadow.pivot):
+                    demark_side = "UPPER"
+                    strong_upper.append(rounded_demark_pivot)
+                    demark_added = True
+                elif demark_pivot < float(diagnostic_shadow.pivot):
+                    demark_side = "LOWER"
+                    strong_lower.append(rounded_demark_pivot)
+                    demark_added = True
+
+            logger.info(
+                "[DAILY LADDER DEMARK PIVOT] "
+                f"broker_date={broker_date_text} "
+                f"price={round(demark_pivot, 2)} "
+                f"classic_pivot={round(float(diagnostic_shadow.pivot), 2)} "
+                f"side={demark_side} "
+                f"distance={round(demark_distance, 2)} "
+                f"added_to_strong={demark_added} "
+                "execution_authority=False"
+            )
+
             for side_name, clusters in (
                 ("UPPER", diagnostic_shadow.upper),
                 ("LOWER", diagnostic_shadow.lower),
@@ -12891,13 +12946,17 @@ def process_daily_level_ladder_breakout_v1(
                         "execution_authority=False"
                     )
 
+            strong_upper = sorted(set(strong_upper))
+            strong_lower = sorted(set(strong_lower), reverse=True)
+
             logger.info(
                 "[DAILY LADDER STRONG CANDIDATES] "
                 f"broker_date={broker_date_text} "
                 f"pivot={round(float(diagnostic_shadow.pivot), 2)} "
                 f"upper={strong_upper} "
                 f"lower={strong_lower} "
-                "rule=CAM_CORE_OR_2PLUS_FAMILIES+SIDE_MATCH+WITHIN_60PCT_D1_RANGE "
+                f"demark_pivot={round(demark_pivot, 2)} "
+                "rule=DM_PIVOT+CAM_CORE_OR_2PLUS_FAMILIES+SIDE_MATCH+WITHIN_60PCT_D1_RANGE "
                 "execution_authority=False"
             )
 

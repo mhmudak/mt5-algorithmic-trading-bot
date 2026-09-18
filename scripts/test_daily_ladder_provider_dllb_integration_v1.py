@@ -201,9 +201,16 @@ def test_live_authority_boundary_is_explicit():
     assert "families=" in block
     assert "members=" in block
     assert '"[DAILY LADDER STRONG CANDIDATES] "' in block
+    assert '"[DAILY LADDER DEMARK PIVOT] "' in block
+    assert "demark_x" in block
+    assert "demark_pivot = demark_x / 4.0" in block
+    assert "previous_close_value < previous_open_value" in block
+    assert "previous_close_value > previous_open_value" in block
+    assert "added_to_strong=" in block
     assert "strong_distance_limit" in block
     assert "diagnostic_shadow.day_range" in block
     assert "0.60" in block
+    assert "execution_authority=False" in block
 
     evaluator_call = block[block.index("candidate = evaluate_daily_level_ladder_breakout("):]
     evaluator_call = evaluator_call[:evaluator_call.index(")\n    except Exception")]
