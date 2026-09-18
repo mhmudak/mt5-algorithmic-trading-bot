@@ -12475,6 +12475,10 @@ def process_daily_level_ladder_breakout_v1(
         runtime = {
             "last_closed_m5_time": None,
             "daily_source_time": None,
+            "broker_date": None,
+            "provider_state_key": None,
+            "shadow_state_key": None,
+            "last_shadow_observations": (),
             "consumed_setup_ids": set(),
         }
 
@@ -12566,11 +12570,10 @@ def process_daily_level_ladder_breakout_v1(
     ):
         return False
 
-    # Do not consume the newly closed M5 yet.
-    #
-    # If D1 retrieval or daily-context evaluation fails
-    # temporarily, the same newly closed M5 must remain
-    # eligible for evaluation on the next bot loop.
+    # Do not consume the newly closed M5 yet for transient MT5/D1
+    # failures.  A missing/stale/invalid manual ladder is different: that
+    # configuration state fails closed for DLLB and consumes the closed M5 so
+    # fixing the file later cannot retro-trade an old breakout.
     d1_rates = mt5.copy_rates_from_pos(
         SYMBOL,
         mt5.TIMEFRAME_D1,
@@ -12580,95 +12583,301 @@ def process_daily_level_ladder_breakout_v1(
 
     if (
         d1_rates is None
-        or len(
-            d1_rates
-        )
-        < 2
+        or len(d1_rates) < 2
     ):
         return False
 
-    d1_df = pd.DataFrame(
-        d1_rates
-    )
+    d1_df = pd.DataFrame(d1_rates)
 
     if "time" in d1_df.columns:
-        d1_df[
-            "time"
-        ] = pd.to_datetime(
-            d1_df[
-                "time"
-            ],
+        d1_df["time"] = pd.to_datetime(
+            d1_df["time"],
             unit="s",
         )
 
-    from src.daily_level_context import (
-        calculate_daily_context_from_d1,
+    from src.daily_ladder_provider import (
+        MANUAL_AVO_MODE,
+        DailyLadderValidationError,
+        build_shadow_observations,
+        calculate_shadow_levels,
+        derive_broker_date_from_current_d1_time,
+        load_manual_avo_ladder,
     )
 
-    daily_context = (
-        calculate_daily_context_from_d1(
-            d1_df,
-            high_diap=(
-                _dllb_settings.ENTRY_TP_DAILY_LEVEL_HIGH_DIAP
-            ),
-            low_diap=(
-                _dllb_settings.ENTRY_TP_DAILY_LEVEL_LOW_DIAP
-            ),
+    try:
+        current_d1_time = d1_df.iloc[-1]["time"]
+        broker_date = derive_broker_date_from_current_d1_time(
+            current_d1_time
         )
-    )
-
-    if not isinstance(
-        daily_context,
-        dict,
-    ):
+    except Exception as exc:
+        logger.warning(
+            "[DAILY LADDER PROVIDER] "
+            "unable to derive current broker date from MT5 D1; "
+            "closed M5 remains unconsumed "
+            f"| error={exc}"
+        )
         return False
 
-    daily_source_time = str(
-        daily_context.get(
-            "time"
+    broker_date_text = broker_date.isoformat()
+    previous_broker_date = runtime.get("broker_date")
+    broker_date_changed = (
+        previous_broker_date is not None
+        and previous_broker_date != broker_date_text
+    )
+
+    if previous_broker_date != broker_date_text:
+        runtime["broker_date"] = broker_date_text
+        runtime["daily_source_time"] = broker_date_text
+        runtime["consumed_setup_ids"] = set()
+        runtime["provider_state_key"] = None
+        runtime["shadow_state_key"] = None
+        runtime["last_shadow_observations"] = ()
+
+        logger.info(
+            "[DAILY LADDER PROVIDER] "
+            f"broker date changed {previous_broker_date} -> {broker_date_text}"
+        )
+        logger.info(
+            "[DAILY LEVEL LADDER] "
+            "daily setup memory reset "
+            f"| broker_date={broker_date_text}"
+        )
+
+    execution_mode = str(
+        getattr(
+            _dllb_settings,
+            "DAILY_LEVEL_LADDER_DLLB_EXECUTION_MODE",
+            MANUAL_AVO_MODE,
+        )
+    ).strip().upper()
+
+    manual_path = str(
+        getattr(
+            _dllb_settings,
+            "DAILY_LEVEL_LADDER_MANUAL_PATH",
+            "config/daily_ladder_manual.json",
         )
     )
 
-    if (
-        runtime.get(
-            "daily_source_time"
+    require_current_date = bool(
+        getattr(
+            _dllb_settings,
+            "DAILY_LEVEL_LADDER_MANUAL_REQUIRE_CURRENT_BROKER_DATE",
+            True,
         )
-        != daily_source_time
-    ):
-        runtime[
-            "daily_source_time"
-        ] = daily_source_time
+    )
 
-        runtime[
-            "consumed_setup_ids"
-        ] = set()
+    if execution_mode != MANUAL_AVO_MODE or not require_current_date:
+        runtime["last_closed_m5_time"] = latest_closed_time
+        provider_state_key = (
+            "UNSAFE_EXECUTION_CONFIG",
+            broker_date_text,
+            execution_mode,
+            require_current_date,
+        )
+        if runtime.get("provider_state_key") != provider_state_key:
+            logger.warning(
+                "[DAILY LADDER PROVIDER] "
+                "DLLB execution configuration rejected; "
+                f"mode={execution_mode} "
+                f"require_current_broker_date={require_current_date}"
+            )
+            logger.info(
+                "[DAILY LEVEL LADDER] "
+                "execution disabled for current broker date "
+                f"| broker_date={broker_date_text}"
+            )
+            runtime["provider_state_key"] = provider_state_key
+        return False
 
+    try:
+        approved_ladder = load_manual_avo_ladder(
+            manual_path,
+            expected_symbol=SYMBOL,
+            expected_broker_date=broker_date,
+        )
+    except DailyLadderValidationError as exc:
+        runtime["last_closed_m5_time"] = latest_closed_time
+        provider_state_key = (
+            "MANUAL_INVALID",
+            broker_date_text,
+            manual_path,
+            str(exc),
+        )
+        if runtime.get("provider_state_key") != provider_state_key:
+            logger.warning(
+                "[DAILY LADDER PROVIDER] "
+                "manual ladder unavailable/invalid "
+                f"| mode={execution_mode} "
+                f"broker_date={broker_date_text} "
+                f"source={manual_path} error={exc}"
+            )
+            logger.info(
+                "[DAILY LEVEL LADDER] "
+                "execution disabled for current broker date "
+                f"| broker_date={broker_date_text}"
+            )
+            runtime["provider_state_key"] = provider_state_key
+        return False
+    except Exception as exc:
+        runtime["last_closed_m5_time"] = latest_closed_time
+        provider_state_key = (
+            "PROVIDER_ERROR",
+            broker_date_text,
+            manual_path,
+            str(exc),
+        )
+        if runtime.get("provider_state_key") != provider_state_key:
+            logger.warning(
+                "[DAILY LADDER PROVIDER] "
+                "provider failure; DLLB disabled only "
+                f"| broker_date={broker_date_text} error={exc}"
+            )
+            runtime["provider_state_key"] = provider_state_key
+        return False
+
+    valid_provider_key = (
+        "VALID",
+        approved_ladder.broker_date.isoformat(),
+        approved_ladder.source,
+        float(approved_ladder.pivot),
+        tuple(float(value) for value in approved_ladder.upper),
+        tuple(float(value) for value in approved_ladder.lower),
+        manual_path,
+    )
+
+    previous_provider_state_key = runtime.get("provider_state_key")
+    provider_state_changed = previous_provider_state_key != valid_provider_key
+
+    if provider_state_changed:
         logger.info(
-            "[DAILY LEVEL LADDER] "
-            "completed-D1 source changed; "
-            "daily setup memory reset "
-            f"| source={daily_source_time}"
+            "[DAILY LADDER PROVIDER] "
+            f"mode={execution_mode} "
+            f"broker_date={broker_date_text} "
+            f"pivot={approved_ladder.pivot} "
+            f"upper_count={len(approved_ladder.upper)} "
+            f"lower_count={len(approved_ladder.lower)} "
+            f"source={manual_path}"
         )
+        runtime["provider_state_key"] = valid_provider_key
+
+        # If a provider state already existed, or the broker date rolled while
+        # this process was running, arm on this already-closed M5 and wait for
+        # the next closed M5.  This prevents a repaired/edited/new-day ladder
+        # from retroactively authorizing a breakout that closed before reload.
+        if broker_date_changed or previous_provider_state_key is not None:
+            runtime["last_closed_m5_time"] = latest_closed_time
+            logger.info(
+                "[DAILY LEVEL LADDER] "
+                "approved ladder state armed on latest closed M5; "
+                "no retroactive execution "
+                f"| broker_date={broker_date_text} m5={latest_closed_time}"
+            )
+            return False
+
+    # AUTO shadow is diagnostic only.  Its output is stored/logged but is
+    # never passed to the DLLB evaluator and can never replace manual levels.
+    if bool(
+        getattr(
+            _dllb_settings,
+            "DAILY_LEVEL_LADDER_AUTO_SHADOW_ENABLED",
+            True,
+        )
+    ):
+        try:
+            previous_d1 = d1_df.iloc[-2]
+            current_d1 = d1_df.iloc[-1]
+            _, raw_shadow_levels = calculate_shadow_levels(
+                previous_open=float(previous_d1["open"]),
+                previous_high=float(previous_d1["high"]),
+                previous_low=float(previous_d1["low"]),
+                previous_close=float(previous_d1["close"]),
+                current_open=float(current_d1["open"]),
+            )
+            previous_range = abs(
+                float(previous_d1["high"])
+                - float(previous_d1["low"])
+            )
+            shadow_cluster_distance = previous_range * float(
+                getattr(
+                    _dllb_settings,
+                    "DAILY_LEVEL_LADDER_SHADOW_CLUSTER_RANGE_PCT",
+                    0.070,
+                )
+            )
+            shadow_observations = build_shadow_observations(
+                approved_ladder=approved_ladder,
+                raw_levels=raw_shadow_levels,
+                cluster_distance=shadow_cluster_distance,
+            )
+            runtime["last_shadow_observations"] = shadow_observations
+
+            shadow_key = (
+                broker_date_text,
+                str(previous_d1.get("time")),
+                float(current_d1["open"]),
+                valid_provider_key,
+            )
+            if runtime.get("shadow_state_key") != shadow_key:
+                classification_counts = {
+                    name: sum(
+                        1
+                        for item in shadow_observations
+                        if item.get("classification") == name
+                    )
+                    for name in (
+                        "APPROVED",
+                        "CLUSTERED_WITH_APPROVED",
+                        "EXTRA_RAW",
+                    )
+                }
+                logger.info(
+                    "[DAILY LADDER SHADOW] "
+                    f"broker_date={broker_date_text} "
+                    f"raw_count={len(shadow_observations)} "
+                    f"approved_exact={classification_counts['APPROVED']} "
+                    f"clustered={classification_counts['CLUSTERED_WITH_APPROVED']} "
+                    f"extra_raw={classification_counts['EXTRA_RAW']} "
+                    "execution_authority=False"
+                )
+                for item in shadow_observations:
+                    logger.debug(
+                        "[DAILY LADDER SHADOW] "
+                        f"family={item.get('family')} "
+                        f"name={item.get('name')} "
+                        f"price={round(float(item.get('price')), 5)} "
+                        f"side={item.get('side')} "
+                        f"classification={item.get('classification')} "
+                        f"nearest={item.get('nearest_approved_name')} "
+                        f"distance={round(float(item.get('distance_to_nearest_approved')), 5)}"
+                    )
+                runtime["shadow_state_key"] = shadow_key
+        except Exception as exc:
+            shadow_error_key = (
+                "SHADOW_ERROR",
+                broker_date_text,
+                str(exc),
+            )
+            if runtime.get("shadow_state_key") != shadow_error_key:
+                logger.warning(
+                    "[DAILY LADDER SHADOW] "
+                    "observation failed; DLLB execution authority unchanged "
+                    f"| error={exc}"
+                )
+                runtime["shadow_state_key"] = shadow_error_key
 
     from src.strategies.strategy_daily_level_ladder_breakout import (
         evaluate_daily_level_ladder_breakout,
     )
 
     try:
-        candidate = (
-            evaluate_daily_level_ladder_breakout(
-                m5_df=m5_df,
-                daily_context=daily_context,
-            )
+        candidate = evaluate_daily_level_ladder_breakout(
+            m5_df=m5_df,
+            approved_ladder=approved_ladder,
         )
-
     except Exception as exc:
-        # Infrastructure/evaluation failure remains retryable
-        # while this is still the latest closed M5 candle.
-        #
-        # Do not consume this M5: otherwise a legitimate
-        # breakout could be lost because of a temporary
-        # data/context failure.
+        # Strategy/infrastructure evaluation failure remains retryable while
+        # this is still the latest closed M5 candle.
         logger.warning(
             "[DAILY LEVEL LADDER] "
             "M5 evaluation failed; closed M5 remains unconsumed "
@@ -12676,7 +12885,7 @@ def process_daily_level_ladder_breakout_v1(
         )
         return False
 
-    # D1 retrieval, daily-context calculation and strategy
+    # D1 retrieval, manual-provider validation and strategy
     # evaluation completed successfully.
     #
     # Consume this closed M5 exactly once here.
@@ -13086,6 +13295,8 @@ def process_daily_level_ladder_breakout_v1(
         "execution attempt "
         f"| setup_id={setup_id} "
         f"signal={signal} "
+        f"approved_source={candidate.get('daily_approved_source')} "
+        f"broker_date={candidate.get('daily_broker_date')} "
         f"broken={candidate.get('broken_level')} "
         f"target={candidate.get('target_level')} "
         f"entry={trade_plan.get('entry_price')} "

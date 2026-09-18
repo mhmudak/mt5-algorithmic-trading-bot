@@ -9,7 +9,9 @@ from src.daily_ladder_provider import (
     AUTO_COMPOSITE_MODE,
     MANUAL_AVO_MODE,
     DailyLadderValidationError,
-    auto_composite_display_levels,
+    build_shadow_observations,
+    calculate_shadow_levels,
+    derive_broker_date_from_current_d1_time,
     load_manual_avo_ladder,
     validate_manual_avo_ladder,
 )
@@ -25,15 +27,10 @@ def expect_error(payload, contains: str) -> None:
     except DailyLadderValidationError as exc:
         assert contains in str(exc), (contains, str(exc))
     else:
-        raise AssertionError(
-            "Expected DailyLadderValidationError"
-        )
+        raise AssertionError("Expected DailyLadderValidationError")
 
 
-assert AUTO_COMPOSITE_MODE == "AUTO_COMPOSITE_DAILY_LADDER"
-assert MANUAL_AVO_MODE == "MANUAL_AVO_DAILY_LADDER"
-
-base = {
+BASE = {
     "symbol": "XAUUSD",
     "broker_date": "2026-09-17",
     "pivot": 4288.61,
@@ -50,140 +47,167 @@ base = {
     ],
 }
 
-avo = validate_manual_avo_ladder(
-    base,
-    expected_symbol="XAUUSD",
-    expected_broker_date=date(2026, 9, 17),
-)
 
-assert avo.source == MANUAL_AVO_MODE
-assert len(avo.upper) == 4
-assert len(avo.lower) == 8
+def test_constants_and_valid_manual_ladder():
+    assert AUTO_COMPOSITE_MODE == "AUTO_COMPOSITE_DAILY_LADDER"
+    assert MANUAL_AVO_MODE == "MANUAL_AVO_DAILY_LADDER"
 
-variable = dict(base)
-variable["upper"] = [4300.0, 4315.0, 4330.0, 4342.0, 4360.0]
-variable["lower"] = [4275.0, 4252.0, 4239.0]
-
-variable_avo = validate_manual_avo_ladder(
-    variable,
-    expected_symbol="XAUUSD",
-    expected_broker_date=date(2026, 9, 17),
-)
-
-assert len(variable_avo.upper) == 5
-assert len(variable_avo.lower) == 3
-
-stale = dict(base)
-stale["broker_date"] = "2026-09-16"
-expect_error(
-    stale,
-    "stale/future manual Avo ladder",
-)
-
-bad_upper = dict(base)
-bad_upper["upper"] = [4315.11, 4300.26]
-expect_error(
-    bad_upper,
-    "upper must be strictly ordered",
-)
-
-bad_lower = dict(base)
-bad_lower["lower"] = [4252.06, 4275.49]
-expect_error(
-    bad_lower,
-    "lower must be strictly ordered",
-)
-
-wrong_side = dict(base)
-wrong_side["upper"] = [4280.0, 4300.0]
-expect_error(
-    wrong_side,
-    "every upper level must be above pivot",
-)
-
-duplicate = dict(base)
-duplicate["lower"] = [4275.49, 4275.49]
-expect_error(
-    duplicate,
-    "duplicate",
-)
-
-wrong_symbol = dict(base)
-wrong_symbol["symbol"] = "EURUSD"
-expect_error(
-    wrong_symbol,
-    "symbol mismatch",
-)
-
-with tempfile.TemporaryDirectory() as tmp:
-    path = Path(tmp) / "avo_ladder.json"
-    path.write_text(
-        json.dumps(base),
-        encoding="utf-8",
-    )
-    loaded = load_manual_avo_ladder(
-        path,
+    ladder = validate_manual_avo_ladder(
+        BASE,
         expected_symbol="XAUUSD",
         expected_broker_date=date(2026, 9, 17),
     )
-    assert loaded == avo
+    assert ladder.symbol == "XAUUSD"
+    assert ladder.broker_date == date(2026, 9, 17)
+    assert len(ladder.upper) == 4
+    assert len(ladder.lower) == 8
+    assert ladder.source == MANUAL_AVO_MODE
 
-display = auto_composite_display_levels(
-    previous_open=4292.62,
-    previous_high=4366.73,
-    previous_low=4235.24,
-    previous_close=4262.63,
-    current_open=4260.26,
-)
 
-assert round(display.pivot, 2) == 4288.20
-assert round(display.day_range, 2) == 131.49
-assert len(display.upper) == 7
-assert len(display.lower) == 9
+def test_variable_counts_and_validation():
+    variable = dict(BASE)
+    variable["upper"] = [4300.26, 4315.11]
+    variable["lower"] = [4275.49, 4252.06, 4239.80]
+    ladder = validate_manual_avo_ladder(
+        variable,
+        expected_symbol="XAUUSD",
+        expected_broker_date=date(2026, 9, 17),
+    )
+    assert len(ladder.upper) == 2
+    assert len(ladder.lower) == 3
 
-upper_prices = [
-    cluster.representative.price
-    for cluster in display.upper
-]
-lower_prices = [
-    cluster.representative.price
-    for cluster in display.lower
-]
+    stale = dict(BASE)
+    stale["broker_date"] = "2026-09-16"
+    expect_error(stale, "stale/future")
 
-assert upper_prices == sorted(upper_prices)
-assert lower_prices == sorted(
-    lower_prices,
-    reverse=True,
-)
+    wrong_symbol = dict(BASE)
+    wrong_symbol["symbol"] = "EURUSD"
+    expect_error(wrong_symbol, "symbol mismatch")
 
-upper_names = [
-    cluster.representative.name
-    for cluster in display.upper
-]
-lower_names = [
-    cluster.representative.name
-    for cluster in display.lower
-]
+    bad_upper_order = dict(BASE)
+    bad_upper_order["upper"] = [4315.11, 4300.26]
+    expect_error(bad_upper_order, "upper must be strictly ordered")
 
-assert upper_names[:4] == [
-    "CAM:R3",
-    "DM:R1",
-    "CAM:R4",
-    "CLASSIC:R1",
-]
-assert lower_names[:5] == [
-    "CAM:R1",
-    "CAM:S1",
-    "CAM:S2",
-    "CAM:S3",
-    "CLASSIC:S1",
-]
+    bad_lower_order = dict(BASE)
+    bad_lower_order["lower"] = [4252.06, 4275.49]
+    expect_error(bad_lower_order, "lower must be strictly ordered")
 
-print("PASS: Daily Ladder Provider V1")
-print("PASS: AUTO composite is display/observation-only")
-print("PASS: MANUAL Avo is distinct execution-input contract")
-print("PASS: variable Avo upper/lower counts")
-print("PASS: stale/current broker-date validation")
-print("PASS: ordering/side/duplicate/symbol validation")
-print("PASS: AUTO display reproduces Sep 17 shadow structure")
-print("PASS: provider contains no execution authority")
+    wrong_side = dict(BASE)
+    wrong_side["upper"] = [4280.0]
+    expect_error(wrong_side, "every upper level must be above pivot")
+
+    duplicate = dict(BASE)
+    duplicate["upper"] = [4300.26, 4300.26]
+    expect_error(duplicate, "duplicate")
+
+
+def test_missing_malformed_and_valid_files():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        missing = root / "missing.json"
+        try:
+            load_manual_avo_ladder(
+                missing,
+                expected_symbol="XAUUSD",
+                expected_broker_date=date(2026, 9, 17),
+            )
+        except DailyLadderValidationError as exc:
+            assert "does not exist" in str(exc)
+        else:
+            raise AssertionError("missing file must fail closed")
+
+        malformed = root / "malformed.json"
+        malformed.write_text("{not-json", encoding="utf-8")
+        try:
+            load_manual_avo_ladder(
+                malformed,
+                expected_symbol="XAUUSD",
+                expected_broker_date=date(2026, 9, 17),
+            )
+        except DailyLadderValidationError as exc:
+            assert "JSON is invalid" in str(exc)
+        else:
+            raise AssertionError("malformed JSON must fail closed")
+
+        valid = root / "valid.json"
+        valid.write_text(json.dumps(BASE), encoding="utf-8")
+        ladder = load_manual_avo_ladder(
+            valid,
+            expected_symbol="XAUUSD",
+            expected_broker_date=date(2026, 9, 17),
+        )
+        assert ladder.pivot == 4288.61
+
+
+def test_broker_date_reconstructs_broker_midnight_from_mt5_utc_open():
+    # MT5 bar times are UTC.  A broker D1 opening at 21:00 UTC corresponds
+    # to the following broker calendar day when server midnight is UTC+3.
+    assert derive_broker_date_from_current_d1_time(
+        "2026-09-17 21:00:00"
+    ) == date(2026, 9, 18)
+    assert derive_broker_date_from_current_d1_time(
+        "2026-09-17 22:00:00"
+    ) == date(2026, 9, 18)
+    assert derive_broker_date_from_current_d1_time(
+        "2026-09-18 00:00:00"
+    ) == date(2026, 9, 18)
+    assert derive_broker_date_from_current_d1_time(
+        "2026-09-18 01:00:00"
+    ) == date(2026, 9, 18)
+    assert derive_broker_date_from_current_d1_time(
+        "2026-09-20 21:00:00"
+    ) == date(2026, 9, 21)
+
+
+def test_shadow_reproduces_sep17_structure_and_has_no_authority():
+    pivot, raw = calculate_shadow_levels(
+        previous_open=4292.62,
+        previous_high=4366.73,
+        previous_low=4235.24,
+        previous_close=4262.63,
+        current_open=4260.26,
+    )
+    assert round(pivot, 2) == 4288.20
+
+    by_name = {item.name: item.price for item in raw}
+    assert abs(by_name["CAM:R3"] - 4298.79) < 0.02
+    assert abs(by_name["CLASSIC:R1"] - 4341.16) < 0.02
+    assert abs(by_name["CLASSIC:S1"] - 4209.67) < 0.02
+
+    approved = validate_manual_avo_ladder(
+        BASE,
+        expected_symbol="XAUUSD",
+        expected_broker_date=date(2026, 9, 17),
+    )
+    observations = build_shadow_observations(
+        approved_ladder=approved,
+        raw_levels=raw,
+        cluster_distance=3.0,
+    )
+    assert observations
+    assert all(item["execution_authority"] is False for item in observations)
+    assert {
+        item["classification"]
+        for item in observations
+    } <= {
+        "APPROVED",
+        "CLUSTERED_WITH_APPROVED",
+        "EXTRA_RAW",
+    }
+
+
+if __name__ == "__main__":
+    test_constants_and_valid_manual_ladder()
+    test_variable_counts_and_validation()
+    test_missing_malformed_and_valid_files()
+    test_broker_date_reconstructs_broker_midnight_from_mt5_utc_open()
+    test_shadow_reproduces_sep17_structure_and_has_no_authority()
+
+    print("PASS: Daily Ladder Provider V1")
+    print("PASS: variable upper/lower counts")
+    print("PASS: stale/current broker-date validation")
+    print("PASS: ordering/side/duplicate/symbol validation")
+    print("PASS: missing/malformed manual files fail closed")
+    print("PASS: broker date reconstructs broker midnight from MT5 UTC D1 open")
+    print("PASS: AUTO shadow reproduces Sep 17 diagnostic structure")
+    print("PASS: no DLLB execution authority added")

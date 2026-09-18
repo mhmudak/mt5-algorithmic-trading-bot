@@ -4,15 +4,13 @@ import hashlib
 from typing import Any
 
 from config.settings import (
-    DAILY_LEVEL_LADDER_CLUSTER_ATR,
-    DAILY_LEVEL_LADDER_CLUSTER_MAX_PRICE,
-    DAILY_LEVEL_LADDER_CLUSTER_MIN_PRICE,
     DAILY_LEVEL_LADDER_MIN_BODY_ATR,
     DAILY_LEVEL_LADDER_MIN_BREAK_ATR,
     DAILY_LEVEL_LADDER_MIN_BREAK_PRICE,
     DAILY_LEVEL_LADDER_MIN_CLOSE_LOCATION,
     DAILY_LEVEL_LADDER_SL_TARGET_ZONE_PCT,
 )
+from src.daily_ladder_provider import DailyLadder
 
 
 STRATEGY_NAME = "DAILY_LEVEL_LADDER_BREAKOUT"
@@ -22,438 +20,73 @@ TP_MODEL = "NEXT_DAILY_LEVEL"
 DECISION_IMPACT = "MAIN_BOT_RUNTIME_CONTROLLED"
 
 
-def _safe_float(
-    value: Any,
-) -> float | None:
+def _safe_float(value: Any) -> float | None:
     try:
         value = float(value)
-
         if value != value:
             return None
-
         return value
-
     except Exception:
         return None
 
 
-def _daily_source_identity(
-    daily_context: dict[str, Any],
-) -> str:
-    value = daily_context.get(
-        "time"
-    )
-
-    if value is None:
-        return "D1_UNKNOWN"
-
-    return str(
-        value
-    )
-
-
-def _raw_daily_levels(
-    daily_context: dict[str, Any],
-) -> list[dict[str, Any]]:
-    levels: list[dict[str, Any]] = []
-
-    classic = (
-        daily_context.get(
-            "classic"
-        )
-        or {}
-    )
-
-    for name, price in (
-        classic.get(
-            "ordered"
-        )
-        or []
-    ):
-        numeric = _safe_float(
-            price
-        )
-
-        if numeric is None:
-            continue
-
-        level_name = (
-            "D-P"
-            if str(name).upper() == "P"
-            else f"P-{str(name).upper()}"
-        )
-
-        levels.append(
-            {
-                "name": level_name,
-                "price": numeric,
-                "source": "CLASSIC_DAILY_PIVOT",
-                "is_pivot": (
-                    str(name).upper()
-                    == "P"
-                ),
-                "priority": 4,
-            }
-        )
-
-    five_level = (
-        daily_context.get(
-            "five_level"
-        )
-        or {}
-    )
-
-    for name, price in (
-        five_level.get(
-            "ordered"
-        )
-        or []
-    ):
-        numeric = _safe_float(
-            price
-        )
-
-        if numeric is None:
-            continue
-
-        levels.append(
-            {
-                "name": (
-                    f"D-{str(name).upper()}"
-                ),
-                "price": numeric,
-                "source": "D1_FIVE_LEVEL",
-                "is_pivot": False,
-                "priority": 5,
-            }
-        )
-
-    previous_high = _safe_float(
-        daily_context.get(
-            "previous_day_high"
-        )
-    )
-
-    if previous_high is not None:
-        levels.append(
-            {
-                "name": "PDH",
-                "price": previous_high,
-                "source": "PREVIOUS_DAY_HIGH",
-                "is_pivot": False,
-                "priority": 4,
-            }
-        )
-
-    previous_low = _safe_float(
-        daily_context.get(
-            "previous_day_low"
-        )
-    )
-
-    if previous_low is not None:
-        levels.append(
-            {
-                "name": "PDL",
-                "price": previous_low,
-                "source": "PREVIOUS_DAY_LOW",
-                "is_pivot": False,
-                "priority": 4,
-            }
-        )
-
-    return sorted(
-        levels,
-        key=lambda item: (
-            float(
-                item[
-                    "price"
-                ]
-            ),
-            -int(
-                item.get(
-                    "priority",
-                    0,
-                )
-            ),
-        ),
-    )
-
-
-def _cluster_distance(
-    atr: float,
-) -> float:
-    return min(
-        max(
-            float(
-                DAILY_LEVEL_LADDER_CLUSTER_MIN_PRICE
-            ),
-            atr
-            * float(
-                DAILY_LEVEL_LADDER_CLUSTER_ATR
-            ),
-        ),
-        float(
-            DAILY_LEVEL_LADDER_CLUSTER_MAX_PRICE
-        ),
-    )
-
-
-def build_daily_level_clusters(
-    *,
-    daily_context: dict[str, Any],
-    atr: Any,
-) -> dict[str, Any] | None:
-    atr_value = _safe_float(
-        atr
-    )
-
-    if (
-        not isinstance(
-            daily_context,
-            dict,
-        )
-        or atr_value is None
-        or atr_value <= 0
-    ):
-        return None
-
-    classic = (
-        daily_context.get(
-            "classic"
-        )
-        or {}
-    )
-
-    pivot = _safe_float(
-        (
-            classic.get(
-                "levels"
-            )
-            or {}
-        ).get(
-            "P"
-        )
-    )
-
-    if pivot is None:
-        return None
-
-    raw_levels = _raw_daily_levels(
-        daily_context
-    )
-
-    if not raw_levels:
-        return None
-
-    threshold = _cluster_distance(
-        atr_value
-    )
-
-    clusters: list[dict[str, Any]] = []
-
-    for item in raw_levels:
-        price = float(
-            item[
-                "price"
-            ]
-        )
-
-        if not clusters:
-            clusters.append(
-                {
-                    "low": price,
-                    "high": price,
-                    "levels": [
-                        item
-                    ],
-                }
-            )
-            continue
-
-        active = clusters[-1]
-
-        prospective_low = min(
-            float(
-                active[
-                    "low"
-                ]
-            ),
-            price,
-        )
-
-        prospective_high = max(
-            float(
-                active[
-                    "high"
-                ]
-            ),
-            price,
-        )
-
-        if (
-            prospective_high
-            - prospective_low
-            <= threshold
-        ):
-            active[
-                "low"
-            ] = prospective_low
-
-            active[
-                "high"
-            ] = prospective_high
-
-            active[
-                "levels"
-            ].append(
-                item
-            )
-
-        else:
-            clusters.append(
-                {
-                    "low": price,
-                    "high": price,
-                    "levels": [
-                        item
-                    ],
-                }
-            )
-
-    enriched = []
-
-    for index, cluster in enumerate(
-        clusters
-    ):
-        members = cluster[
-            "levels"
-        ]
-
-        names = [
-            str(
-                item.get(
-                    "name"
-                )
-            )
-            for item in members
-        ]
-
-        sources = sorted(
-            {
-                str(
-                    item.get(
-                        "source"
-                    )
-                )
-                for item in members
-            }
-        )
-
-        contains_pivot = any(
-            bool(
-                item.get(
-                    "is_pivot"
-                )
-            )
-            for item in members
-        )
-
-        enriched.append(
-            {
-                "index": index,
-                "low": round(
-                    float(
-                        cluster[
-                            "low"
-                        ]
-                    ),
-                    5,
-                ),
-                "high": round(
-                    float(
-                        cluster[
-                            "high"
-                        ]
-                    ),
-                    5,
-                ),
-                "names": names,
-                "sources": sources,
-                "contains_pivot": (
-                    contains_pivot
-                ),
-            }
-        )
-
-    return {
-        "source": (
-            "BROKER_COMPLETED_D1"
-        ),
-        "source_time": (
-            _daily_source_identity(
-                daily_context
-            )
-        ),
-        "pivot": round(
-            pivot,
-            5,
-        ),
-        "cluster_distance": round(
-            threshold,
-            5,
-        ),
-        "clusters": enriched,
-    }
-
-
-def _closed_m5_rows(
-    m5_df: Any,
-):
+def _closed_m5_rows(m5_df: Any):
     try:
-        if (
-            m5_df is None
-            or len(m5_df) < 3
-        ):
+        if m5_df is None or len(m5_df) < 3:
             return None
-
-        previous = m5_df.iloc[-3]
-        candle = m5_df.iloc[-2]
-
-        return (
-            previous,
-            candle,
-        )
-
+        return m5_df.iloc[-3], m5_df.iloc[-2]
     except Exception:
         return None
+
+
+def _approved_execution_levels(
+    approved_ladder: DailyLadder,
+) -> list[dict[str, Any]]:
+    levels: list[dict[str, Any]] = [
+        {
+            "name": "APPROVED_PIVOT",
+            "price": float(approved_ladder.pivot),
+            "kind": "PIVOT",
+        }
+    ]
+
+    levels.extend(
+        {
+            "name": f"APPROVED_UPPER_{index}",
+            "price": float(price),
+            "kind": "UPPER",
+        }
+        for index, price in enumerate(approved_ladder.upper, start=1)
+    )
+    levels.extend(
+        {
+            "name": f"APPROVED_LOWER_{index}",
+            "price": float(price),
+            "kind": "LOWER",
+        }
+        for index, price in enumerate(approved_ladder.lower, start=1)
+    )
+
+    return sorted(levels, key=lambda item: float(item["price"]))
 
 
 def _setup_id(
     *,
-    source_time: str,
+    approved_ladder: DailyLadder,
     signal: str,
     broken_boundary: float,
     target_price: float,
 ) -> str:
     raw = (
         f"{STRATEGY_NAME}|"
-        f"{source_time}|"
+        f"{approved_ladder.broker_date.isoformat()}|"
+        f"{approved_ladder.source}|"
         f"{signal}|"
         f"{broken_boundary:.5f}|"
         f"{target_price:.5f}"
     )
-
-    digest = hashlib.sha1(
-        raw.encode(
-            "utf-8"
-        )
-    ).hexdigest()[:12]
-
-    return (
-        f"DLLB-{signal}-"
-        f"{digest}"
-    )
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+    return f"DLLB-{signal}-{digest}"
 
 
 def _strong_close_ok(
@@ -464,128 +97,53 @@ def _strong_close_ok(
     candle_low: float,
     candle_close: float,
     atr: float,
-) -> tuple[
-    bool,
-    float,
-    float,
-]:
-    candle_range = (
-        candle_high
-        - candle_low
-    )
-
+) -> tuple[bool, float, float]:
+    candle_range = candle_high - candle_low
     if candle_range <= 0:
-        return (
-            False,
-            0.0,
-            0.0,
-        )
+        return False, 0.0, 0.0
 
-    body = abs(
-        candle_close
-        - candle_open
-    )
-
-    min_body = (
-        atr
-        * float(
-            DAILY_LEVEL_LADDER_MIN_BODY_ATR
-        )
-    )
-
+    body = abs(candle_close - candle_open)
+    min_body = atr * float(DAILY_LEVEL_LADDER_MIN_BODY_ATR)
     if body < min_body:
-        return (
-            False,
-            body,
-            0.0,
-        )
+        return False, body, 0.0
 
     if signal == "BUY":
-        close_location = (
-            candle_close
-            - candle_low
-        ) / candle_range
-
+        close_location = (candle_close - candle_low) / candle_range
         passed = (
-            candle_close
-            > candle_open
-            and close_location
-            >= float(
-                DAILY_LEVEL_LADDER_MIN_CLOSE_LOCATION
-            )
+            candle_close > candle_open
+            and close_location >= float(DAILY_LEVEL_LADDER_MIN_CLOSE_LOCATION)
         )
-
     else:
-        close_location = (
-            candle_high
-            - candle_close
-        ) / candle_range
-
+        close_location = (candle_high - candle_close) / candle_range
         passed = (
-            candle_close
-            < candle_open
-            and close_location
-            >= float(
-                DAILY_LEVEL_LADDER_MIN_CLOSE_LOCATION
-            )
+            candle_close < candle_open
+            and close_location >= float(DAILY_LEVEL_LADDER_MIN_CLOSE_LOCATION)
         )
 
-    return (
-        passed,
-        body,
-        close_location,
-    )
+    return passed, body, close_location
 
 
 def evaluate_daily_level_ladder_breakout(
     *,
     m5_df: Any,
-    daily_context: dict[str, Any],
+    approved_ladder: DailyLadder,
 ) -> dict[str, Any] | None:
-    rows = _closed_m5_rows(
-        m5_df
-    )
+    """Evaluate a fresh closed-M5 break of the approved manual ladder only."""
+    if not isinstance(approved_ladder, DailyLadder):
+        return None
 
+    rows = _closed_m5_rows(m5_df)
     if rows is None:
         return None
 
     previous, candle = rows
 
-    previous_close = _safe_float(
-        previous.get(
-            "close"
-        )
-    )
-
-    candle_open = _safe_float(
-        candle.get(
-            "open"
-        )
-    )
-
-    candle_high = _safe_float(
-        candle.get(
-            "high"
-        )
-    )
-
-    candle_low = _safe_float(
-        candle.get(
-            "low"
-        )
-    )
-
-    candle_close = _safe_float(
-        candle.get(
-            "close"
-        )
-    )
-
-    atr = _safe_float(
-        candle.get(
-            "atr_14"
-        )
-    )
+    previous_close = _safe_float(previous.get("close"))
+    candle_open = _safe_float(candle.get("open"))
+    candle_high = _safe_float(candle.get("high"))
+    candle_low = _safe_float(candle.get("low"))
+    candle_close = _safe_float(candle.get("close"))
+    atr = _safe_float(candle.get("atr_14"))
 
     if None in {
         previous_close,
@@ -596,287 +154,133 @@ def evaluate_daily_level_ladder_breakout(
         atr,
     }:
         return None
-
     if atr <= 0:
         return None
 
-    ladder = (
-        build_daily_level_clusters(
-            daily_context=daily_context,
-            atr=atr,
-        )
-    )
-
-    if ladder is None:
-        return None
-
-    pivot = float(
-        ladder[
-            "pivot"
-        ]
-    )
-
+    pivot = float(approved_ladder.pivot)
     if candle_close > pivot:
         signal = "BUY"
-
     elif candle_close < pivot:
         signal = "SELL"
-
     else:
         return None
 
-    strong_close, body, close_location = (
-        _strong_close_ok(
-            signal=signal,
-            candle_open=candle_open,
-            candle_high=candle_high,
-            candle_low=candle_low,
-            candle_close=candle_close,
-            atr=atr,
-        )
+    strong_close, body, close_location = _strong_close_ok(
+        signal=signal,
+        candle_open=candle_open,
+        candle_high=candle_high,
+        candle_low=candle_low,
+        candle_close=candle_close,
+        atr=atr,
     )
-
     if not strong_close:
         return None
 
     break_buffer = max(
-        float(
-            DAILY_LEVEL_LADDER_MIN_BREAK_PRICE
-        ),
-        atr
-        * float(
-            DAILY_LEVEL_LADDER_MIN_BREAK_ATR
-        ),
+        float(DAILY_LEVEL_LADDER_MIN_BREAK_PRICE),
+        atr * float(DAILY_LEVEL_LADDER_MIN_BREAK_ATR),
     )
 
-    clusters = ladder[
-        "clusters"
-    ]
-
-    crossed: list[
-        tuple[
-            dict[str, Any],
-            float,
-        ]
-    ] = []
+    levels = _approved_execution_levels(approved_ladder)
+    crossed: list[dict[str, Any]] = []
 
     if signal == "BUY":
-        for cluster in clusters:
-            boundary = float(
-                cluster[
-                    "high"
-                ]
-            )
-
+        for item in levels:
+            boundary = float(item["price"])
             if boundary < pivot:
                 continue
-
-            if (
-                previous_close
-                <= boundary
-                and candle_close
-                >= boundary
-                + break_buffer
-            ):
-                crossed.append(
-                    (
-                        cluster,
-                        boundary,
-                    )
-                )
+            if previous_close <= boundary < candle_close:
+                crossed.append(item)
 
         if not crossed:
             return None
 
-        broken_cluster, broken_boundary = max(
-            crossed,
-            key=lambda item: item[
-                1
-            ],
+        broken = max(crossed, key=lambda item: float(item["price"]))
+        broken_boundary = float(broken["price"])
+        break_distance = candle_close - broken_boundary
+        if break_distance < break_buffer:
+            return None
+
+        target = next(
+            (
+                item
+                for item in levels
+                if float(item["price"]) > broken_boundary
+                and float(item["price"]) > candle_close
+            ),
+            None,
         )
-
-        target_cluster = None
-        target_price = None
-
-        for cluster in clusters:
-            first_contact = float(
-                cluster[
-                    "low"
-                ]
-            )
-
-            if (
-                cluster[
-                    "index"
-                ]
-                <= broken_cluster[
-                    "index"
-                ]
-            ):
-                continue
-
-            if first_contact <= candle_close:
-                continue
-
-            target_cluster = cluster
-            target_price = first_contact
-            break
-
     else:
-        for cluster in clusters:
-            boundary = float(
-                cluster[
-                    "low"
-                ]
-            )
-
+        for item in levels:
+            boundary = float(item["price"])
             if boundary > pivot:
                 continue
-
-            if (
-                previous_close
-                >= boundary
-                and candle_close
-                <= boundary
-                - break_buffer
-            ):
-                crossed.append(
-                    (
-                        cluster,
-                        boundary,
-                    )
-                )
+            if previous_close >= boundary > candle_close:
+                crossed.append(item)
 
         if not crossed:
             return None
 
-        broken_cluster, broken_boundary = min(
-            crossed,
-            key=lambda item: item[
-                1
-            ],
-        )
-
-        target_cluster = None
-        target_price = None
-
-        for cluster in reversed(
-            clusters
-        ):
-            first_contact = float(
-                cluster[
-                    "high"
-                ]
-            )
-
-            if (
-                cluster[
-                    "index"
-                ]
-                >= broken_cluster[
-                    "index"
-                ]
-            ):
-                continue
-
-            if first_contact >= candle_close:
-                continue
-
-            target_cluster = cluster
-            target_price = first_contact
-            break
-
-    if (
-        target_cluster is None
-        or target_price is None
-    ):
-        return None
-
-    if signal == "BUY":
-        zone_distance = (
-            target_price
-            - broken_boundary
-        )
-
-        if zone_distance <= 0:
+        broken = min(crossed, key=lambda item: float(item["price"]))
+        broken_boundary = float(broken["price"])
+        break_distance = broken_boundary - candle_close
+        if break_distance < break_buffer:
             return None
 
-        sl_reference = (
-            broken_boundary
-            - zone_distance
-            * float(
-                DAILY_LEVEL_LADDER_SL_TARGET_ZONE_PCT
-            )
+        target = next(
+            (
+                item
+                for item in reversed(levels)
+                if float(item["price"]) < broken_boundary
+                and float(item["price"]) < candle_close
+            ),
+            None,
         )
 
-    else:
-        zone_distance = (
-            broken_boundary
-            - target_price
-        )
-
-        if zone_distance <= 0:
-            return None
-
-        sl_reference = (
-            broken_boundary
-            + zone_distance
-            * float(
-                DAILY_LEVEL_LADDER_SL_TARGET_ZONE_PCT
-            )
-        )
-
-    if signal == "BUY":
-        break_distance = (
-            candle_close
-            - broken_boundary
-        )
-
-    else:
-        break_distance = (
-            broken_boundary
-            - candle_close
-        )
-
-    if (
-        break_distance
-        < break_buffer
-    ):
+    if target is None:
         return None
 
-    source_time = str(
-        ladder[
-            "source_time"
-        ]
-    )
+    target_price = float(target["price"])
+
+    if signal == "BUY":
+        zone_distance = target_price - broken_boundary
+        if zone_distance <= 0:
+            return None
+        sl_reference = (
+            broken_boundary
+            - zone_distance * float(DAILY_LEVEL_LADDER_SL_TARGET_ZONE_PCT)
+        )
+    else:
+        zone_distance = broken_boundary - target_price
+        if zone_distance <= 0:
+            return None
+        sl_reference = (
+            broken_boundary
+            + zone_distance * float(DAILY_LEVEL_LADDER_SL_TARGET_ZONE_PCT)
+        )
 
     setup_id = _setup_id(
-        source_time=source_time,
+        approved_ladder=approved_ladder,
         signal=signal,
         broken_boundary=broken_boundary,
         target_price=target_price,
     )
 
-    candle_time = None
-
     try:
-        candle_time = str(
-            candle.get(
-                "time"
-            )
-        )
+        candle_time = str(candle.get("time"))
     except Exception:
         candle_time = None
 
+    broken_name = str(broken["name"])
+    target_name = str(target["name"])
+    broker_date = approved_ladder.broker_date.isoformat()
+
     reason = (
         f"{STRATEGY_NAME} {signal} -> "
-        f"M5 closed through "
-        f"{'/'.join(broken_cluster['names'])} "
-        f"boundary={round(broken_boundary, 2)} -> "
-        f"next daily zone "
-        f"{'/'.join(target_cluster['names'])} "
-        f"target={round(target_price, 2)} -> "
-        f"SL 40% zone={round(sl_reference, 2)}"
+        f"closed M5 freshly broke approved {broken_name} "
+        f"level={round(broken_boundary, 2)} -> "
+        f"next approved {target_name} target={round(target_price, 2)} -> "
+        f"SL 40% source-to-target zone={round(sl_reference, 2)}"
     )
 
     return {
@@ -890,108 +294,31 @@ def evaluate_daily_level_ladder_breakout(
         "decision_impact": DECISION_IMPACT,
         "auto_trade_allowed": True,
         "setup_id": setup_id,
-        "daily_source_time": source_time,
-        "daily_pivot": round(
-            pivot,
-            2,
-        ),
-        "daily_cluster_distance": round(
-            float(
-                ladder[
-                    "cluster_distance"
-                ]
-            ),
-            4,
-        ),
-        "broken_level": round(
-            broken_boundary,
-            2,
-        ),
-        "broken_cluster_names": list(
-            broken_cluster[
-                "names"
-            ]
-        ),
-        "broken_cluster_low": round(
-            float(
-                broken_cluster[
-                    "low"
-                ]
-            ),
-            2,
-        ),
-        "broken_cluster_high": round(
-            float(
-                broken_cluster[
-                    "high"
-                ]
-            ),
-            2,
-        ),
-        "target_level": round(
-            target_price,
-            2,
-        ),
-        "target_cluster_names": list(
-            target_cluster[
-                "names"
-            ]
-        ),
-        "target_cluster_low": round(
-            float(
-                target_cluster[
-                    "low"
-                ]
-            ),
-            2,
-        ),
-        "target_cluster_high": round(
-            float(
-                target_cluster[
-                    "high"
-                ]
-            ),
-            2,
-        ),
-        "sl_reference": round(
-            sl_reference,
-            2,
-        ),
-        "tp_reference": round(
-            target_price,
-            2,
-        ),
-        "entry_reference": round(
-            candle_close,
-            2,
-        ),
-        "zone_distance": round(
-            zone_distance,
-            2,
-        ),
-        "break_buffer": round(
-            break_buffer,
-            4,
-        ),
-        "break_distance": round(
-            break_distance,
-            4,
-        ),
-        "m5_body": round(
-            body,
-            4,
-        ),
-        "m5_atr": round(
-            atr,
-            4,
-        ),
-        "m5_close_location": round(
-            close_location,
-            4,
-        ),
+        "daily_source_time": broker_date,
+        "daily_broker_date": broker_date,
+        "daily_approved_source": approved_ladder.source,
+        "daily_pivot": round(pivot, 2),
+        "daily_cluster_distance": 0.0,
+        "broken_level": round(broken_boundary, 2),
+        "broken_level_name": broken_name,
+        "broken_cluster_names": [broken_name],
+        "broken_cluster_low": round(broken_boundary, 2),
+        "broken_cluster_high": round(broken_boundary, 2),
+        "target_level": round(target_price, 2),
+        "target_level_name": target_name,
+        "target_cluster_names": [target_name],
+        "target_cluster_low": round(target_price, 2),
+        "target_cluster_high": round(target_price, 2),
+        "sl_reference": round(sl_reference, 2),
+        "tp_reference": round(target_price, 2),
+        "entry_reference": round(candle_close, 2),
+        "zone_distance": round(zone_distance, 2),
+        "break_buffer": round(break_buffer, 4),
+        "break_distance": round(break_distance, 4),
+        "m5_body": round(body, 4),
+        "m5_atr": round(atr, 4),
+        "m5_close_location": round(close_location, 4),
         "m5_closed_time": candle_time,
         "reason": reason,
-        "duplicate_policy": (
-            "completed_d1_direction_broken_cluster_target_cluster"
-        ),
+        "duplicate_policy": "broker_date_approved_source_target",
     }

@@ -189,9 +189,13 @@ def load_manual_avo_ladder(
             f"manual Avo ladder file does not exist: {manual_path}"
         )
     try:
-        payload = json.loads(
-            manual_path.read_text(encoding="utf-8")
-        )
+        raw_text = manual_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise DailyLadderValidationError(
+            f"manual Avo ladder file is unreadable: {manual_path}: {exc}"
+        ) from exc
+    try:
+        payload = json.loads(raw_text)
     except json.JSONDecodeError as exc:
         raise DailyLadderValidationError(
             f"manual Avo ladder JSON is invalid: {manual_path}"
@@ -509,3 +513,151 @@ def auto_composite_display_levels(
         pivot_exclusion_range_pct=pivot_exclusion_range_pct,
         cluster_range_pct=cluster_range_pct,
     )
+def _coerce_mt5_utc_datetime(value: Any) -> datetime:
+    """Normalize an MT5 bar-open value to a naive UTC datetime."""
+    from datetime import timezone
+
+    if hasattr(value, "to_pydatetime"):
+        value = value.to_pydatetime()
+
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            value = value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value
+
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time())
+
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        numeric = None
+
+    if numeric is not None and abs(numeric) >= 100000000:
+        try:
+            return datetime.fromtimestamp(
+                numeric,
+                tz=timezone.utc,
+            ).replace(tzinfo=None)
+        except (OverflowError, OSError, ValueError):
+            pass
+
+    try:
+        parsed = datetime.fromisoformat(str(value))
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+    except Exception as exc:
+        raise DailyLadderValidationError(
+            f"unable to parse current MT5 D1 time: {value!r}"
+        ) from exc
+
+
+def derive_broker_date_from_current_d1_time(
+    value: Any,
+) -> date:
+    """Recover the broker trading-date label from an MT5 UTC D1 open.
+
+    MetaTrader's Python API returns bar times in UTC.  For the broker-date
+    contract used by DLLB, a D1 bar is treated as opening at broker midnight.
+    The UTC offset is therefore inferred from that D1 open so the same logic
+    follows DST/session-offset changes without consulting the local PC clock.
+    """
+    from datetime import timedelta
+
+    utc_open = _coerce_mt5_utc_datetime(value)
+
+    if utc_open.second != 0 or utc_open.microsecond != 0:
+        raise DailyLadderValidationError(
+            f"current MT5 D1 open is not minute-aligned: {utc_open!r}"
+        )
+
+    minute_of_day = utc_open.hour * 60 + utc_open.minute
+    offset_minutes = (-minute_of_day) % (24 * 60)
+
+    # Use the civil-time equivalent inside the normal UTC-offset envelope
+    # [-12:00, +14:00].  Example: 21:00 UTC -> +03:00 broker midnight.
+    if offset_minutes > 14 * 60:
+        offset_minutes -= 24 * 60
+
+    if not (-12 * 60 <= offset_minutes <= 14 * 60):
+        raise DailyLadderValidationError(
+            "unable to infer plausible broker UTC offset from current D1 open: "
+            f"{utc_open!r}"
+        )
+
+    broker_midnight = utc_open + timedelta(minutes=offset_minutes)
+    if (
+        broker_midnight.hour != 0
+        or broker_midnight.minute != 0
+        or broker_midnight.second != 0
+        or broker_midnight.microsecond != 0
+    ):
+        raise DailyLadderValidationError(
+            f"unable to reconstruct broker midnight from current D1 open: {utc_open!r}"
+        )
+
+    return broker_midnight.date()
+
+
+def build_shadow_observations(
+    *,
+    approved_ladder: DailyLadder,
+    raw_levels: Iterable[ShadowLevel],
+    cluster_distance: float,
+) -> tuple[dict[str, Any], ...]:
+    """Classify raw pivot-family levels without giving them execution authority."""
+    threshold = max(0.0, float(cluster_distance))
+
+    approved_points: list[tuple[str, float]] = [
+        ("APPROVED_PIVOT", float(approved_ladder.pivot)),
+    ]
+    approved_points.extend(
+        (f"APPROVED_UPPER_{index}", float(price))
+        for index, price in enumerate(approved_ladder.upper, start=1)
+    )
+    approved_points.extend(
+        (f"APPROVED_LOWER_{index}", float(price))
+        for index, price in enumerate(approved_ladder.lower, start=1)
+    )
+
+    observations: list[dict[str, Any]] = []
+
+    for raw in raw_levels:
+        raw_price = float(raw.price)
+        nearest_name, nearest_price = min(
+            approved_points,
+            key=lambda item: abs(raw_price - item[1]),
+        )
+        distance = abs(raw_price - nearest_price)
+
+        if distance <= 1e-6:
+            classification = "APPROVED"
+        elif distance <= threshold:
+            classification = "CLUSTERED_WITH_APPROVED"
+        else:
+            classification = "EXTRA_RAW"
+
+        if raw_price > float(approved_ladder.pivot):
+            side = "ABOVE_PIVOT"
+        elif raw_price < float(approved_ladder.pivot):
+            side = "BELOW_PIVOT"
+        else:
+            side = "AT_PIVOT"
+
+        observations.append(
+            {
+                "family": str(raw.family),
+                "name": str(raw.name),
+                "price": raw_price,
+                "side": side,
+                "classification": classification,
+                "nearest_approved_name": nearest_name,
+                "nearest_approved_price": nearest_price,
+                "distance_to_nearest_approved": distance,
+                "reaction_status": "UNOBSERVED",
+                "execution_authority": False,
+            }
+        )
+
+    return tuple(observations)
