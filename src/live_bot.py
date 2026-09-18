@@ -12596,10 +12596,10 @@ def process_daily_level_ladder_breakout_v1(
         )
 
     from src.daily_ladder_provider import (
-        AUTO_COMPOSITE_MODE,
+        AUTO_STRONG_MODE,
         MANUAL_AVO_MODE,
         DailyLadderValidationError,
-        build_auto_composite_execution_ladder,
+        build_auto_strong_execution_ladder,
         build_daily_ladder_shadow,
         build_shadow_observations,
         calculate_shadow_levels,
@@ -12650,7 +12650,7 @@ def process_daily_level_ladder_breakout_v1(
         getattr(
             _dllb_settings,
             "DAILY_LEVEL_LADDER_DLLB_EXECUTION_MODE",
-            AUTO_COMPOSITE_MODE,
+            AUTO_STRONG_MODE,
         )
     ).strip().upper()
 
@@ -12675,8 +12675,8 @@ def process_daily_level_ladder_breakout_v1(
     provider_source_label = execution_mode
 
     try:
-        if execution_mode == AUTO_COMPOSITE_MODE:
-            approved_ladder = build_auto_composite_execution_ladder(
+        if execution_mode == AUTO_STRONG_MODE:
+            approved_ladder = build_auto_strong_execution_ladder(
                 symbol=SYMBOL,
                 broker_date=broker_date,
                 previous_open=float(previous_d1["open"]),
@@ -12699,7 +12699,7 @@ def process_daily_level_ladder_breakout_v1(
                     )
                 ),
             )
-            provider_source_label = AUTO_COMPOSITE_MODE
+            provider_source_label = AUTO_STRONG_MODE
 
         elif execution_mode == MANUAL_AVO_MODE:
             if not require_current_date:
@@ -12800,7 +12800,7 @@ def process_daily_level_ladder_breakout_v1(
 
         # Diagnostic-only AUTO cluster evidence. This never changes the
         # approved ladder or DLLB execution decision.
-        if execution_mode == AUTO_COMPOSITE_MODE:
+        if execution_mode == AUTO_STRONG_MODE:
             diagnostic_shadow = build_daily_ladder_shadow(
                 previous_open=float(previous_d1["open"]),
                 previous_high=float(previous_d1["high"]),
@@ -12946,18 +12946,33 @@ def process_daily_level_ladder_breakout_v1(
                         "execution_authority=False"
                     )
 
-            strong_upper = sorted(set(strong_upper))
-            strong_lower = sorted(set(strong_lower), reverse=True)
+            diagnostic_strong_upper = sorted(set(strong_upper))
+            diagnostic_strong_lower = sorted(
+                set(strong_lower),
+                reverse=True,
+            )
+            approved_strong_upper = [
+                round(float(value), 2)
+                for value in approved_ladder.upper
+            ]
+            approved_strong_lower = [
+                round(float(value), 2)
+                for value in approved_ladder.lower
+            ]
+            diagnostic_match = (
+                diagnostic_strong_upper == approved_strong_upper
+                and diagnostic_strong_lower == approved_strong_lower
+            )
 
             logger.info(
-                "[DAILY LADDER STRONG CANDIDATES] "
+                "[DAILY LADDER STRONG LEVELS] "
                 f"broker_date={broker_date_text} "
-                f"pivot={round(float(diagnostic_shadow.pivot), 2)} "
-                f"upper={strong_upper} "
-                f"lower={strong_lower} "
+                f"pivot={round(float(approved_ladder.pivot), 2)} "
+                f"upper={approved_strong_upper} "
+                f"lower={approved_strong_lower} "
                 f"demark_pivot={round(demark_pivot, 2)} "
-                "rule=DM_PIVOT+CAM_CORE_OR_2PLUS_FAMILIES+SIDE_MATCH+WITHIN_60PCT_D1_RANGE "
-                "execution_authority=False"
+                f"diagnostic_match={diagnostic_match} "
+                "execution_authority=True"
             )
 
         runtime["provider_state_key"] = valid_provider_key

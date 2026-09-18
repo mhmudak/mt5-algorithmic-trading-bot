@@ -7,10 +7,10 @@ import tempfile
 import pandas as pd
 
 from src.daily_ladder_provider import (
-    AUTO_COMPOSITE_MODE,
+    AUTO_STRONG_MODE,
     MANUAL_AVO_MODE,
     DailyLadderValidationError,
-    build_auto_composite_execution_ladder,
+    build_auto_strong_execution_ladder,
     build_shadow_observations,
     calculate_shadow_levels,
     load_manual_avo_ladder,
@@ -81,19 +81,35 @@ def test_manual_provider_feeds_dllb_and_shadow_stays_separate():
 
 
 
-def test_auto_composite_provider_feeds_dllb():
-    approved = build_auto_composite_execution_ladder(
+def test_auto_strong_provider_feeds_dllb():
+    approved = build_auto_strong_execution_ladder(
         symbol="XAUUSD",
-        broker_date=date(2026, 9, 17),
-        previous_open=4292.62,
-        previous_high=4366.73,
-        previous_low=4235.24,
-        previous_close=4262.63,
-        current_open=4260.26,
+        broker_date=date(2026, 9, 18),
+        previous_open=4330.00,
+        previous_high=4381.21,
+        previous_low=4257.55,
+        previous_close=4341.85,
+        current_open=4338.90,
     )
 
-    assert approved.source == AUTO_COMPOSITE_MODE
-    assert len(approved.upper) >= 2
+    assert approved.source == AUTO_STRONG_MODE
+    upper_rounded = [
+        round(float(value), 2)
+        for value in approved.upper
+    ]
+    assert len(upper_rounded) == 5
+    assert abs(float(upper_rounded[0]) - 4340.46) <= 0.011
+    assert upper_rounded[1:] == [
+        4353.19,
+        4364.52,
+        4375.86,
+        4396.19,
+    ]
+    assert [round(float(value), 2) for value in approved.lower] == [
+        4319.18,
+        4307.84,
+        4272.53,
+    ]
 
     source = float(approved.upper[0])
     target = float(approved.upper[1])
@@ -107,7 +123,7 @@ def test_auto_composite_provider_feeds_dllb():
     assert result["signal"] == "BUY"
     assert abs(float(result["broken_level"]) - round(source, 2)) < 0.011
     assert abs(float(result["target_level"]) - round(target, 2)) < 0.011
-    assert result["daily_approved_source"] == AUTO_COMPOSITE_MODE
+    assert result["daily_approved_source"] == AUTO_STRONG_MODE
 
 
 def test_wrong_date_symbol_and_malformed_fail_closed():
@@ -168,12 +184,12 @@ def test_live_authority_boundary_is_explicit():
     block = live[start:end]
 
     assert (
-        'DAILY_LEVEL_LADDER_DLLB_EXECUTION_MODE = "AUTO_COMPOSITE_DAILY_LADDER"'
+        'DAILY_LEVEL_LADDER_DLLB_EXECUTION_MODE = "AUTO_STRONG_DAILY_LADDER"'
         in settings
     )
     assert "DAILY_LEVEL_LADDER_DLLB_EXECUTION_MODE" in block
-    assert "if execution_mode == AUTO_COMPOSITE_MODE:" in block
-    assert "build_auto_composite_execution_ladder(" in block
+    assert "if execution_mode == AUTO_STRONG_MODE:" in block
+    assert "build_auto_strong_execution_ladder(" in block
     assert "elif execution_mode == MANUAL_AVO_MODE:" in block
     assert "DAILY_LEVEL_LADDER_MANUAL_REQUIRE_CURRENT_BROKER_DATE" in block
     assert "load_manual_avo_ladder(" in block
@@ -200,7 +216,8 @@ def test_live_authority_boundary_is_explicit():
     assert "strong_candidate=" in block
     assert "families=" in block
     assert "members=" in block
-    assert '"[DAILY LADDER STRONG CANDIDATES] "' in block
+    assert '"[DAILY LADDER STRONG LEVELS] "' in block
+    assert '"execution_authority=True"' in block
     assert '"[DAILY LADDER DEMARK PIVOT] "' in block
     assert "demark_x" in block
     assert "demark_pivot = demark_x / 4.0" in block
@@ -220,12 +237,12 @@ def test_live_authority_boundary_is_explicit():
 
 if __name__ == "__main__":
     test_manual_provider_feeds_dllb_and_shadow_stays_separate()
-    test_auto_composite_provider_feeds_dllb()
+    test_auto_strong_provider_feeds_dllb()
     test_wrong_date_symbol_and_malformed_fail_closed()
     test_live_authority_boundary_is_explicit()
 
     print("PASS: Daily Ladder Provider <-> DLLB Integration V1")
-    print("PASS: AUTO composite is default DLLB execution authority")
+    print("PASS: AUTO strong ladder is default DLLB execution authority")
     print("PASS: manual Avo remains explicit override")
     print("PASS: stale/wrong-symbol/malformed manual ladder fails closed in manual mode")
     print("PASS: raw AUTO shadow remains observation-only")

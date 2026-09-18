@@ -579,6 +579,163 @@ def build_auto_composite_execution_ladder(
         source=AUTO_COMPOSITE_MODE,
     )
 
+
+AUTO_STRONG_MODE = "AUTO_STRONG_DAILY_LADDER"
+
+
+def build_auto_strong_execution_ladder(
+    *,
+    symbol: str,
+    broker_date: date,
+    previous_open: float,
+    previous_high: float,
+    previous_low: float,
+    previous_close: float,
+    current_open: float,
+    pivot_exclusion_range_pct: float = 0.015,
+    cluster_range_pct: float = 0.070,
+    max_pivot_distance_range_pct: float = 0.60,
+) -> DailyLadder:
+    """Build the strong AUTO ladder used by DLLB execution.
+
+    Selection is intentionally narrow:
+    - DeMark X/4 pivot, when it sits on one side of the classic pivot.
+    - CAM_CORE representatives whose R/S semantics agree with that side.
+    - Multi-family (2+) cluster representatives whose R/S semantics agree.
+    - All selected levels must be within max_pivot_distance_range_pct of the
+      completed prior-D1 range from the classic pivot.
+
+    The broader AUTO composite shadow remains diagnostic/observation-only.
+    """
+    if not isinstance(broker_date, date) or isinstance(broker_date, datetime):
+        raise DailyLadderValidationError(
+            "broker_date must be a datetime.date"
+        )
+
+    shadow = build_daily_ladder_shadow(
+        previous_open=previous_open,
+        previous_high=previous_high,
+        previous_low=previous_low,
+        previous_close=previous_close,
+        current_open=current_open,
+        pivot_exclusion_range_pct=pivot_exclusion_range_pct,
+        cluster_range_pct=cluster_range_pct,
+    )
+
+    try:
+        distance_pct = float(max_pivot_distance_range_pct)
+    except (TypeError, ValueError) as exc:
+        raise DailyLadderValidationError(
+            "max_pivot_distance_range_pct must be numeric"
+        ) from exc
+    if not (0.0 < distance_pct < float("inf")):
+        raise DailyLadderValidationError(
+            "max_pivot_distance_range_pct must be finite and > 0"
+        )
+
+    strong_distance_limit = float(shadow.day_range) * distance_pct
+    upper: list[float] = []
+    lower: list[float] = []
+
+    for side_name, clusters in (
+        ("UPPER", shadow.upper),
+        ("LOWER", shadow.lower),
+    ):
+        for cluster in clusters:
+            representative = cluster.representative
+            representative_price = float(representative.price)
+            pivot_distance = abs(
+                representative_price - float(shadow.pivot)
+            )
+            families = {
+                str(member.family)
+                for member in cluster.members
+            }
+
+            name_upper = str(representative.name).upper()
+            side_semantics_ok = (
+                (side_name == "UPPER" and ":R" in name_upper)
+                or (side_name == "LOWER" and ":S" in name_upper)
+            )
+            core_or_confluent = (
+                str(representative.family) == "CAM_CORE"
+                or len(families) >= 2
+            )
+
+            if not (
+                side_semantics_ok
+                and core_or_confluent
+                and pivot_distance <= strong_distance_limit
+            ):
+                continue
+
+            if side_name == "UPPER":
+                upper.append(representative_price)
+            else:
+                lower.append(representative_price)
+
+    previous_open_value = float(previous_open)
+    previous_high_value = float(previous_high)
+    previous_low_value = float(previous_low)
+    previous_close_value = float(previous_close)
+
+    if previous_close_value < previous_open_value:
+        demark_x = (
+            previous_high_value
+            + (2.0 * previous_low_value)
+            + previous_close_value
+        )
+    elif previous_close_value > previous_open_value:
+        demark_x = (
+            (2.0 * previous_high_value)
+            + previous_low_value
+            + previous_close_value
+        )
+    else:
+        demark_x = (
+            previous_high_value
+            + previous_low_value
+            + (2.0 * previous_close_value)
+        )
+
+    demark_pivot = demark_x / 4.0
+    demark_distance = abs(demark_pivot - float(shadow.pivot))
+
+    if demark_distance <= strong_distance_limit:
+        if demark_pivot > float(shadow.pivot):
+            upper.append(demark_pivot)
+        elif demark_pivot < float(shadow.pivot):
+            lower.append(demark_pivot)
+
+    upper = sorted(set(float(value) for value in upper))
+    lower = sorted(set(float(value) for value in lower), reverse=True)
+
+    if not upper or not lower:
+        raise DailyLadderValidationError(
+            "AUTO strong ladder requires at least one upper and one lower level"
+        )
+
+    validated = validate_manual_avo_ladder(
+        {
+            "symbol": symbol,
+            "broker_date": broker_date.isoformat(),
+            "pivot": float(shadow.pivot),
+            "upper": upper,
+            "lower": lower,
+        },
+        expected_symbol=symbol,
+        expected_broker_date=broker_date,
+    )
+
+    return DailyLadder(
+        symbol=validated.symbol,
+        broker_date=validated.broker_date,
+        pivot=validated.pivot,
+        upper=validated.upper,
+        lower=validated.lower,
+        source=AUTO_STRONG_MODE,
+    )
+
 def _coerce_mt5_utc_datetime(value: Any) -> datetime:
     """Normalize an MT5 bar-open value to a naive UTC datetime."""
     from datetime import timezone

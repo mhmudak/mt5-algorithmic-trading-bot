@@ -2949,14 +2949,14 @@ PROP_FIRM_PROFILES = {
 #    It may be shown in logs/setup alerts but MUST NOT authorize DLLB trades.
 #
 # 2) DLLB_EXECUTION_MODE:
-#    AUTO_COMPOSITE_DAILY_LADDER is the default execution authority. It builds
+#    AUTO_STRONG_DAILY_LADDER is the default DLLB execution authority. It builds
 #    the approved DLLB ladder deterministically from the completed broker D1
 #    plus the current broker-day open using the existing composite clusters.
 #    MANUAL_AVO_DAILY_LADDER remains an explicit operator override and must
 #    match the current broker date. Unsupported/invalid provider state fails
 #    closed for DLLB only while the rest of the bot continues normally.
 DAILY_LEVEL_LADDER_DISPLAY_MODE = "AUTO_COMPOSITE_DAILY_LADDER"
-DAILY_LEVEL_LADDER_DLLB_EXECUTION_MODE = "AUTO_COMPOSITE_DAILY_LADDER"
+DAILY_LEVEL_LADDER_DLLB_EXECUTION_MODE = "AUTO_STRONG_DAILY_LADDER"
 DAILY_LEVEL_LADDER_MANUAL_PATH = "config/daily_ladder_manual.json"
 DAILY_LEVEL_LADDER_MANUAL_REQUIRE_CURRENT_BROKER_DATE = True
 DAILY_LEVEL_LADDER_AUTO_SHADOW_ENABLED = True

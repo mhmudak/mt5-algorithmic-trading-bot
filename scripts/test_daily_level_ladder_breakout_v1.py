@@ -293,7 +293,7 @@ def test_transient_d1_failure_and_provider_invalid_semantics():
 
     d1_index = block.index("d1_rates = mt5.copy_rates_from_pos(")
     auto_build_index = block.index(
-        "approved_ladder = build_auto_composite_execution_ladder("
+        "approved_ladder = build_auto_strong_execution_ladder("
     )
     manual_load_index = block.index(
         "approved_ladder = load_manual_avo_ladder("
