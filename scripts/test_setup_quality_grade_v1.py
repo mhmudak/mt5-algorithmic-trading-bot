@@ -657,7 +657,191 @@ def test_notifier_public_helper_is_fail_open():
     assert text == ""
 
 
+
+# ============================================================
+# SETUP QUALITY GRADE V2 TESTS
+# ============================================================
+
+
+def _v2_history_pass():
+    return {
+        "trade_sample": 30,
+        "trade_win_rate": 0.80,
+        "path_sample": 30,
+        "hit_plus_10_rate": 0.80,
+        "mae_median": 4.50,
+        "mae_p75": 8.00,
+        "recovery_median": 12.00,
+    }
+
+
+def _v2_history_fail():
+    return {
+        "trade_sample": 32,
+        "trade_win_rate": 0.625,
+        "path_sample": 75,
+        "hit_plus_10_rate": 0.5867,
+        "mae_median": 9.10,
+        "mae_p75": 22.39,
+        "recovery_median": 28.48,
+    }
+
+
+def test_v2_a_plus_requires_history_and_rr():
+    data = _base_data(signal="BUY", score=95)
+    data.update(
+        {
+            "setup_id": "FAI-BUY-V2-PASS",
+            "entry": 100.0,
+            "sl": 90.0,
+            "tp": 118.0,
+            "setup_quality_history_override": _v2_history_pass(),
+        }
+    )
+
+    result = _with_live_bias(
+        _live_bias("BULLISH"),
+        lambda: setup_quality.build_setup_quality_grade(data),
+    )
+
+    assert result["setup_quality_version"] == "V2"
+    assert result["grade"] == "A+"
+    assert result["historical_edge_pass"] is True
+    assert round(result["full_rr"], 2) == 1.80
+    assert result["decision_impact"] == "DISPLAY_ONLY"
+    assert result["can_execute"] is False
+    assert result["can_block_trade"] is False
+
+
+def test_v2_history_below_75_blocks_a_plus():
+    data = _base_data(signal="BUY", score=100)
+    data.update(
+        {
+            "setup_id": "FAI-BUY-V2-HISTORY-FAIL",
+            "entry": 100.0,
+            "sl": 90.0,
+            "tp": 118.0,
+            "setup_quality_history_override": _v2_history_fail(),
+        }
+    )
+
+    result = _with_live_bias(
+        _live_bias("BULLISH"),
+        lambda: setup_quality.build_setup_quality_grade(data),
+    )
+
+    assert result["grade"] != "A+"
+    assert result["historical_edge_pass"] is False
+    assert any("Historical win rate" in item for item in result["grade_blockers"])
+    assert any("Historical +10 rate" in item for item in result["grade_blockers"])
+
+
+def test_v2_sub_1r_is_f_even_with_raw_100():
+    data = _base_data(signal="BUY", score=100)
+    data.update(
+        {
+            "setup_id": "FAI-BUY-1789740903",
+            "entry": 4388.36,
+            "sl": 4375.79,
+            "tp": 4399.59,
+            "setup_quality_history_override": _v2_history_fail(),
+        }
+    )
+
+    result = _with_live_bias(
+        _live_bias("BULLISH"),
+        lambda: setup_quality.build_setup_quality_grade(data),
+    )
+
+    assert result["grade"] == "F"
+    assert result["score_10"] == 10.0
+    assert result["full_rr"] < 1.0
+
+    text = setup_quality.format_setup_quality_block(result)
+    assert "\U0001f7e5 F SETUP" in text
+    assert "Raw Score: 10.0/10" in text
+    assert "Full RR: 0.89R" in text
+
+
+def test_v2_macro_conflict_plus_low_rr_is_f():
+    data = _base_data(signal="BUY", score=100)
+    data.update(
+        {
+            "setup_id": "FAI-BUY-V2-MACRO",
+            "entry": 100.0,
+            "sl": 90.0,
+            "tp": 111.0,
+            "macro_reasons": ["dxy_inverse_conflict_buy"],
+            "setup_quality_history_override": _v2_history_pass(),
+        }
+    )
+
+    result = _with_live_bias(
+        _live_bias("BULLISH"),
+        lambda: setup_quality.build_setup_quality_grade(data),
+    )
+
+    assert result["grade"] == "F"
+    assert result["macro_conflict"] is True
+
+
+def test_v2_unresolved_participation_blocks_a_plus():
+    data = _base_data(signal="BUY", score=95)
+    data.update(
+        {
+            "setup_id": "FAI-BUY-V2-PART",
+            "entry": 100.0,
+            "sl": 90.0,
+            "tp": 118.0,
+            "participation_combined_state": "NORMAL / UNRESOLVED",
+            "setup_quality_history_override": _v2_history_pass(),
+        }
+    )
+
+    result = _with_live_bias(
+        _live_bias("BULLISH"),
+        lambda: setup_quality.build_setup_quality_grade(data),
+    )
+
+    assert result["grade"] != "A+"
+    assert result["participation_unresolved"] is True
+
+
+def test_v2_does_not_require_current_future_path():
+    data = _base_data(signal="BUY", score=95)
+    data.update(
+        {
+            "setup_id": "FAI-BUY-V2-NO-FUTURE",
+            "entry": 100.0,
+            "sl": 90.0,
+            "tp": 118.0,
+            "setup_quality_history_override": _v2_history_pass(),
+        }
+    )
+
+    forbidden = {
+        "max_favorable_usd",
+        "max_adverse_usd",
+        "max_recovery_swing_usd",
+        "hit_plus_10",
+        "final_outcome",
+        "first_hit",
+    }
+    assert forbidden.isdisjoint(data.keys())
+
+    result = _with_live_bias(
+        _live_bias("BULLISH"),
+        lambda: setup_quality.build_setup_quality_grade(data),
+    )
+    assert result["grade"] == "A+"
+
 def main():
+    test_v2_a_plus_requires_history_and_rr()
+    test_v2_history_below_75_blocks_a_plus()
+    test_v2_sub_1r_is_f_even_with_raw_100()
+    test_v2_macro_conflict_plus_low_rr_is_f()
+    test_v2_unresolved_participation_blocks_a_plus()
+    test_v2_does_not_require_current_future_path()
     test_a_plus_buy()
     test_a_plus_sell()
     test_a_accepts_mixed_directional_alignment()
