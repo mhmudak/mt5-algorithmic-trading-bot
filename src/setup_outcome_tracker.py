@@ -294,6 +294,302 @@ def _capture_historical_optimizer_snapshot_fail_open(
             "can_modify_entry_sl_tp": False,
         }
 
+def _better_entry_safe_context_value(value):
+    if value is None or isinstance(
+        value,
+        (
+            str,
+            int,
+            float,
+            bool,
+        ),
+    ):
+        return value
+
+    if isinstance(value, dict):
+        return {
+            str(key): _better_entry_safe_context_value(item)
+            for key, item in value.items()
+        }
+
+    if isinstance(
+        value,
+        (
+            list,
+            tuple,
+            set,
+        ),
+    ):
+        return [
+            _better_entry_safe_context_value(item)
+            for item in value
+        ]
+
+    return str(value)
+
+
+def _build_better_entry_detection_context(item):
+    """
+    Immutable detection-time context for later entry-policy research.
+
+    Participation is a proxy and remains observational. We preserve
+    whatever participation/momentum/volatility fields were available
+    at registration without interpreting them here.
+    """
+
+    extra = item.get("extra")
+
+    if not isinstance(extra, dict):
+        extra = {}
+
+    context = {
+        "session": item.get("session"),
+        "market_condition": item.get(
+            "market_condition"
+        ),
+        "momentum": (
+            item.get("momentum")
+            if item.get("momentum") is not None
+            else extra.get("momentum")
+        ),
+        "direction_context": (
+            item.get("direction_context")
+            if item.get("direction_context") is not None
+            else extra.get("direction_context")
+        ),
+    }
+
+    for canonical_key in (
+        "atr_14",
+        "atr",
+        "spread",
+    ):
+        value = item.get(
+            canonical_key
+        )
+
+        if value is None:
+            value = extra.get(
+                canonical_key
+            )
+
+        if value is not None:
+            context[
+                canonical_key
+            ] = _better_entry_safe_context_value(
+                value
+            )
+
+    signal_terms = (
+        "participation",
+        "tick_volume",
+        "volume",
+        "velocity",
+        "pressure",
+        "activity",
+        "microstructure",
+        "spread",
+        "momentum",
+        "atr",
+    )
+
+    signals = {}
+
+    for source in (
+        item,
+        extra,
+    ):
+        for key, value in source.items():
+            key_text = str(
+                key
+            )
+            key_lower = key_text.lower()
+
+            if any(
+                term in key_lower
+                for term in signal_terms
+            ):
+                signals[
+                    key_text
+                ] = _better_entry_safe_context_value(
+                    value
+                )
+
+    context[
+        "signals"
+    ] = signals
+
+    return context
+
+
+def _better_entry_elapsed_seconds(
+    created_at,
+    observed_at,
+):
+    try:
+        start = datetime.fromisoformat(
+            str(
+                created_at
+            ).replace(
+                "Z",
+                "+00:00",
+            )
+        )
+        end = datetime.fromisoformat(
+            str(
+                observed_at
+            ).replace(
+                "Z",
+                "+00:00",
+            )
+        )
+
+        elapsed = (
+            end
+            - start
+        ).total_seconds()
+
+        if elapsed < 0:
+            return None
+
+        return elapsed
+    except Exception:
+        return None
+
+
+def _update_pre_w10_path_metrics(
+    item,
+    current_price,
+    observed_at=None,
+):
+    """
+    Update adverse excursion only before the first +$10 favorable hit.
+
+    Once W10 is hit the metric is frozen forever. This prevents later
+    MAE from contaminating historical better-entry calibration.
+    """
+
+    if item.get(
+        "pre_w10_path_frozen"
+    ):
+        return False
+
+    if item.get(
+        "hit_plus_10"
+    ):
+        return False
+
+    try:
+        entry = float(
+            item.get(
+                "entry"
+            )
+        )
+        price = float(
+            current_price
+        )
+    except Exception:
+        return False
+
+    signal = str(
+        item.get(
+            "signal"
+        )
+        or ""
+    ).upper()
+
+    if signal == "BUY":
+        adverse = max(
+            0.0,
+            entry
+            - price,
+        )
+    elif signal == "SELL":
+        adverse = max(
+            0.0,
+            price
+            - entry,
+        )
+    else:
+        return False
+
+    observed_at = (
+        observed_at
+        or datetime.now().isoformat()
+    )
+
+    changed = False
+
+    if not item.get(
+        "pre_w10_path_observed"
+    ):
+        item[
+            "pre_w10_path_observed"
+        ] = True
+        changed = True
+
+    previous = float(
+        item.get(
+            "pre_w10_max_adverse_usd",
+            0.0,
+        )
+        or 0.0
+    )
+
+    if adverse > previous:
+        item[
+            "pre_w10_max_adverse_usd"
+        ] = adverse
+        item[
+            "pre_w10_max_adverse_price"
+        ] = price
+        item[
+            "pre_w10_max_adverse_at"
+        ] = observed_at
+        item[
+            "time_to_pre_w10_max_adverse_seconds"
+        ] = _better_entry_elapsed_seconds(
+            item.get(
+                "created_at"
+            ),
+            observed_at,
+        )
+        changed = True
+
+    return changed
+
+
+def _freeze_pre_w10_path_metrics(
+    item,
+    observed_at=None,
+):
+    if item.get(
+        "pre_w10_path_frozen"
+    ):
+        return False
+
+    observed_at = (
+        observed_at
+        or datetime.now().isoformat()
+    )
+
+    item[
+        "pre_w10_path_frozen"
+    ] = True
+    item[
+        "w10_hit_at"
+    ] = observed_at
+    item[
+        "time_to_w10_seconds"
+    ] = _better_entry_elapsed_seconds(
+        item.get(
+            "created_at"
+        ),
+        observed_at,
+    )
+
+    return True
+
 def register_setup_outcome(
     *,
     symbol,
@@ -415,6 +711,14 @@ def register_setup_outcome(
         "nearby_strategies": [],
 
         "path_observed": False,
+        "pre_w10_path_observed": False,
+        "pre_w10_path_frozen": False,
+        "pre_w10_max_adverse_usd": 0.0,
+        "pre_w10_max_adverse_price": None,
+        "pre_w10_max_adverse_at": None,
+        "time_to_pre_w10_max_adverse_seconds": None,
+        "w10_hit_at": None,
+        "time_to_w10_seconds": None,
         "max_favorable_usd": 0.0,
         "max_adverse_usd": 0.0,
 
@@ -444,6 +748,10 @@ def register_setup_outcome(
 
     item.update(
         participation_statistics
+    )
+
+    item["better_entry_detection_context"] = (
+        _build_better_entry_detection_context(item)
     )
 
     items[setup_id] = item
@@ -563,6 +871,12 @@ def update_setup_outcomes(symbol, tick):
 
         if current_price is None:
             continue
+        if _update_pre_w10_path_metrics(
+            item,
+            current_price,
+        ):
+            changed = True
+
         if not item.get("path_observed"):
             item["path_observed"] = True
             changed = True
@@ -610,6 +924,8 @@ def update_setup_outcomes(symbol, tick):
 
         if favorable >= SETUP_OUTCOME_WIN_PRICE_MOVE and not item.get("hit_plus_10"):
             item["hit_plus_10"] = True
+            if _freeze_pre_w10_path_metrics(item):
+                changed = True
             item["time_to_plus_10_min"] = _minutes_since(item.get("created_at"))
             item["final_outcome"] = item.get("final_outcome") or "W10"
             _mark_first_hit(item, "W10")

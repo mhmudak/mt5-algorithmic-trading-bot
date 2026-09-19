@@ -494,6 +494,8 @@ def _historical_calibration(
     full_path_mfe = []
     full_path_recovery = []
     pre_w10_mae = []
+    pre_w10_time_to_max_adverse = []
+    pre_w10_mae_atr_ratio = []
     setup_win_known = []
 
     for row in cohort:
@@ -508,6 +510,11 @@ def _historical_calibration(
         )
         pre_w10 = _safe_float(
             row.get("pre_w10_max_adverse_usd")
+        )
+        pre_w10_time = _safe_float(
+            row.get(
+                "time_to_pre_w10_max_adverse_seconds"
+            )
         )
         setup_win = _safe_bool(
             row.get("hit_plus_10")
@@ -529,8 +536,46 @@ def _historical_calibration(
             )
 
         if pre_w10 is not None:
+            pre_w10 = abs(pre_w10)
             pre_w10_mae.append(
-                abs(pre_w10)
+                pre_w10
+            )
+
+            detection_context = row.get(
+                "better_entry_detection_context"
+            )
+
+            if isinstance(
+                detection_context,
+                dict,
+            ):
+                atr = _safe_float(
+                    detection_context.get(
+                        "atr_14"
+                    )
+                )
+
+                if atr is None:
+                    atr = _safe_float(
+                        detection_context.get(
+                            "atr"
+                        )
+                    )
+
+                if (
+                    atr is not None
+                    and atr > 0.0
+                ):
+                    pre_w10_mae_atr_ratio.append(
+                        pre_w10 / atr
+                    )
+
+        if (
+            pre_w10_time is not None
+            and pre_w10_time >= 0.0
+        ):
+            pre_w10_time_to_max_adverse.append(
+                pre_w10_time
             )
 
         if setup_win is not None:
@@ -570,6 +615,12 @@ def _historical_calibration(
             full_path_recovery
         ),
         "pre_w10_mae": pre_w10_stats,
+        "pre_w10_time_to_max_adverse_seconds": _summary(
+            pre_w10_time_to_max_adverse
+        ),
+        "pre_w10_mae_atr_ratio": _summary(
+            pre_w10_mae_atr_ratio
+        ),
         "pre_w10_calibration_ready": (
             pre_w10_stats["n"]
             >= BETTER_ENTRY_OPTIMIZER_MIN_HISTORICAL_SAMPLE
@@ -578,6 +629,7 @@ def _historical_calibration(
             "DIAGNOSTIC_ONLY_NOT_ENTRY_DEPTH"
         ),
     }
+
 
 
 def _load_local_rows_fail_open() -> list[dict[str, Any]]:
