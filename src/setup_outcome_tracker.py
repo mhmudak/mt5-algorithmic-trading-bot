@@ -590,6 +590,577 @@ def _freeze_pre_w10_path_metrics(
 
     return True
 
+
+def _better_entry_counterfactual_rows(
+    item,
+):
+    rows = item.get(
+        "better_entry_counterfactuals"
+    )
+
+    if not isinstance(rows, dict):
+        return {}
+
+    return rows
+
+
+def _better_entry_counterfactual_authority():
+    return {
+        "decision_impact": "OBSERVE_ONLY",
+        "can_execute": False,
+        "can_block_trade": False,
+        "can_modify_score": False,
+        "can_modify_risk": False,
+        "can_modify_entry_sl_tp": False,
+        "can_modify_lot": False,
+    }
+
+
+def _better_entry_candidate_record(
+    *,
+    candidate_id,
+    basis,
+    candidate_entry,
+    original_entry,
+    original_sl,
+    original_tp,
+    created_at,
+):
+    return {
+        "schema_version": "V1.3",
+        "candidate_id": candidate_id,
+        "basis": basis,
+        "candidate_entry": candidate_entry,
+        "original_entry": original_entry,
+        "original_sl": original_sl,
+        "original_tp": original_tp,
+        "created_at": created_at,
+        "status": "WAITING_FILL",
+        "filled": False,
+        "fill_at": None,
+        "fill_observed_price": None,
+        "fill_wait_seconds": None,
+        "missed_trade": False,
+        "missed_winner": False,
+        "missed_at": None,
+        "max_favorable_usd_after_fill": 0.0,
+        "max_adverse_usd_after_fill": 0.0,
+        "hit_plus_10_after_fill": False,
+        "w10_after_fill_at": None,
+        "hit_tp_after_fill": False,
+        "tp_after_fill_at": None,
+        "hit_sl_after_fill": False,
+        "sl_after_fill_at": None,
+        "terminal": False,
+        **_better_entry_counterfactual_authority(),
+    }
+
+
+def _initialize_better_entry_counterfactuals(
+    item,
+    historical_items,
+):
+    """
+    Capture first-write counterfactual entry candidates.
+
+    The live setup is not yet inserted into historical_items when this
+    is called from registration, so it cannot train on its own future.
+    """
+
+    try:
+        from config.settings import (
+            ENABLE_BETTER_ENTRY_OPTIMIZER_COUNTERFACTUAL_TRACKER,
+        )
+    except Exception:
+        return False
+
+    if not (
+        ENABLE_BETTER_ENTRY_OPTIMIZER_COUNTERFACTUAL_TRACKER
+    ):
+        return False
+
+    if item.get(
+        "better_entry_counterfactuals"
+    ):
+        return False
+
+    try:
+        from src.better_entry_optimizer import (
+            build_better_entry_observer,
+        )
+
+        if isinstance(
+            historical_items,
+            dict,
+        ):
+            historical_rows = [
+                row
+                for row in historical_items.values()
+                if isinstance(
+                    row,
+                    dict,
+                )
+            ]
+        elif isinstance(
+            historical_items,
+            list,
+        ):
+            historical_rows = [
+                row
+                for row in historical_items
+                if isinstance(
+                    row,
+                    dict,
+                )
+            ]
+        else:
+            historical_rows = []
+
+        snapshot = build_better_entry_observer(
+            item,
+            historical_rows=historical_rows,
+            enabled_override=True,
+        )
+    except Exception as exc:
+        item[
+            "better_entry_counterfactual_error"
+        ] = (
+            f"{type(exc).__name__}: {exc}"
+        )
+        return True
+
+    item[
+        "better_entry_observer_snapshot"
+    ] = snapshot
+
+    original_entry = snapshot.get(
+        "original_entry"
+    )
+    original_sl = item.get("sl")
+    original_tp = item.get("tp")
+    created_at = item.get(
+        "created_at"
+    )
+
+    candidates = {}
+
+    for candidate_id, basis, value in (
+        (
+            "STRUCTURAL",
+            "STRUCTURAL_ANCHOR",
+            snapshot.get(
+                "structural_candidate_entry"
+            ),
+        ),
+        (
+            "ADAPTIVE",
+            "ADAPTIVE_HISTORICAL_RETRACEMENT",
+            snapshot.get(
+                "adaptive_statistical_entry"
+            ),
+        ),
+    ):
+        try:
+            candidate_entry = float(
+                value
+            )
+        except Exception:
+            continue
+
+        try:
+            original_entry_float = float(
+                original_entry
+            )
+        except Exception:
+            continue
+
+        if candidate_entry <= 0:
+            continue
+
+        if candidate_entry == original_entry_float:
+            continue
+
+        candidates[
+            candidate_id
+        ] = _better_entry_candidate_record(
+            candidate_id=candidate_id,
+            basis=basis,
+            candidate_entry=candidate_entry,
+            original_entry=original_entry_float,
+            original_sl=original_sl,
+            original_tp=original_tp,
+            created_at=created_at,
+        )
+
+    item[
+        "better_entry_counterfactuals"
+    ] = candidates
+
+    return True
+
+
+def _better_entry_favorable_move(
+    *,
+    signal,
+    reference_price,
+    current_price,
+):
+    if signal == "BUY":
+        return (
+            current_price
+            - reference_price
+        )
+
+    if signal == "SELL":
+        return (
+            reference_price
+            - current_price
+        )
+
+    return None
+
+
+def _better_entry_adverse_move(
+    *,
+    signal,
+    reference_price,
+    current_price,
+):
+    favorable = (
+        _better_entry_favorable_move(
+            signal=signal,
+            reference_price=reference_price,
+            current_price=current_price,
+        )
+    )
+
+    if favorable is None:
+        return None
+
+    return max(
+        0.0,
+        -favorable,
+    )
+
+
+def _better_entry_fill_touched(
+    *,
+    signal,
+    candidate_entry,
+    current_price,
+):
+    if signal == "BUY":
+        return (
+            current_price
+            <= candidate_entry
+        )
+
+    if signal == "SELL":
+        return (
+            current_price
+            >= candidate_entry
+        )
+
+    return False
+
+
+def _update_better_entry_counterfactuals(
+    item,
+    current_price,
+    observed_at=None,
+):
+    """
+    Update hypothetical better-entry orders from live observed price.
+
+    Critical anti-hindsight rule:
+    if the original setup reaches +$10 before an entry candidate fills,
+    that candidate becomes MISSED_WINNER permanently. A later retrace
+    cannot retroactively fill it.
+    """
+
+    rows = (
+        _better_entry_counterfactual_rows(
+            item
+        )
+    )
+
+    if not rows:
+        return False
+
+    try:
+        price = float(
+            current_price
+        )
+        original_entry = float(
+            item.get(
+                "entry"
+            )
+        )
+    except Exception:
+        return False
+
+    signal = str(
+        item.get(
+            "signal"
+        )
+        or ""
+    ).upper()
+
+    if signal not in {
+        "BUY",
+        "SELL",
+    }:
+        return False
+
+    observed_at = (
+        observed_at
+        or datetime.now().isoformat()
+    )
+
+    original_favorable = (
+        _better_entry_favorable_move(
+            signal=signal,
+            reference_price=original_entry,
+            current_price=price,
+        )
+    )
+
+    changed = False
+
+    for candidate in rows.values():
+        if not isinstance(
+            candidate,
+            dict,
+        ):
+            continue
+
+        if candidate.get(
+            "terminal"
+        ):
+            continue
+
+        try:
+            candidate_entry = float(
+                candidate.get(
+                    "candidate_entry"
+                )
+            )
+        except Exception:
+            continue
+
+        if not candidate.get(
+            "filled"
+        ):
+            if _better_entry_fill_touched(
+                signal=signal,
+                candidate_entry=candidate_entry,
+                current_price=price,
+            ):
+                candidate[
+                    "filled"
+                ] = True
+                candidate[
+                    "status"
+                ] = "FILLED_TRACKING"
+                candidate[
+                    "fill_at"
+                ] = observed_at
+                candidate[
+                    "fill_observed_price"
+                ] = price
+                candidate[
+                    "fill_wait_seconds"
+                ] = _better_entry_elapsed_seconds(
+                    candidate.get(
+                        "created_at"
+                    ),
+                    observed_at,
+                )
+                changed = True
+
+            elif (
+                original_favorable
+                is not None
+                and original_favorable
+                >= 10.0
+            ):
+                candidate[
+                    "status"
+                ] = "MISSED_WINNER"
+                candidate[
+                    "missed_trade"
+                ] = True
+                candidate[
+                    "missed_winner"
+                ] = True
+                candidate[
+                    "missed_at"
+                ] = observed_at
+                candidate[
+                    "terminal"
+                ] = True
+                changed = True
+                continue
+
+            else:
+                continue
+
+        favorable = (
+            _better_entry_favorable_move(
+                signal=signal,
+                reference_price=candidate_entry,
+                current_price=price,
+            )
+        )
+        adverse = (
+            _better_entry_adverse_move(
+                signal=signal,
+                reference_price=candidate_entry,
+                current_price=price,
+            )
+        )
+
+        if favorable is not None:
+            previous_favorable = float(
+                candidate.get(
+                    "max_favorable_usd_after_fill",
+                    0.0,
+                )
+                or 0.0
+            )
+            favorable_nonnegative = max(
+                0.0,
+                favorable,
+            )
+
+            if (
+                favorable_nonnegative
+                > previous_favorable
+            ):
+                candidate[
+                    "max_favorable_usd_after_fill"
+                ] = favorable_nonnegative
+                changed = True
+
+        if adverse is not None:
+            previous_adverse = float(
+                candidate.get(
+                    "max_adverse_usd_after_fill",
+                    0.0,
+                )
+                or 0.0
+            )
+
+            if adverse > previous_adverse:
+                candidate[
+                    "max_adverse_usd_after_fill"
+                ] = adverse
+                changed = True
+
+        if (
+            favorable is not None
+            and favorable >= 10.0
+            and not candidate.get(
+                "hit_plus_10_after_fill"
+            )
+        ):
+            candidate[
+                "hit_plus_10_after_fill"
+            ] = True
+            candidate[
+                "w10_after_fill_at"
+            ] = observed_at
+            candidate[
+                "status"
+            ] = "FILLED_W10_REACHED"
+            changed = True
+
+        try:
+            sl = float(
+                candidate.get(
+                    "original_sl"
+                )
+            )
+        except Exception:
+            sl = None
+
+        try:
+            tp = float(
+                candidate.get(
+                    "original_tp"
+                )
+            )
+        except Exception:
+            tp = None
+
+        sl_touched = False
+        tp_touched = False
+
+        if signal == "BUY":
+            if sl is not None:
+                sl_touched = (
+                    price <= sl
+                )
+
+            if tp is not None:
+                tp_touched = (
+                    price >= tp
+                )
+
+        elif signal == "SELL":
+            if sl is not None:
+                sl_touched = (
+                    price >= sl
+                )
+
+            if tp is not None:
+                tp_touched = (
+                    price <= tp
+                )
+
+        if (
+            sl_touched
+            and not candidate.get(
+                "hit_sl_after_fill"
+            )
+        ):
+            candidate[
+                "hit_sl_after_fill"
+            ] = True
+            candidate[
+                "sl_after_fill_at"
+            ] = observed_at
+            candidate[
+                "status"
+            ] = "FILLED_SL"
+            candidate[
+                "terminal"
+            ] = True
+            changed = True
+            continue
+
+        if (
+            tp_touched
+            and not candidate.get(
+                "hit_tp_after_fill"
+            )
+        ):
+            candidate[
+                "hit_tp_after_fill"
+            ] = True
+            candidate[
+                "tp_after_fill_at"
+            ] = observed_at
+            candidate[
+                "status"
+            ] = "FILLED_TP"
+            candidate[
+                "terminal"
+            ] = True
+            changed = True
+
+    return changed
+
 def register_setup_outcome(
     *,
     symbol,
@@ -754,6 +1325,11 @@ def register_setup_outcome(
         _build_better_entry_detection_context(item)
     )
 
+    _initialize_better_entry_counterfactuals(
+        item,
+        items,
+    )
+
     items[setup_id] = item
 
     nearby = _get_nearby_strategies(items, scenario_key)
@@ -876,6 +1452,12 @@ def update_setup_outcomes(symbol, tick):
             current_price,
         ):
             changed = True
+        if _update_better_entry_counterfactuals(
+            item,
+            current_price,
+        ):
+            changed = True
+
 
         if not item.get("path_observed"):
             item["path_observed"] = True
