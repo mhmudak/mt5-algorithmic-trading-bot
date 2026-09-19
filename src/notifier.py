@@ -211,6 +211,26 @@ def build_trade_message(data: dict) -> str:
     if reason:
         message += f"\n\n🧠 Reason:\n{reason}"
 
+    # Setup Historical Optimizer V1 — display only.
+    try:
+        from src.setup_historical_optimizer import (
+            build_setup_historical_optimizer_block,
+        )
+
+        setup_historical_optimizer_block = (
+            build_setup_historical_optimizer_block(
+                data
+            )
+        )
+    except Exception:
+        setup_historical_optimizer_block = ""
+
+    if setup_historical_optimizer_block:
+        message = (
+            f"{setup_historical_optimizer_block}\n"
+            f"{message}"
+        )
+
     if setup_quality_block:
         message = (
             f"{setup_quality_block}\n"

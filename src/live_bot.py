@@ -3133,11 +3133,37 @@ def _setup_quality_alert_prefix(
             )
         )
 
-        if not block:
+        # Setup Historical Optimizer V1 — display only.
+        try:
+            from src.setup_historical_optimizer import (
+                build_setup_historical_optimizer_block,
+            )
+
+            optimizer_block = (
+                build_setup_historical_optimizer_block(
+                    payload
+                )
+            )
+        except Exception:
+            optimizer_block = ""
+
+        display_blocks = [
+            item
+            for item in (
+                block,
+                optimizer_block,
+            )
+            if item
+        ]
+
+        if not display_blocks:
             return ""
 
         return (
-            f"{block}\n\n"
+            "\n\n".join(
+                display_blocks
+            )
+            + "\n\n"
         )
 
     except Exception:
