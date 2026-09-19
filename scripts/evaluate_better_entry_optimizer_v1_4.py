@@ -542,6 +542,12 @@ def _candidate_record(
             or "UNKNOWN"
         ),
         **context,
+        "research_scope": (
+            row.get(
+                "better_entry_counterfactual_scope"
+            )
+            or "LEGACY_UNSCOPED"
+        ),
         "parent_status": parent_status,
         "normalized_status": (
             _normalized_candidate_status(
@@ -889,6 +895,7 @@ GROUP_FIELDS = (
     "adaptive_profile",
     "momentum_state",
     "participation_state",
+    "research_scope",
 )
 
 
@@ -968,6 +975,23 @@ def build_report(
         )
     }
 
+    primary_records = [
+        row
+        for row in records
+        if row.get(
+            "research_scope"
+        )
+        == "PRIMARY"
+    ]
+    rescue_records = [
+        row
+        for row in records
+        if row.get(
+            "research_scope"
+        )
+        == "ENTRY_RESCUE"
+    ]
+
     return {
         "report_version": REPORT_VERSION,
         "authority": {
@@ -1017,6 +1041,12 @@ def build_report(
         },
         "overall": summarize_records(
             records
+        ),
+        "primary_only": summarize_records(
+            primary_records
+        ),
+        "entry_rescue_only": summarize_records(
+            rescue_records
         ),
         "by_basis": basis_summary,
         "groups": grouped_summaries(
@@ -1155,6 +1185,8 @@ def format_report(
         [
             "",
             "INTERPRETATION",
+            "- Promotion evidence should use PRIMARY scope, not ENTRY_RESCUE or legacy-unscoped rows.",
+            "- ENTRY_RESCUE is a separate cohort for low-RR setups where entry improvement could repair geometry.",
             "- Filled Setup Win rate alone is not sufficient for promotion.",
             "- Opportunity capture penalizes better-entry policies that miss original Setup Wins.",
             "- Positive MAE improvement means the hypothetical fill reduced adverse excursion.",

@@ -656,9 +656,71 @@ def _better_entry_candidate_record(
     }
 
 
+
+def _better_entry_counterfactual_scope(
+    source_event,
+):
+    """
+    Classify a tracker row for Better Entry research.
+
+    PRIMARY:
+      mature setup/entry events where entry timing is directly relevant.
+
+    ENTRY_RESCUE:
+      low-RR rejections where a better entry could directly repair RR.
+
+    INELIGIBLE:
+      generic rejections, execution failures, and MTF-conflict research.
+    """
+    try:
+        from config import settings as runtime_settings
+
+        primary_events = set(
+            getattr(
+                runtime_settings,
+                "BETTER_ENTRY_COUNTERFACTUAL_PRIMARY_EVENTS",
+                (),
+            )
+            or ()
+        )
+        rescue_events = set(
+            getattr(
+                runtime_settings,
+                "BETTER_ENTRY_COUNTERFACTUAL_ENTRY_RESCUE_EVENTS",
+                (),
+            )
+            or ()
+        )
+    except Exception:
+        primary_events = set()
+        rescue_events = set()
+
+    event = str(
+        source_event
+        or ""
+    ).strip().upper()
+
+    primary_events = {
+        str(value).strip().upper()
+        for value in primary_events
+    }
+    rescue_events = {
+        str(value).strip().upper()
+        for value in rescue_events
+    }
+
+    if event in primary_events:
+        return "PRIMARY"
+
+    if event in rescue_events:
+        return "ENTRY_RESCUE"
+
+    return "INELIGIBLE"
+
 def _initialize_better_entry_counterfactuals(
     item,
     historical_items,
+    source_event=None,
 ):
     """
     Capture first-write counterfactual entry candidates.
@@ -678,6 +740,31 @@ def _initialize_better_entry_counterfactuals(
         ENABLE_BETTER_ENTRY_OPTIMIZER_COUNTERFACTUAL_TRACKER
     ):
         return False
+
+    research_scope = (
+        _better_entry_counterfactual_scope(
+            source_event
+        )
+    )
+
+    item[
+        "better_entry_counterfactual_source_event"
+    ] = str(
+        source_event
+        or ""
+    ).strip().upper()
+    item[
+        "better_entry_counterfactual_scope"
+    ] = research_scope
+    item[
+        "better_entry_counterfactual_eligible"
+    ] = (
+        research_scope
+        != "INELIGIBLE"
+    )
+
+    if research_scope == "INELIGIBLE":
+        return True
 
     if item.get(
         "better_entry_counterfactuals"
@@ -1328,6 +1415,7 @@ def register_setup_outcome(
     _initialize_better_entry_counterfactuals(
         item,
         items,
+        source_event=event,
     )
 
     items[setup_id] = item
