@@ -883,8 +883,244 @@ def _initialize_better_entry_counterfactuals(
         "better_entry_counterfactuals"
     ] = candidates
 
+    for candidate in candidates.values():
+        _maybe_notify_better_entry_shadow(
+            item,
+            candidate,
+        )
+
     return True
 
+
+
+def _better_entry_shadow_format_price(
+    value,
+):
+    try:
+        return f"{float(value):.2f}"
+    except Exception:
+        return "N/A"
+
+
+def _better_entry_shadow_notification_text(
+    item,
+    candidate,
+):
+    snapshot = item.get(
+        "better_entry_observer_snapshot"
+    )
+
+    if not isinstance(
+        snapshot,
+        dict,
+    ):
+        snapshot = {}
+
+    wait_profile = snapshot.get(
+        "adaptive_wait_profile"
+    )
+
+    if not isinstance(
+        wait_profile,
+        dict,
+    ):
+        wait_profile = {}
+
+    status = str(
+        candidate.get(
+            "status"
+        )
+        or "UNKNOWN"
+    ).upper()
+
+    status_label = {
+        "WAITING_FILL": "WAITING FOR BETTER ENTRY",
+        "FILLED_TRACKING": "SHADOW ENTRY FILLED",
+        "MISSED_WINNER": "MISSED ORIGINAL +$10 WINNER",
+        "FILLED_W10_REACHED": "SHADOW +$10 SETUP WIN",
+        "FILLED_TP": "SHADOW TP REACHED",
+        "FILLED_SL": "SHADOW SL REACHED",
+    }.get(
+        status,
+        status.replace(
+            "_",
+            " ",
+        ),
+    )
+
+    lines = [
+        "🟦 BETTER ENTRY SHADOW",
+        "",
+        f"Status: {status_label}",
+        f"Strategy: {item.get('strategy') or 'N/A'}",
+        f"Entry Model: {item.get('entry_model') or 'N/A'}",
+        f"Signal: {item.get('signal') or 'N/A'}",
+        f"Scope: {item.get('better_entry_counterfactual_scope') or 'N/A'}",
+        (
+            "Original Entry: "
+            + _better_entry_shadow_format_price(
+                candidate.get(
+                    "original_entry"
+                )
+            )
+        ),
+        (
+            "Shadow Entry: "
+            + _better_entry_shadow_format_price(
+                candidate.get(
+                    "candidate_entry"
+                )
+            )
+        ),
+        f"Basis: {candidate.get('basis') or candidate.get('candidate_id') or 'N/A'}",
+        (
+            "CISD: "
+            + str(
+                snapshot.get(
+                    "cisd_policy"
+                )
+                or snapshot.get(
+                    "cisd_mode"
+                )
+                or "N/A"
+            )
+        ),
+        (
+            "Wait Profile: "
+            + str(
+                wait_profile.get(
+                    "profile"
+                )
+                or "N/A"
+            )
+        ),
+    ]
+
+    if candidate.get(
+        "filled"
+    ):
+        wait_seconds = candidate.get(
+            "fill_wait_seconds"
+        )
+
+        if wait_seconds is not None:
+            try:
+                lines.append(
+                    "Fill Wait: "
+                    + f"{float(wait_seconds):.0f}s"
+                )
+            except Exception:
+                pass
+
+    if status in {
+        "FILLED_W10_REACHED",
+        "FILLED_TP",
+        "FILLED_SL",
+    }:
+        lines.append(
+            "MFE after fill: "
+            + _better_entry_shadow_format_price(
+                candidate.get(
+                    "max_favorable_usd_after_fill"
+                )
+            )
+        )
+        lines.append(
+            "MAE after fill: "
+            + _better_entry_shadow_format_price(
+                candidate.get(
+                    "max_adverse_usd_after_fill"
+                )
+            )
+        )
+
+    lines.extend(
+        [
+            "",
+            "OBSERVATION ONLY — live execution unchanged.",
+        ]
+    )
+
+    return "\n".join(
+        lines
+    )
+
+
+def _maybe_notify_better_entry_shadow(
+    item,
+    candidate,
+):
+    """
+    Telegram visibility only.
+
+    Fail-open by design:
+    notifier failures never affect setup tracking or execution.
+    """
+
+    if not item.get(
+        "better_entry_counterfactual_eligible"
+    ):
+        return False
+
+    try:
+        from config import settings as runtime_settings
+
+        if not bool(
+            getattr(
+                runtime_settings,
+                "ENABLE_BETTER_ENTRY_OPTIMIZER_COUNTERFACTUAL_TRACKER",
+                False,
+            )
+        ):
+            return False
+    except Exception:
+        return False
+
+    status = str(
+        candidate.get(
+            "status"
+        )
+        or ""
+    ).upper()
+
+    if not status:
+        return False
+
+    notified = candidate.get(
+        "telegram_notified_statuses"
+    )
+
+    if not isinstance(
+        notified,
+        list,
+    ):
+        notified = []
+
+    if status in notified:
+        return False
+
+    try:
+        from src.notifier import (
+            send_telegram_message,
+        )
+
+        send_telegram_message(
+            _better_entry_shadow_notification_text(
+                item,
+                candidate,
+            )
+        )
+    except Exception:
+        return False
+
+    notified.append(
+        status
+    )
+    candidate[
+        "telegram_notified_statuses"
+    ] = notified
+
+    return True
 
 def _better_entry_favorable_move(
     *,
@@ -1063,6 +1299,10 @@ def _update_better_entry_counterfactuals(
                     ),
                     observed_at,
                 )
+                _maybe_notify_better_entry_shadow(
+                    item,
+                    candidate,
+                )
                 changed = True
 
             elif (
@@ -1086,6 +1326,10 @@ def _update_better_entry_counterfactuals(
                 candidate[
                     "terminal"
                 ] = True
+                _maybe_notify_better_entry_shadow(
+                    item,
+                    candidate,
+                )
                 changed = True
                 continue
 
@@ -1160,6 +1404,10 @@ def _update_better_entry_counterfactuals(
             candidate[
                 "status"
             ] = "FILLED_W10_REACHED"
+            _maybe_notify_better_entry_shadow(
+                item,
+                candidate,
+            )
             changed = True
 
         try:
@@ -1223,6 +1471,10 @@ def _update_better_entry_counterfactuals(
             candidate[
                 "terminal"
             ] = True
+            _maybe_notify_better_entry_shadow(
+                item,
+                candidate,
+            )
             changed = True
             continue
 
@@ -1244,6 +1496,10 @@ def _update_better_entry_counterfactuals(
             candidate[
                 "terminal"
             ] = True
+            _maybe_notify_better_entry_shadow(
+                item,
+                candidate,
+            )
             changed = True
 
     return changed
