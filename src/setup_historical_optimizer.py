@@ -12,7 +12,7 @@ from config.settings import (
     ENABLE_SETUP_HISTORICAL_OPTIMIZER,
     SETUP_HISTORICAL_OPTIMIZER_HIGH_CONFIDENCE_SAMPLE,
     SETUP_HISTORICAL_OPTIMIZER_MIN_COVERAGE,
-    SETUP_HISTORICAL_OPTIMIZER_MIN_DECISIVE_SAMPLE,
+    SETUP_HISTORICAL_OPTIMIZER_MIN_SETUP_WIN_SAMPLE,
     SETUP_HISTORICAL_OPTIMIZER_MIN_PATH_SAMPLE,
 )
 
@@ -844,6 +844,34 @@ def _wilson_interval(
     )
 
 
+def _path_measured(
+    row: dict[str, Any],
+) -> bool:
+    # Only count a setup as measured when detailed path tracking exists.
+    for field in (
+        "max_favorable_usd",
+        "max_adverse_usd",
+        "max_recovery_swing_usd",
+    ):
+        if _safe_float(row.get(field)) is not None:
+            return True
+
+    if _upper(row.get("first_hit")) in {
+        "W10",
+        "TP_TOUCH",
+        "SL_TOUCH",
+    }:
+        return True
+
+    if (
+        _safe_bool(row.get("hit_tp")) is True
+        or _safe_bool(row.get("hit_sl")) is True
+    ):
+        return True
+
+    return False
+
+
 def _stats(
     rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -857,140 +885,147 @@ def _stats(
     }
 
     for row in rows:
-        classification = (
-            _outcome_class(
-                row
-            )
-        )
+        classification = _outcome_class(row)
+        classes[classification] = classes.get(classification, 0) + 1
 
-        classes[
-            classification
-        ] = (
-            classes.get(
-                classification,
-                0,
-            )
-            + 1
-        )
-
-    wins = classes[
-        "WIN"
+    measured_rows = [
+        row
+        for row in rows
+        if _path_measured(row)
     ]
-    losses = classes[
-        "LOSS"
-    ]
-    decisive = (
-        wins
-        + losses
-    )
 
-    win_rate = (
-        wins / decisive
-        if decisive
-        else None
-    )
+    setup_sample = 0
+    setup_wins = 0
 
-    wilson_low, wilson_high = (
-        _wilson_interval(
-            wins,
-            decisive,
-        )
-    )
-
-    hit_plus_10_known = 0
-    hit_plus_10_true = 0
-
-    for row in rows:
-        value = _safe_bool(
-            row.get(
-                "hit_plus_10"
-            )
-        )
-
+    for row in measured_rows:
+        value = _safe_bool(row.get("hit_plus_10"))
         if value is None:
             continue
 
-        hit_plus_10_known += 1
-
+        setup_sample += 1
         if value:
-            hit_plus_10_true += 1
+            setup_wins += 1
 
-    hit_plus_10_rate = (
-        hit_plus_10_true
-        / hit_plus_10_known
-        if hit_plus_10_known
+    setup_losses = setup_sample - setup_wins
+    setup_win_rate = (
+        setup_wins / setup_sample
+        if setup_sample
         else None
     )
 
-    total = len(
-        rows
+    (
+        setup_win_wilson_low,
+        setup_win_wilson_high,
+    ) = _wilson_interval(
+        setup_wins,
+        setup_sample,
     )
-    ambiguous = classes[
-        "AMBIGUOUS"
-    ]
+
+    tp_first_wins = classes["WIN"]
+    sl_first_losses = classes["LOSS"]
+    first_hit_decisive = tp_first_wins + sl_first_losses
+    tp_first_rate = (
+        tp_first_wins / first_hit_decisive
+        if first_hit_decisive
+        else None
+    )
+
+    tp_reach_known = 0
+    tp_reach_true = 0
+    sl_reach_known = 0
+    sl_reach_true = 0
+
+    for row in measured_rows:
+        tp_value = _safe_bool(row.get("hit_tp"))
+        sl_value = _safe_bool(row.get("hit_sl"))
+
+        if tp_value is not None:
+            tp_reach_known += 1
+            if tp_value:
+                tp_reach_true += 1
+
+        if sl_value is not None:
+            sl_reach_known += 1
+            if sl_value:
+                sl_reach_true += 1
+
+    total = len(rows)
+    ambiguous = classes["AMBIGUOUS"]
+    setup_coverage = (
+        setup_sample / total
+        if total
+        else None
+    )
 
     return {
         "total": total,
-        "wins": wins,
-        "losses": losses,
-        "decisive": decisive,
-        "win_rate": win_rate,
-        "win_wilson_low": wilson_low,
-        "win_wilson_high": wilson_high,
+        "setup_wins": setup_wins,
+        "setup_losses": setup_losses,
+        "setup_sample": setup_sample,
+        "setup_win_rate": setup_win_rate,
+        "setup_win_wilson_low": setup_win_wilson_low,
+        "setup_win_wilson_high": setup_win_wilson_high,
+        "setup_coverage": setup_coverage,
+        "path_measured_count": len(measured_rows),
+
+        # Compatibility aliases: now represent Setup Win (+$10).
+        "wins": setup_wins,
+        "losses": setup_losses,
+        "decisive": setup_sample,
+        "win_rate": setup_win_rate,
+        "win_wilson_low": setup_win_wilson_low,
+        "win_wilson_high": setup_win_wilson_high,
+
+        # Separate path diagnostics.
+        "tp_first_wins": tp_first_wins,
+        "sl_first_losses": sl_first_losses,
+        "first_hit_decisive": first_hit_decisive,
+        "tp_first_rate": tp_first_rate,
         "ambiguous": ambiguous,
         "ambiguous_rate": (
             ambiguous / total
             if total
             else None
         ),
-        "breakeven": classes[
-            "BE"
-        ],
-        "w10_only": classes[
-            "W10_ONLY"
-        ],
-        "unresolved": classes[
-            "UNRESOLVED"
-        ],
-        "outcome_coverage": (
-            decisive / total
-            if total
+        "breakeven": classes["BE"],
+        "w10_only": classes["W10_ONLY"],
+        "unresolved": classes["UNRESOLVED"],
+
+        "tp_reach_known": tp_reach_known,
+        "tp_reach_true": tp_reach_true,
+        "tp_reach_rate": (
+            tp_reach_true / tp_reach_known
+            if tp_reach_known
             else None
         ),
-        "hit_plus_10_known": (
-            hit_plus_10_known
-        ),
-        "hit_plus_10_true": (
-            hit_plus_10_true
-        ),
-        "hit_plus_10_rate": (
-            hit_plus_10_rate
-        ),
-        "hit_plus_10_coverage": (
-            hit_plus_10_known
-            / total
-            if total
+        "sl_reach_known": sl_reach_known,
+        "sl_reach_true": sl_reach_true,
+        "sl_reach_rate": (
+            sl_reach_true / sl_reach_known
+            if sl_reach_known
             else None
         ),
-        "max_favorable_usd": (
-            _distribution(
-                rows,
-                "max_favorable_usd",
-            )
+
+        "outcome_coverage": setup_coverage,
+        "hit_plus_10_known": setup_sample,
+        "hit_plus_10_true": setup_wins,
+        "hit_plus_10_rate": setup_win_rate,
+        "hit_plus_10_coverage": setup_coverage,
+
+        "max_favorable_usd": _distribution(
+            measured_rows,
+            "max_favorable_usd",
         ),
-        "max_adverse_usd": (
-            _distribution(
-                rows,
-                "max_adverse_usd",
-            )
+        "max_adverse_usd": _distribution(
+            measured_rows,
+            "max_adverse_usd",
         ),
-        "max_recovery_swing_usd": (
-            _distribution(
-                rows,
-                "max_recovery_swing_usd",
-            )
+        "max_recovery_swing_usd": _distribution(
+            measured_rows,
+            "max_recovery_swing_usd",
         ),
     }
+
 
 
 def _current_features(
@@ -1315,7 +1350,7 @@ def _select_cohort(
 
         if (
             stats["decisive"]
-            >= SETUP_HISTORICAL_OPTIMIZER_MIN_DECISIVE_SAMPLE
+            >= SETUP_HISTORICAL_OPTIMIZER_MIN_SETUP_WIN_SAMPLE
         ):
             return (
                 name,
@@ -1449,69 +1484,42 @@ def _rr_peer_stats(
 def _confidence(
     stats: dict[str, Any],
 ) -> str:
-    decisive = int(
+    sample = int(
         stats.get(
-            "decisive",
-            0,
+            "setup_sample",
+            stats.get("decisive", 0),
         )
         or 0
     )
 
-    if (
-        decisive
-        >= SETUP_HISTORICAL_OPTIMIZER_HIGH_CONFIDENCE_SAMPLE
-    ):
+    if sample >= SETUP_HISTORICAL_OPTIMIZER_HIGH_CONFIDENCE_SAMPLE:
         return "HIGH"
 
-    if (
-        decisive
-        >= SETUP_HISTORICAL_OPTIMIZER_MIN_DECISIVE_SAMPLE
-    ):
+    if sample >= SETUP_HISTORICAL_OPTIMIZER_MIN_SETUP_WIN_SAMPLE:
         return "MEDIUM"
 
-    if decisive >= 10:
+    if sample >= 10:
         return "LOW"
 
     return "INSUFFICIENT"
 
 
+
 def _data_quality(
     stats: dict[str, Any],
 ) -> str:
-    decisive = int(
-        stats.get(
-            "decisive",
-            0,
-        )
-        or 0
-    )
-    coverage = (
-        _safe_float(
-            stats.get(
-                "outcome_coverage"
-            )
-        )
-    )
-    hit_coverage = (
-        _safe_float(
-            stats.get(
-                "hit_plus_10_coverage"
-            )
-        )
-    )
-    ambiguous_rate = (
-        _safe_float(
-            stats.get(
-                "ambiguous_rate"
-            )
-        )
-    )
+    sample = int(stats.get("setup_sample", 0) or 0)
+    coverage = _safe_float(stats.get("setup_coverage"))
+    ambiguous_rate = _safe_float(stats.get("ambiguous_rate"))
+
+    if sample < SETUP_HISTORICAL_OPTIMIZER_MIN_SETUP_WIN_SAMPLE:
+        return "INSUFFICIENT_SAMPLE"
 
     if (
-        decisive
-        < SETUP_HISTORICAL_OPTIMIZER_MIN_DECISIVE_SAMPLE
+        coverage is None
+        or coverage < SETUP_HISTORICAL_OPTIMIZER_MIN_COVERAGE
     ):
-        return "INSUFFICIENT_SAMPLE"
+        return "PARTIAL_PATH_COVERAGE"
 
     if (
         ambiguous_rate is not None
@@ -1519,53 +1527,21 @@ def _data_quality(
     ):
         return "ORDERING_CONFLICT"
 
-    if (
-        coverage is None
-        or coverage
-        < SETUP_HISTORICAL_OPTIMIZER_MIN_COVERAGE
-        or hit_coverage is None
-        or hit_coverage
-        < SETUP_HISTORICAL_OPTIMIZER_MIN_COVERAGE
-    ):
-        return "PARTIAL_COVERAGE"
-
     return "GOOD"
+
 
 
 def _evidence_conflict(
     stats: dict[str, Any],
 ) -> bool:
-    win_rate = (
-        _safe_float(
-            stats.get(
-                "win_rate"
-            )
-        )
-    )
-    hit_rate = (
-        _safe_float(
-            stats.get(
-                "hit_plus_10_rate"
-            )
-        )
-    )
+    setup_win_rate = _safe_float(stats.get("setup_win_rate"))
+    tp_first_rate = _safe_float(stats.get("tp_first_rate"))
 
-    if (
-        win_rate is None
-        or hit_rate is None
-    ):
+    if setup_win_rate is None or tp_first_rate is None:
         return False
 
-    return bool(
-        (
-            win_rate >= 0.65
-            and hit_rate <= 0.45
-        )
-        or (
-            win_rate <= 0.45
-            and hit_rate >= 0.65
-        )
-    )
+    return abs(setup_win_rate - tp_first_rate) >= 0.20
+
 
 
 def _upgrade_guidance(
@@ -1587,12 +1563,12 @@ def _upgrade_guidance(
 
     if (
         decisive
-        < SETUP_HISTORICAL_OPTIMIZER_MIN_DECISIVE_SAMPLE
+        < SETUP_HISTORICAL_OPTIMIZER_MIN_SETUP_WIN_SAMPLE
     ):
         guidance.append(
             "Need "
-            f"{SETUP_HISTORICAL_OPTIMIZER_MIN_DECISIVE_SAMPLE - decisive} "
-            "more decisive TP-first/SL-first peer outcomes"
+            f"{SETUP_HISTORICAL_OPTIMIZER_MIN_SETUP_WIN_SAMPLE - decisive} "
+            "more measured +$10 setup outcomes"
         )
 
     hit_known = int(
@@ -1691,7 +1667,7 @@ def _upgrade_guidance(
         )
     ):
         guidance.append(
-            "Historical TP-first and +$10 evidence conflict; collect more peers before optimization authority"
+            "Setup Win (+$10) and TP-first evidence diverge materially; review target/path behavior"
         )
 
     if (
@@ -1917,94 +1893,55 @@ def _usd(
 def format_setup_historical_optimizer_block(
     snapshot: dict[str, Any],
 ) -> str:
-    snapshot = dict(
-        snapshot or {}
-    )
+    snapshot = dict(snapshot or {})
 
     if (
-        not snapshot.get(
-            "enabled"
-        )
-        or not snapshot.get(
-            "available"
-        )
+        not snapshot.get("enabled")
+        or not snapshot.get("available")
     ):
         return ""
 
-    stats = dict(
-        snapshot.get(
-            "stats",
-            {}
-        )
-        or {}
-    )
-    cohort = dict(
-        snapshot.get(
-            "cohort",
-            {}
-        )
-        or {}
-    )
-    features = dict(
-        snapshot.get(
-            "features",
-            {}
-        )
-        or {}
-    )
-    rr_peers = dict(
-        snapshot.get(
-            "rr_peer_stats",
-            {}
-        )
-        or {}
-    )
+    stats = dict(snapshot.get("stats", {}) or {})
+    cohort = dict(snapshot.get("cohort", {}) or {})
+    features = dict(snapshot.get("features", {}) or {})
+    rr_peers = dict(snapshot.get("rr_peer_stats", {}) or {})
 
-    decisive = int(
-        stats.get(
-            "decisive",
-            0,
-        )
-        or 0
-    )
-    wins = int(
-        stats.get(
-            "wins",
-            0,
-        )
-        or 0
-    )
-    losses = int(
-        stats.get(
-            "losses",
-            0,
-        )
-        or 0
-    )
+    setup_sample = int(stats.get("setup_sample", 0) or 0)
+    setup_wins = int(stats.get("setup_wins", 0) or 0)
 
     lines = [
         "HISTORICAL OPTIMIZER [OBSERVE ONLY]",
+        "Win Definition: +$10 favorable move = SETUP WIN",
         (
             "Cohort: "
             f"{cohort.get('name', 'N/A')} "
             f"| total={cohort.get('sample', 0)} "
-            f"| decisive={decisive}"
+            f"| measured={setup_sample}"
         ),
         (
-            "Historical Win: "
-            f"{_pct(stats.get('win_rate'))} "
-            f"({wins}W/{losses}L)"
+            "Setup Win: "
+            f"{_pct(stats.get('setup_win_rate'))} "
+            f"({setup_wins}/{setup_sample})"
         ),
         (
-            "Wilson 95%: "
-            f"{_pct(stats.get('win_wilson_low'))}"
+            "Setup Win 95% CI: "
+            f"{_pct(stats.get('setup_win_wilson_low'))}"
             "-"
-            f"{_pct(stats.get('win_wilson_high'))}"
+            f"{_pct(stats.get('setup_win_wilson_high'))}"
         ),
         (
-            "Hit +$10: "
-            f"{_pct(stats.get('hit_plus_10_rate'))} "
-            f"(n={stats.get('hit_plus_10_known', 0)})"
+            "TP Reach: "
+            f"{_pct(stats.get('tp_reach_rate'))} "
+            f"(n={stats.get('tp_reach_known', 0)})"
+            " | "
+            "SL Reach: "
+            f"{_pct(stats.get('sl_reach_rate'))} "
+            f"(n={stats.get('sl_reach_known', 0)})"
+        ),
+        (
+            "TP-first: "
+            f"{_pct(stats.get('tp_first_rate'))} "
+            f"(n={stats.get('first_hit_decisive', 0)})"
         ),
         (
             "RR Bucket: "
@@ -2012,38 +1949,16 @@ def format_setup_historical_optimizer_block(
         ),
     ]
 
-    if rr_peers.get(
-        "available"
-    ):
+    if rr_peers.get("available"):
         lines.append(
             "RR Peers: "
-            f"Win {_pct(rr_peers.get('win_rate'))} "
-            f"(decisive={rr_peers.get('decisive', 0)}) "
-            f"| +$10 {_pct(rr_peers.get('hit_plus_10_rate'))} "
-            f"(n={rr_peers.get('hit_plus_10_known', 0)})"
+            f"Setup Win {_pct(rr_peers.get('win_rate'))} "
+            f"(n={rr_peers.get('decisive', 0)})"
         )
 
-    favorable = dict(
-        stats.get(
-            "max_favorable_usd",
-            {}
-        )
-        or {}
-    )
-    adverse = dict(
-        stats.get(
-            "max_adverse_usd",
-            {}
-        )
-        or {}
-    )
-    recovery = dict(
-        stats.get(
-            "max_recovery_swing_usd",
-            {}
-        )
-        or {}
-    )
+    favorable = dict(stats.get("max_favorable_usd", {}) or {})
+    adverse = dict(stats.get("max_adverse_usd", {}) or {})
+    recovery = dict(stats.get("max_recovery_swing_usd", {}) or {})
 
     lines.append(
         "Path: "
@@ -2059,25 +1974,15 @@ def format_setup_historical_optimizer_block(
         f"| Data: {snapshot.get('data_quality', 'N/A')}"
     )
 
-    guidance = list(
-        snapshot.get(
-            "upgrade_guidance",
-            []
-        )
-        or []
-    )
-
+    guidance = list(snapshot.get("upgrade_guidance", []) or [])
     if guidance:
         lines.append(
             "Upgrade: "
-            + " | ".join(
-                guidance[:2]
-            )
+            + " | ".join(guidance[:2])
         )
 
-    return "\n".join(
-        lines
-    )
+    return "\n".join(lines)
+
 
 
 def build_setup_historical_optimizer_block(

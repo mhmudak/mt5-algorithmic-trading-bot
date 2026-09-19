@@ -372,6 +372,109 @@ def test_tracking_row_with_outcome_is_not_mature_history():
         assert stats["hit_plus_10_true"] == 0
 
 
+
+def test_w10_then_sl_is_still_setup_win():
+    with tempfile.TemporaryDirectory() as tmp:
+        account_dir = Path(tmp)
+
+        rows = []
+        for index in range(19):
+            rows.append(
+                _row(
+                    setup_id=f"BASE-{index}",
+                    created_at=(
+                        "2026-09-18T"
+                        f"{index:02d}:00:00"
+                    ),
+                    first_hit="SL_TOUCH",
+                    hit_plus_10=False,
+                    hit_tp=False,
+                    hit_sl=True,
+                )
+            )
+
+        w10_then_sl = _row(
+            setup_id="W10-THEN-SL",
+            created_at="2026-09-18T19:30:00",
+            first_hit="W10",
+            hit_plus_10=True,
+            hit_tp=False,
+            hit_sl=True,
+            mae=12.0,
+            mfe=11.0,
+        )
+        w10_then_sl["final_outcome"] = "SL_TOUCH"
+        rows.append(w10_then_sl)
+
+        _write_history(account_dir, rows)
+
+        snapshot = optimizer.build_setup_historical_optimizer_snapshot(
+            _current(account_dir),
+            enabled_override=True,
+        )
+        stats = snapshot["stats"]
+
+        assert stats["setup_sample"] == 20
+        assert stats["setup_wins"] == 1
+        assert stats["setup_losses"] == 19
+        assert stats["setup_win_rate"] == 0.05
+        assert stats["sl_reach_true"] == 20
+        assert stats["tp_reach_true"] == 0
+
+
+def test_unmeasured_default_false_is_not_setup_loss():
+    with tempfile.TemporaryDirectory() as tmp:
+        account_dir = Path(tmp)
+
+        rows = [
+            _row(
+                setup_id=f"MEASURED-{index}",
+                created_at=(
+                    "2026-09-18T"
+                    f"{index:02d}:00:00"
+                ),
+                first_hit=(
+                    "TP_TOUCH"
+                    if index < 10
+                    else "SL_TOUCH"
+                ),
+                hit_plus_10=(index < 10),
+                hit_tp=(index < 10),
+                hit_sl=(index >= 10),
+            )
+            for index in range(20)
+        ]
+
+        unmeasured = _row(
+            setup_id="UNMEASURED",
+            created_at="2026-09-18T21:00:00",
+            first_hit="",
+            hit_plus_10=False,
+            hit_tp=False,
+            hit_sl=False,
+        )
+        unmeasured["max_adverse_usd"] = None
+        unmeasured["max_favorable_usd"] = None
+        unmeasured["max_recovery_swing_usd"] = None
+        unmeasured["final_outcome"] = "BREAKEVEN"
+        rows.append(unmeasured)
+
+        _write_history(account_dir, rows)
+
+        snapshot = optimizer.build_setup_historical_optimizer_snapshot(
+            _current(account_dir),
+            enabled_override=True,
+        )
+        stats = snapshot["stats"]
+
+        assert stats["total"] == 21
+        assert stats["setup_sample"] == 20
+        assert stats["setup_wins"] == 10
+        assert stats["setup_losses"] == 10
+        assert stats["setup_win_rate"] == 0.5
+        assert round(stats["setup_coverage"], 6) == round(20 / 21, 6)
+
+
 def test_ambiguous_tp_sl_is_not_decisive():
     with tempfile.TemporaryDirectory() as tmp:
         account_dir = Path(tmp)
@@ -419,10 +522,10 @@ def test_ambiguous_tp_sl_is_not_decisive():
             "stats"
         ]
 
-        assert stats["wins"] == 5
-        assert stats["losses"] == 0
+        assert stats["tp_first_wins"] == 5
+        assert stats["sl_first_losses"] == 0
         assert stats["ambiguous"] == 1
-        assert stats["decisive"] == 5
+        assert stats["first_hit_decisive"] == 5
 
 
 def test_sparse_specific_cohort_falls_back():
@@ -538,7 +641,7 @@ def test_upgrade_guidance_identifies_missing_data():
         )
 
         assert (
-            "more decisive"
+            "more measured +$10 setup outcomes"
             in guidance
         )
         assert (
@@ -600,8 +703,8 @@ def test_formatter_contains_observer_stats():
         )
 
         assert "HISTORICAL OPTIMIZER [OBSERVE ONLY]" in block
-        assert "Historical Win:" in block
-        assert "Hit +$10:" in block
+        assert "Setup Win:" in block
+        assert "Win Definition: +$10 favorable move = SETUP WIN" in block
         assert "RR Bucket: RR_LT_1_00" in block
         assert "Confidence:" in block
 
@@ -611,6 +714,8 @@ def main():
     test_exact_low_rr_cohort_and_stats()
     test_current_and_future_rows_do_not_leak()
     test_tracking_row_with_outcome_is_not_mature_history()
+    test_w10_then_sl_is_still_setup_win()
+    test_unmeasured_default_false_is_not_setup_loss()
     test_ambiguous_tp_sl_is_not_decisive()
     test_sparse_specific_cohort_falls_back()
     test_upgrade_guidance_identifies_missing_data()
