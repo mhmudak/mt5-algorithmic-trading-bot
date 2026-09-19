@@ -19,6 +19,7 @@ from src.market_participation_context import (
     build_market_participation_context,
     build_market_participation_statistics_fields,
 )
+from config.settings import ENABLE_SETUP_HISTORICAL_OPTIMIZER_WALK_FORWARD_SNAPSHOTS
 
 def get_setup_outcomes_file():
     return get_account_file("setup_outcomes.json")
@@ -223,6 +224,76 @@ def _capture_participation_statistics_fail_open(
         return fields
 
 
+def _capture_historical_optimizer_snapshot_fail_open(
+    *,
+    setup_id,
+    strategy,
+    signal,
+    entry_model,
+    session,
+    market_condition,
+    score,
+    entry,
+    sl,
+    tp,
+    extra,
+    captured_at,
+):
+    if (
+        not ENABLE_SETUP_HISTORICAL_OPTIMIZER_WALK_FORWARD_SNAPSHOTS
+    ):
+        return None
+
+    try:
+        from src.setup_historical_optimizer import (
+            SETUP_HISTORICAL_OPTIMIZER_VERSION,
+            build_setup_historical_optimizer_walk_forward_snapshot,
+        )
+
+        return build_setup_historical_optimizer_walk_forward_snapshot(
+            {
+                "setup_id": setup_id,
+                "strategy": strategy,
+                "signal": signal,
+                "entry_model": entry_model,
+                "session": session,
+                "market_condition": market_condition,
+                "score": score,
+                "entry": entry,
+                "sl": sl,
+                "tp": tp,
+                "extra": dict(extra or {}),
+                "setup_historical_optimizer_account_dir": str(
+                    get_setup_outcomes_file().parent
+                ),
+                "optimizer_snapshot_captured_at": captured_at,
+            }
+        )
+    except Exception as exc:
+        logger.error(
+            "[SETUP HISTORICAL OPTIMIZER V2] "
+            f"Snapshot capture failed: {exc}"
+        )
+
+        return {
+            "snapshot_schema_version": "V2",
+            "optimizer_version": locals().get(
+                "SETUP_HISTORICAL_OPTIMIZER_VERSION",
+                "V1.1",
+            ),
+            "captured_at": captured_at,
+            "capture_mode": "LIVE_FILE_STATE_AT_DETECTION",
+            "setup_id": setup_id,
+            "available": False,
+            "reason": "snapshot_capture_failed",
+            "decision_impact": "DISPLAY_ONLY",
+            "can_execute": False,
+            "can_block_trade": False,
+            "can_modify_score": False,
+            "can_modify_risk": False,
+            "can_modify_entry_sl_tp": False,
+        }
+
 def register_setup_outcome(
     *,
     symbol,
@@ -297,6 +368,23 @@ def register_setup_outcome(
         )
     )
 
+    optimizer_snapshot = (
+        _capture_historical_optimizer_snapshot_fail_open(
+            setup_id=setup_id,
+            strategy=strategy,
+            signal=signal,
+            entry_model=entry_model,
+            session=session,
+            market_condition=market_condition,
+            score=score,
+            entry=entry,
+            sl=sl,
+            tp=tp,
+            extra=extra,
+            captured_at=now.isoformat(),
+        )
+    )
+
     item = {
         "setup_id": setup_id,
         "symbol": symbol,
@@ -326,6 +414,7 @@ def register_setup_outcome(
         "scenario_key": scenario_key,
         "nearby_strategies": [],
 
+        "path_observed": False,
         "max_favorable_usd": 0.0,
         "max_adverse_usd": 0.0,
 
@@ -345,6 +434,11 @@ def register_setup_outcome(
 
         "final_outcome": None,
     }
+
+    if optimizer_snapshot is not None:
+        item[
+            "historical_optimizer_snapshot"
+        ] = optimizer_snapshot
 
     item["context_key"] = build_context_key(item)
 
@@ -469,6 +563,10 @@ def update_setup_outcomes(symbol, tick):
 
         if current_price is None:
             continue
+        if not item.get("path_observed"):
+            item["path_observed"] = True
+            changed = True
+
 
         previous_favorable = float(item.get("max_favorable_usd", 0.0))
         previous_adverse = float(item.get("max_adverse_usd", 0.0))

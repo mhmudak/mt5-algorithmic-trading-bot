@@ -39,6 +39,7 @@ from config.settings import (
 
 
 _OPTIMIZER_CACHE: dict[tuple[str, int, int], list[dict[str, Any]]] = {}
+SETUP_HISTORICAL_OPTIMIZER_VERSION = "V1.1"
 
 
 def _authority_fields() -> dict[str, Any]:
@@ -149,13 +150,7 @@ def _resolve_account_dir(
                 / path
             )
 
-        if (
-            path.is_dir()
-            and (
-                path
-                / "setup_outcomes.json"
-            ).exists()
-        ):
+        if path.is_dir():
             return path
 
     base = (
@@ -231,6 +226,9 @@ def _load_outcomes(
         account_dir
         / "setup_outcomes.json"
     )
+
+    if not path.exists():
+        return []
 
     try:
         stat = path.stat()
@@ -847,14 +845,8 @@ def _wilson_interval(
 def _path_measured(
     row: dict[str, Any],
 ) -> bool:
-    # Only count a setup as measured when detailed path tracking exists.
-    for field in (
-        "max_favorable_usd",
-        "max_adverse_usd",
-        "max_recovery_swing_usd",
-    ):
-        if _safe_float(row.get(field)) is not None:
-            return True
+    if row.get("path_observed") is True:
+        return True
 
     if _upper(row.get("first_hit")) in {
         "W10",
@@ -866,10 +858,22 @@ def _path_measured(
     if (
         _safe_bool(row.get("hit_tp")) is True
         or _safe_bool(row.get("hit_sl")) is True
+        or _safe_bool(row.get("hit_plus_10")) is True
     ):
         return True
 
+    for field in (
+        "max_favorable_usd",
+        "max_adverse_usd",
+        "max_recovery_swing_usd",
+    ):
+        value = _safe_float(row.get(field))
+
+        if value is not None and abs(value) > 0.0:
+            return True
+
     return False
+
 
 
 def _stats(
@@ -1704,7 +1708,7 @@ def build_setup_historical_optimizer_snapshot(
     )
 
     base = {
-        "version": "V1",
+        "version": SETUP_HISTORICAL_OPTIMIZER_VERSION,
         "enabled": enabled,
         **_authority_fields(),
     }
@@ -1861,6 +1865,83 @@ def build_setup_historical_optimizer_snapshot(
         "cohort_fallback_trace": evaluated,
     }
 
+
+def build_setup_historical_optimizer_walk_forward_snapshot(
+    data: dict[str, Any],
+) -> dict[str, Any]:
+    source = dict(data or {})
+    captured_at = str(
+        source.pop(
+            "optimizer_snapshot_captured_at",
+            None,
+        )
+        or datetime.now().isoformat()
+    )
+
+    # Detection-time snapshots use the local file exactly as it exists
+    # now. The current setup has not yet been inserted by the tracker.
+    source.pop("created_at", None)
+    source.pop("setup_created_at", None)
+    source.pop("timestamp", None)
+
+    raw = build_setup_historical_optimizer_snapshot(
+        source,
+        enabled_override=True,
+    )
+
+    features = dict(raw.get("features", {}) or {})
+    cohort = dict(raw.get("cohort", {}) or {})
+    stats = dict(raw.get("stats", {}) or {})
+    rr_peers = dict(raw.get("rr_peer_stats", {}) or {})
+
+    favorable = dict(stats.get("max_favorable_usd", {}) or {})
+    adverse = dict(stats.get("max_adverse_usd", {}) or {})
+    recovery = dict(stats.get("max_recovery_swing_usd", {}) or {})
+
+    return {
+        "snapshot_schema_version": "V2",
+        "optimizer_version": SETUP_HISTORICAL_OPTIMIZER_VERSION,
+        "captured_at": captured_at,
+        "capture_mode": "LIVE_FILE_STATE_AT_DETECTION",
+        "setup_id": _setup_id(data),
+        "available": bool(raw.get("available")),
+        "reason": raw.get("reason"),
+        "history_source": raw.get("history_source"),
+        "history_reference_time": raw.get("reference_time"),
+        "history_time_filter_mode": raw.get("time_filter_mode"),
+        "cohort": {
+            "name": cohort.get("name"),
+            "keys": list(cohort.get("keys", []) or []),
+            "total_sample": cohort.get("sample", 0),
+        },
+        "setup_win_sample": stats.get("setup_sample", 0),
+        "setup_wins": stats.get("setup_wins", 0),
+        "setup_win_rate": stats.get("setup_win_rate"),
+        "setup_win_wilson_low": stats.get("setup_win_wilson_low"),
+        "setup_win_wilson_high": stats.get("setup_win_wilson_high"),
+        "path_coverage": stats.get("setup_coverage"),
+        "rr_bucket": features.get("rr_bucket"),
+        "rr_peer_sample": rr_peers.get("decisive", 0),
+        "rr_peer_setup_win_rate": rr_peers.get("win_rate"),
+        "tp_reach_rate": stats.get("tp_reach_rate"),
+        "sl_reach_rate": stats.get("sl_reach_rate"),
+        "tp_first_rate": stats.get("tp_first_rate"),
+        "tp_first_sample": stats.get("first_hit_decisive", 0),
+        "confidence": raw.get("confidence"),
+        "data_quality": raw.get("data_quality"),
+        "mae_median": adverse.get("median"),
+        "mae_p75": adverse.get("p75"),
+        "mfe_median": favorable.get("median"),
+        "recovery_median": recovery.get("median"),
+        "evidence_conflict": bool(raw.get("evidence_conflict")),
+        "upgrade_guidance": list(raw.get("upgrade_guidance", []) or []),
+        "decision_impact": "DISPLAY_ONLY",
+        "can_execute": False,
+        "can_block_trade": False,
+        "can_modify_score": False,
+        "can_modify_risk": False,
+        "can_modify_entry_sl_tp": False,
+    }
 
 def _pct(
     value,
