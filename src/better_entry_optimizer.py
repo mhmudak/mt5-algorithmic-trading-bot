@@ -9,6 +9,7 @@ from typing import Any, Iterable
 
 from config.settings import (
     BETTER_ENTRY_OPTIMIZER_MIN_HISTORICAL_SAMPLE,
+    BETTER_ENTRY_OPTIMIZER_HIGH_CONFIDENCE_SAMPLE,
     ENABLE_BETTER_ENTRY_OPTIMIZER,
 )
 
@@ -789,6 +790,774 @@ def _historical_entry_candidate(
     )
 
 
+
+def _detection_context(setup: dict[str, Any]) -> dict[str, Any]:
+    context = setup.get(
+        "better_entry_detection_context"
+    )
+
+    if isinstance(context, dict):
+        return dict(context)
+
+    extra = setup.get("extra")
+
+    if not isinstance(extra, dict):
+        extra = {}
+
+    context = {
+        "session": setup.get("session"),
+        "market_condition": setup.get(
+            "market_condition"
+        ),
+        "momentum": (
+            setup.get("momentum")
+            if setup.get("momentum") is not None
+            else extra.get("momentum")
+        ),
+        "direction_context": (
+            setup.get("direction_context")
+            if setup.get("direction_context") is not None
+            else extra.get("direction_context")
+        ),
+    }
+
+    for key in (
+        "atr_14",
+        "atr",
+        "spread",
+        "market_participation_state",
+        "participation_score",
+        "participation_alignment",
+        "tick_volume_ratio",
+        "volume_ratio",
+        "pressure",
+        "velocity",
+    ):
+        value = setup.get(key)
+
+        if value is None:
+            value = extra.get(key)
+
+        if value is not None:
+            context[key] = value
+
+    return context
+
+
+def _flatten_detection_context(
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    flattened = dict(context)
+
+    signals = context.get("signals")
+
+    if isinstance(signals, dict):
+        for key, value in signals.items():
+            flattened.setdefault(
+                str(key),
+                value,
+            )
+
+    return flattened
+
+
+def _text_for_matching(
+    value: Any,
+) -> str:
+    if value is None:
+        return ""
+
+    if isinstance(value, dict):
+        return " ".join(
+            _text_for_matching(item)
+            for item in value.values()
+        )
+
+    if isinstance(
+        value,
+        (
+            list,
+            tuple,
+            set,
+        ),
+    ):
+        return " ".join(
+            _text_for_matching(item)
+            for item in value
+        )
+
+    return str(value).strip().upper()
+
+
+def _resolve_momentum_state(
+    setup: dict[str, Any],
+) -> dict[str, Any]:
+    context = _flatten_detection_context(
+        _detection_context(setup)
+    )
+    signal = _signal(setup)
+
+    relevant = []
+
+    for key, value in context.items():
+        key_lower = str(key).lower()
+
+        if any(
+            term in key_lower
+            for term in (
+                "momentum",
+                "direction_context",
+                "velocity",
+                "pressure",
+                "displacement",
+            )
+        ):
+            relevant.append(
+                f"{key}={_text_for_matching(value)}"
+            )
+
+    text = " ".join(
+        relevant
+    ).upper()
+
+    weak_tokens = (
+        "WEAK",
+        "FADING",
+        "EXHAUST",
+        "MIXED",
+        "UNRESOLVED",
+        "COMPRESSION",
+        "LOW_MOMENTUM",
+    )
+    strong_tokens = (
+        "STRONG",
+        "DISPLACEMENT",
+        "IMPULSE",
+        "EXPANSION",
+        "ACCELER",
+        "BREAKOUT",
+        "BREAKDOWN",
+        "RECLAIM",
+    )
+
+    if signal == "BUY":
+        aligned_tokens = (
+            "BULLISH",
+            "BUY",
+            "UP",
+            "ABOVE_EMA",
+        )
+        opposing_tokens = (
+            "BEARISH",
+            "SELL",
+            "DOWN",
+            "BELOW_EMA",
+        )
+    elif signal == "SELL":
+        aligned_tokens = (
+            "BEARISH",
+            "SELL",
+            "DOWN",
+            "BELOW_EMA",
+        )
+        opposing_tokens = (
+            "BULLISH",
+            "BUY",
+            "UP",
+            "ABOVE_EMA",
+        )
+    else:
+        aligned_tokens = ()
+        opposing_tokens = ()
+
+    opposing = any(
+        token in text
+        for token in opposing_tokens
+    )
+    weak = any(
+        token in text
+        for token in weak_tokens
+    )
+    aligned = any(
+        token in text
+        for token in aligned_tokens
+    )
+    strong = any(
+        token in text
+        for token in strong_tokens
+    )
+
+    if opposing:
+        state = "OPPOSING"
+    elif weak:
+        state = "WEAK_OR_MIXED"
+    elif aligned and strong:
+        state = "STRONG_ALIGNED"
+    elif aligned:
+        state = "ALIGNED"
+    else:
+        state = "UNKNOWN"
+
+    return {
+        "state": state,
+        "evidence": relevant,
+    }
+
+
+def _resolve_participation_state(
+    setup: dict[str, Any],
+) -> dict[str, Any]:
+    context = _flatten_detection_context(
+        _detection_context(setup)
+    )
+
+    relevant = {}
+
+    for key, value in context.items():
+        key_lower = str(key).lower()
+
+        if any(
+            term in key_lower
+            for term in (
+                "participation",
+                "tick_volume",
+                "volume_ratio",
+                "activity",
+            )
+        ):
+            relevant[
+                str(key)
+            ] = value
+
+    text = " ".join(
+        f"{key}={_text_for_matching(value)}"
+        for key, value in relevant.items()
+    ).upper()
+
+    opposing_tokens = (
+        "OPPOSING",
+        "CONFLICT",
+        "AGAINST",
+        "MISALIGNED",
+    )
+    weak_tokens = (
+        "WEAK",
+        "LOW",
+        "MIXED",
+        "UNRESOLVED",
+        "INACTIVE",
+        "THIN",
+    )
+    strong_tokens = (
+        "STRONG_ALIGNED",
+        "ALIGNED_STRONG",
+        "HIGH_ALIGNED",
+        "STRONG PARTICIPATION",
+    )
+    aligned_tokens = (
+        "ALIGNED",
+        "CONFIRMED",
+    )
+
+    if any(
+        token in text
+        for token in opposing_tokens
+    ):
+        state = "OPPOSING"
+    elif any(
+        token in text
+        for token in weak_tokens
+    ):
+        state = "WEAK_OR_MIXED"
+    elif any(
+        token in text
+        for token in strong_tokens
+    ):
+        state = "STRONG_ALIGNED"
+    elif any(
+        token in text
+        for token in aligned_tokens
+    ):
+        state = "ALIGNED"
+    else:
+        score = None
+
+        for key in (
+            "participation_score",
+            "market_participation_score",
+        ):
+            value = _safe_float(
+                relevant.get(key)
+            )
+
+            if value is not None:
+                score = value
+                break
+
+        if (
+            score is not None
+            and 0.0 <= score <= 1.0
+            and score >= 0.70
+        ):
+            state = "HIGH_ACTIVITY"
+        elif (
+            score is not None
+            and 0.0 <= score <= 1.0
+            and score <= 0.30
+        ):
+            state = "WEAK_OR_MIXED"
+        else:
+            state = "UNKNOWN"
+
+    return {
+        "state": state,
+        "evidence": relevant,
+        "proxy_only": True,
+    }
+
+
+def _adaptive_wait_profile(
+    setup: dict[str, Any],
+) -> dict[str, Any]:
+    momentum = _resolve_momentum_state(
+        setup
+    )
+    participation = (
+        _resolve_participation_state(
+            setup
+        )
+    )
+
+    momentum_state = momentum[
+        "state"
+    ]
+    participation_state = participation[
+        "state"
+    ]
+
+    if (
+        momentum_state == "OPPOSING"
+        or participation_state
+        == "OPPOSING"
+    ):
+        profile = "DEEP_P75"
+        quantile_key = "p75"
+        quantile = 0.75
+        rationale = (
+            "Opposing momentum/participation -> "
+            "do not chase; observe deeper retracement."
+        )
+    elif (
+        momentum_state
+        == "WEAK_OR_MIXED"
+        or participation_state
+        == "WEAK_OR_MIXED"
+    ):
+        profile = "DEEP_P75"
+        quantile_key = "p75"
+        quantile = 0.75
+        rationale = (
+            "Weak/mixed state -> allow deeper historical retracement."
+        )
+    elif (
+        momentum_state
+        == "STRONG_ALIGNED"
+        and participation_state
+        in {
+            "STRONG_ALIGNED",
+            "ALIGNED",
+            "HIGH_ACTIVITY",
+        }
+    ):
+        profile = "SHALLOW_P25"
+        quantile_key = "p25"
+        quantile = 0.25
+        rationale = (
+            "Strong aligned momentum + participation -> "
+            "reduce waiting depth to protect fill rate."
+        )
+    elif (
+        momentum_state
+        in {
+            "STRONG_ALIGNED",
+            "ALIGNED",
+        }
+        and participation_state
+        == "STRONG_ALIGNED"
+    ):
+        profile = "SHALLOW_P25"
+        quantile_key = "p25"
+        quantile = 0.25
+        rationale = (
+            "Aligned momentum with strong participation -> shallow wait."
+        )
+    else:
+        profile = "MEDIAN_P50"
+        quantile_key = "median"
+        quantile = 0.50
+        rationale = (
+            "Insufficient directional state evidence -> "
+            "use median historical retracement."
+        )
+
+    return {
+        "profile": profile,
+        "quantile_key": quantile_key,
+        "quantile": quantile,
+        "momentum": momentum,
+        "participation": participation,
+        "rationale": rationale,
+    }
+
+
+def _eligible_adaptive_rows(
+    setup: dict[str, Any],
+    rows: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    strategy = _upper(
+        setup.get("strategy")
+    )
+    signal = _signal(setup)
+    current_setup_id = str(
+        setup.get("setup_id")
+        or ""
+    ).strip()
+
+    eligible = []
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        if not _terminal(row):
+            continue
+
+        if not _path_measured_legacy_safe(
+            row
+        ):
+            continue
+
+        if (
+            _upper(
+                row.get("strategy")
+            )
+            != strategy
+        ):
+            continue
+
+        if (
+            signal
+            and _upper(
+                row.get("signal")
+            )
+            != signal
+        ):
+            continue
+
+        row_setup_id = str(
+            row.get("setup_id")
+            or ""
+        ).strip()
+
+        if (
+            current_setup_id
+            and row_setup_id
+            == current_setup_id
+        ):
+            continue
+
+        eligible.append(
+            row
+        )
+
+    return eligible
+
+
+def _pre_w10_depths(
+    rows: Iterable[dict[str, Any]],
+) -> list[float]:
+    values = []
+
+    for row in rows:
+        value = _safe_float(
+            row.get(
+                "pre_w10_max_adverse_usd"
+            )
+        )
+
+        if value is None:
+            continue
+
+        values.append(
+            abs(value)
+        )
+
+    return values
+
+
+def _adaptive_historical_depth(
+    setup: dict[str, Any],
+    rows: Iterable[dict[str, Any]],
+    profile: dict[str, Any],
+) -> dict[str, Any]:
+    eligible = _eligible_adaptive_rows(
+        setup,
+        rows,
+    )
+
+    entry_model = _upper(
+        setup.get("entry_model")
+    )
+    quantile_key = profile[
+        "quantile_key"
+    ]
+
+    specific_rows = [
+        row
+        for row in eligible
+        if _upper(
+            row.get("entry_model")
+        )
+        == entry_model
+    ]
+    prior_rows = [
+        row
+        for row in eligible
+        if _upper(
+            row.get("entry_model")
+        )
+        != entry_model
+    ]
+
+    specific_values = _pre_w10_depths(
+        specific_rows
+    )
+    prior_values = _pre_w10_depths(
+        prior_rows
+    )
+
+    specific_stats = _summary(
+        specific_values
+    )
+    prior_stats = _summary(
+        prior_values
+    )
+
+    specific_depth = _safe_float(
+        specific_stats.get(
+            quantile_key
+        )
+    )
+    prior_depth = _safe_float(
+        prior_stats.get(
+            quantile_key
+        )
+    )
+
+    specific_n = len(
+        specific_values
+    )
+    prior_n = len(
+        prior_values
+    )
+
+    ready = (
+        specific_n
+        >= BETTER_ENTRY_OPTIMIZER_MIN_HISTORICAL_SAMPLE
+        or prior_n
+        >= BETTER_ENTRY_OPTIMIZER_MIN_HISTORICAL_SAMPLE
+    )
+
+    if not ready:
+        blended_depth = None
+        specific_weight = None
+        source = "INSUFFICIENT_PRE_W10_HISTORY"
+    elif (
+        specific_depth is not None
+        and prior_depth is not None
+    ):
+        specific_weight = min(
+            1.0,
+            specific_n
+            / float(
+                BETTER_ENTRY_OPTIMIZER_HIGH_CONFIDENCE_SAMPLE
+            ),
+        )
+        blended_depth = (
+            specific_depth
+            * specific_weight
+            + prior_depth
+            * (
+                1.0
+                - specific_weight
+            )
+        )
+        source = "SHRUNK_SPECIFIC_TO_STRATEGY_SIGNAL_PRIOR"
+    elif specific_depth is not None:
+        specific_weight = 1.0
+        blended_depth = specific_depth
+        source = "SPECIFIC_ONLY"
+    else:
+        specific_weight = 0.0
+        blended_depth = prior_depth
+        source = "STRATEGY_SIGNAL_PRIOR_ONLY"
+
+    return {
+        "ready": ready,
+        "profile": profile[
+            "profile"
+        ],
+        "quantile": profile[
+            "quantile"
+        ],
+        "quantile_key": quantile_key,
+        "specific_sample": specific_n,
+        "prior_sample": prior_n,
+        "specific_stats": specific_stats,
+        "prior_stats": prior_stats,
+        "specific_weight": specific_weight,
+        "depth_usd": blended_depth,
+        "source": source,
+    }
+
+
+def _candidate_from_depth(
+    *,
+    signal: str,
+    original_entry: float | None,
+    depth: float | None,
+) -> float | None:
+    if (
+        original_entry is None
+        or depth is None
+        or depth <= 0.0
+    ):
+        return None
+
+    if signal == "BUY":
+        return (
+            original_entry
+            - depth
+        )
+
+    if signal == "SELL":
+        return (
+            original_entry
+            + depth
+        )
+
+    return None
+
+
+def _current_atr(
+    setup: dict[str, Any],
+) -> float | None:
+    context = _flatten_detection_context(
+        _detection_context(setup)
+    )
+
+    for key in (
+        "atr_14",
+        "atr",
+    ):
+        value = _safe_float(
+            context.get(key)
+        )
+
+        if (
+            value is not None
+            and value > 0.0
+        ):
+            return value
+
+    return None
+
+
+def _reconcile_structure_and_statistics(
+    *,
+    setup: dict[str, Any],
+    structural_entry: float | None,
+    adaptive_entry: float | None,
+    adaptive_profile: dict[str, Any],
+) -> dict[str, Any]:
+    atr = _current_atr(
+        setup
+    )
+
+    if (
+        structural_entry is None
+        and adaptive_entry is None
+    ):
+        return {
+            "status": "NO_ENTRY_REFERENCE",
+            "distance_usd": None,
+            "distance_atr": None,
+            "observer_plan": "NO_BETTER_ENTRY_YET",
+        }
+
+    if structural_entry is None:
+        return {
+            "status": "STATISTICAL_ONLY",
+            "distance_usd": None,
+            "distance_atr": None,
+            "observer_plan": "STATISTICAL_OBSERVER_ONLY",
+        }
+
+    if adaptive_entry is None:
+        return {
+            "status": "STRUCTURAL_ONLY",
+            "distance_usd": None,
+            "distance_atr": None,
+            "observer_plan": "STRUCTURE_ONLY_UNCALIBRATED",
+        }
+
+    distance = abs(
+        structural_entry
+        - adaptive_entry
+    )
+    distance_atr = (
+        distance / atr
+        if (
+            atr is not None
+            and atr > 0.0
+        )
+        else None
+    )
+
+    if (
+        distance_atr is not None
+        and distance_atr <= 0.25
+    ):
+        status = "TIGHT_STRUCTURE_STAT_CONFLUENCE"
+        observer_plan = "WAIT_STRUCTURE_PLUS_CISD"
+    elif (
+        adaptive_profile[
+            "profile"
+        ]
+        == "SHALLOW_P25"
+    ):
+        status = "STRUCTURE_DEEPER_THAN_SHALLOW_STAT"
+        observer_plan = "SHALLOW_WAIT_STRUCTURE_REFERENCE"
+    elif (
+        adaptive_profile[
+            "profile"
+        ]
+        == "DEEP_P75"
+    ):
+        status = "DEEP_WAIT_STATE"
+        observer_plan = "DEEP_WAIT_REQUIRE_CISD"
+    else:
+        status = "STRUCTURE_STAT_SEPARATED"
+        observer_plan = "MEDIAN_WAIT_STRUCTURE_REFERENCE"
+
+    return {
+        "status": status,
+        "distance_usd": distance,
+        "distance_atr": distance_atr,
+        "observer_plan": observer_plan,
+    }
+
+
 def build_better_entry_observer(
     setup: dict[str, Any],
     *,
@@ -858,6 +1627,38 @@ def build_better_entry_observer(
         )
     )
 
+    adaptive_profile = (
+        _adaptive_wait_profile(
+            source
+        )
+    )
+    adaptive_history = (
+        _adaptive_historical_depth(
+            source,
+            rows,
+            adaptive_profile,
+        )
+    )
+    adaptive_entry = (
+        _candidate_from_depth(
+            signal=signal,
+            original_entry=original_entry,
+            depth=_safe_float(
+                adaptive_history.get(
+                    "depth_usd"
+                )
+            ),
+        )
+    )
+    reconciliation = (
+        _reconcile_structure_and_statistics(
+            setup=source,
+            structural_entry=structural_entry,
+            adaptive_entry=adaptive_entry,
+            adaptive_profile=adaptive_profile,
+        )
+    )
+
     if policy == NO_CISD:
         cisd_mode = "NOT_REQUIRED"
     elif policy == CISD_REQUIRED:
@@ -870,6 +1671,9 @@ def build_better_entry_observer(
     if structural_entry is not None:
         preferred_basis = "STRUCTURAL_ANCHOR"
         preferred_entry = structural_entry
+    elif adaptive_entry is not None:
+        preferred_basis = "ADAPTIVE_HISTORICAL_RETRACEMENT"
+        preferred_entry = adaptive_entry
     elif historical_entry is not None:
         preferred_basis = "HISTORICAL_PRE_W10_MAE"
         preferred_entry = historical_entry
@@ -893,6 +1697,10 @@ def build_better_entry_observer(
         "structural_entry_improvement_usd": structural_improvement,
         "historical_candidate_entry": historical_entry,
         "historical_wait_depth_usd": historical_depth,
+        "adaptive_wait_profile": adaptive_profile,
+        "adaptive_historical_depth": adaptive_history,
+        "adaptive_statistical_entry": adaptive_entry,
+        "structure_statistical_reconciliation": reconciliation,
         "preferred_observer_entry_basis": preferred_basis,
         "preferred_observer_entry": preferred_entry,
         "historical_calibration": calibration,
@@ -902,11 +1710,15 @@ def build_better_entry_observer(
             )
         ),
         "note": (
-            "Full-path MAE/MFE/recovery are diagnostic only. "
-            "They are never converted directly into entry depth."
+            "Structure remains the primary market-valid anchor. "
+            "Momentum and Market Participation proxy only select "
+            "historical wait aggressiveness. Full-path MAE/MFE/recovery "
+            "remain diagnostic and never set entry depth."
         ),
         **_authority_fields(),
     }
+
+
 
 
 def format_better_entry_observer(
@@ -929,6 +1741,27 @@ def format_better_entry_observer(
         )
         or {}
     )
+    adaptive_profile = dict(
+        snapshot.get(
+            "adaptive_wait_profile",
+            {}
+        )
+        or {}
+    )
+    adaptive_history = dict(
+        snapshot.get(
+            "adaptive_historical_depth",
+            {}
+        )
+        or {}
+    )
+    reconciliation = dict(
+        snapshot.get(
+            "structure_statistical_reconciliation",
+            {}
+        )
+        or {}
+    )
 
     return "\n".join(
         [
@@ -936,6 +1769,16 @@ def format_better_entry_observer(
             (
                 f"Policy: {snapshot.get('cisd_policy')} | "
                 f"CISD: {snapshot.get('cisd_status')}"
+            ),
+            (
+                "State: "
+                f"momentum={adaptive_profile.get('momentum', {}).get('state')} | "
+                f"participation={adaptive_profile.get('participation', {}).get('state')}"
+            ),
+            (
+                "Adaptive Wait: "
+                f"{adaptive_profile.get('profile')} | "
+                f"depth={adaptive_history.get('depth_usd')}"
             ),
             (
                 "Original Entry: "
@@ -951,8 +1794,13 @@ def format_better_entry_observer(
                 f"{snapshot.get('structural_candidate_entry')}"
             ),
             (
-                "Historical Candidate: "
-                f"{snapshot.get('historical_candidate_entry')}"
+                "Adaptive Statistical Candidate: "
+                f"{snapshot.get('adaptive_statistical_entry')}"
+            ),
+            (
+                "Reconciliation: "
+                f"{reconciliation.get('status')} | "
+                f"plan={reconciliation.get('observer_plan')}"
             ),
             (
                 "Historical Cohort: "
@@ -962,7 +1810,9 @@ def format_better_entry_observer(
             (
                 "Pre-W10 MAE: "
                 f"n={pre_w10.get('n', 0)} "
-                f"median={pre_w10.get('median')}"
+                f"P25={pre_w10.get('p25')} "
+                f"P50={pre_w10.get('median')} "
+                f"P75={pre_w10.get('p75')}"
             ),
             (
                 "Preferred Observer Entry: "
