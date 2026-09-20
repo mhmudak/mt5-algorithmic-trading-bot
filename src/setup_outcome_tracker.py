@@ -1122,6 +1122,295 @@ def _maybe_notify_better_entry_shadow(
 
     return True
 
+
+def _better_entry_cisd_policy(
+    item,
+):
+    snapshot = item.get(
+        "better_entry_observer_snapshot"
+    )
+
+    if not isinstance(
+        snapshot,
+        dict,
+    ):
+        return None
+
+    return snapshot.get(
+        "cisd_policy"
+    )
+
+
+def _maybe_notify_better_entry_cisd_shadow(
+    item,
+    candidate,
+):
+    state = candidate.get(
+        "cisd_observer"
+    )
+
+    if not isinstance(
+        state,
+        dict,
+    ):
+        return False
+
+    status = str(
+        state.get(
+            "status"
+        )
+        or ""
+    ).upper()
+
+    if status not in {
+        "CONFIRMED",
+        "OPTIONAL_CONFIRMED",
+    }:
+        return False
+
+    notified = candidate.get(
+        "telegram_notified_cisd_statuses"
+    )
+
+    if not isinstance(
+        notified,
+        list,
+    ):
+        notified = []
+
+    if status in notified:
+        return False
+
+    try:
+        from config import settings as runtime_settings
+
+        if not bool(
+            getattr(
+                runtime_settings,
+                "ENABLE_BETTER_ENTRY_OPTIMIZER_COUNTERFACTUAL_TRACKER",
+                False,
+            )
+        ):
+            return False
+
+        from src.notifier import (
+            send_telegram_message,
+        )
+
+        send_telegram_message(
+            "\n".join(
+                [
+                    "🟪 BETTER ENTRY CISD SHADOW",
+                    "",
+                    (
+                        "Strategy: "
+                        + str(
+                            item.get(
+                                "strategy"
+                            )
+                            or "N/A"
+                        )
+                    ),
+                    (
+                        "Entry Model: "
+                        + str(
+                            item.get(
+                                "entry_model"
+                            )
+                            or "N/A"
+                        )
+                    ),
+                    (
+                        "Signal: "
+                        + str(
+                            item.get(
+                                "signal"
+                            )
+                            or "N/A"
+                        )
+                    ),
+                    (
+                        "Candidate: "
+                        + str(
+                            candidate.get(
+                                "candidate_id"
+                            )
+                            or "N/A"
+                        )
+                    ),
+                    (
+                        "Policy: "
+                        + str(
+                            state.get(
+                                "policy"
+                            )
+                            or "N/A"
+                        )
+                    ),
+                    (
+                        "Timeframe: "
+                        + str(
+                            state.get(
+                                "timeframe"
+                            )
+                            or "N/A"
+                        )
+                        + " CLOSED"
+                    ),
+                    (
+                        "Status: "
+                        + status
+                    ),
+                    (
+                        "Reference Open: "
+                        + _better_entry_shadow_format_price(
+                            state.get(
+                                "reference_open"
+                            )
+                        )
+                    ),
+                    (
+                        "Confirmation Close: "
+                        + _better_entry_shadow_format_price(
+                            state.get(
+                                "confirmation_close"
+                            )
+                        )
+                    ),
+                    (
+                        "Shadow Entry Qualified: "
+                        + (
+                            "YES"
+                            if state.get(
+                                "shadow_entry_qualified"
+                            )
+                            else "NO"
+                        )
+                    ),
+                    "",
+                    "OBSERVATION ONLY — live execution unchanged.",
+                ]
+            )
+        )
+
+    except Exception:
+        return False
+
+    notified.append(
+        status
+    )
+    candidate[
+        "telegram_notified_cisd_statuses"
+    ] = notified
+
+    return True
+
+
+def _update_better_entry_cisd_observers(
+    item,
+    symbol,
+    observed_at=None,
+):
+    """
+    Update candidate-specific CISD shadow state.
+
+    This observer:
+    - is active only inside the runtime Better Entry shadow process;
+    - uses closed M1 candles only;
+    - never changes candidate fill status;
+    - never changes live execution.
+    """
+
+    if not item.get(
+        "better_entry_counterfactual_eligible"
+    ):
+        return False
+
+    try:
+        from config import settings as runtime_settings
+
+        if not bool(
+            getattr(
+                runtime_settings,
+                "ENABLE_BETTER_ENTRY_OPTIMIZER_COUNTERFACTUAL_TRACKER",
+                False,
+            )
+        ):
+            return False
+    except Exception:
+        return False
+
+    candidates = item.get(
+        "better_entry_counterfactuals"
+    )
+
+    if not isinstance(
+        candidates,
+        dict,
+    ) or not candidates:
+        return False
+
+    policy = _better_entry_cisd_policy(
+        item
+    )
+
+    if not policy:
+        return False
+
+    try:
+        from src.cisd_observer import (
+            fetch_closed_candles,
+            update_candidate_cisd_state,
+        )
+
+        closed_snapshot = fetch_closed_candles(
+            symbol,
+            timeframe="M1",
+            bars=16,
+        )
+
+    except Exception:
+        return False
+
+    changed = False
+
+    for candidate in candidates.values():
+        if not isinstance(
+            candidate,
+            dict,
+        ):
+            continue
+
+        try:
+            candidate_changed = (
+                update_candidate_cisd_state(
+                    candidate,
+                    policy=str(
+                        policy
+                    ),
+                    signal=str(
+                        item.get(
+                            "signal"
+                        )
+                        or ""
+                    ),
+                    closed_snapshot=closed_snapshot,
+                    observed_at=observed_at,
+                )
+            )
+        except Exception:
+            continue
+
+        if candidate_changed:
+            changed = True
+
+        _maybe_notify_better_entry_cisd_shadow(
+            item,
+            candidate,
+        )
+
+    return changed
+
 def _better_entry_favorable_move(
     *,
     signal,
@@ -1799,6 +2088,12 @@ def update_setup_outcomes(symbol, tick):
         if _update_better_entry_counterfactuals(
             item,
             current_price,
+        ):
+            changed = True
+
+        if _update_better_entry_cisd_observers(
+            item,
+            symbol,
         ):
             changed = True
 
