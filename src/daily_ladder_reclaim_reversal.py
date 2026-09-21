@@ -19,6 +19,8 @@ _RUNTIME = {
     "pending": {},
     "confirmed": set(),
     "last_m5_time": None,
+    "outcomes_loaded": False,
+    "open_outcomes": {},
 }
 
 
@@ -681,6 +683,361 @@ def _bar_dict(row):
     }
 
 
+# DAILY_LADDER_RECLAIM_OUTCOME_TRACKING_V1_1
+# Counterfactual research only. These records cannot execute or block trades.
+
+def _outcome_state_path():
+    return (
+        Path(__file__).resolve().parents[1]
+        / "data"
+        / "daily_ladder_reclaim_reversal_open_outcomes.json"
+    )
+
+
+def _outcome_terminal_path():
+    return (
+        Path(__file__).resolve().parents[1]
+        / "data"
+        / "daily_ladder_reclaim_reversal_outcomes.jsonl"
+    )
+
+
+def _load_open_outcomes_once(logger):
+    if _RUNTIME.get("outcomes_loaded"):
+        return
+
+    _RUNTIME["outcomes_loaded"] = True
+    _RUNTIME.setdefault("open_outcomes", {})
+
+    path = _outcome_state_path()
+    if not path.exists():
+        return
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+
+        if isinstance(payload, dict):
+            _RUNTIME["open_outcomes"] = {
+                str(key): value
+                for key, value in payload.items()
+                if isinstance(value, dict)
+            }
+
+            logger.info(
+                "[DAILY LADDER RECLAIM OUTCOME] "
+                "restored open research outcomes "
+                f"| count={len(_RUNTIME['open_outcomes'])}"
+            )
+
+    except Exception as exc:
+        logger.warning(
+            "[DAILY LADDER RECLAIM OUTCOME] "
+            "state restore failed open "
+            f"| error={exc}"
+        )
+
+
+def _persist_open_outcomes(logger):
+    try:
+        path = _outcome_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        path.write_text(
+            json.dumps(
+                _RUNTIME.get("open_outcomes", {}),
+                sort_keys=True,
+                indent=2,
+                default=str,
+            )
+            + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "[DAILY LADDER RECLAIM OUTCOME] "
+            "state persistence failed open "
+            f"| error={exc}"
+        )
+
+
+def _append_terminal_outcome(outcome, logger):
+    try:
+        path = _outcome_terminal_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        with path.open(
+            "a",
+            encoding="utf-8",
+            newline="\n",
+        ) as handle:
+            handle.write(
+                json.dumps(
+                    outcome,
+                    sort_keys=True,
+                    default=str,
+                )
+                + "\n"
+            )
+
+    except Exception as exc:
+        logger.warning(
+            "[DAILY LADDER RECLAIM OUTCOME] "
+            "terminal persistence failed open "
+            f"| error={exc}"
+        )
+
+
+def _outcome_id(observation):
+    return (
+        f"{observation.get('broker_date')}|"
+        f"{observation.get('signal')}|"
+        f"{observation.get('strong_level')}|"
+        f"{observation.get('cisd_confirmation_time')}"
+    )
+
+
+def _register_open_outcome(observation, logger):
+    _load_open_outcomes_once(logger)
+
+    outcome_id = _outcome_id(observation)
+
+    if outcome_id in _RUNTIME["open_outcomes"]:
+        return
+
+    confirmation_time = pd.Timestamp(
+        observation["cisd_confirmation_time"]
+    )
+
+    expiry_minutes = int(
+        getattr(
+            settings,
+            "DAILY_LEVEL_LADDER_RECLAIM_REVERSAL_OUTCOME_MINUTES",
+            180,
+        )
+    )
+
+    outcome = {
+        "schema_version": "V1.1",
+        "outcome_id": outcome_id,
+        "strategy": STRATEGY,
+        "entry_model": ENTRY_MODEL,
+        "signal": observation["signal"],
+        "broker_date": observation.get("broker_date"),
+        "strong_level": observation.get("strong_level"),
+        "reclaim_m5_time": observation.get("reclaim_m5_time"),
+        "confirmation_time": str(confirmation_time),
+        "expiry_time": str(
+            confirmation_time
+            + pd.Timedelta(minutes=expiry_minutes)
+        ),
+        "entry": observation.get("shadow_entry"),
+        "sl": observation.get("shadow_sl"),
+        "tp": observation.get("shadow_tp"),
+        "rr": observation.get("shadow_rr"),
+        "required_rr": observation.get("required_rr"),
+        "rr_pass": observation.get("rr_pass"),
+        "hit_plus_10": False,
+        "plus_10_time": None,
+        "hit_tp": False,
+        "tp_time": None,
+        "hit_sl": False,
+        "sl_time": None,
+        "first_hit": None,
+        "first_hit_time": None,
+        "max_favorable_usd": 0.0,
+        "max_adverse_usd": 0.0,
+        "mfe_time": None,
+        "mae_time": None,
+        "last_processed_m1_time": str(confirmation_time),
+        "final_outcome": "TRACKING",
+        "decision_impact": "OBSERVE_ONLY",
+        "execution_authority": False,
+    }
+
+    _RUNTIME["open_outcomes"][outcome_id] = outcome
+    _persist_open_outcomes(logger)
+
+    logger.info(
+        "[DAILY LADDER RECLAIM OUTCOME] "
+        "counterfactual tracking started "
+        f"| id={outcome_id} "
+        f"signal={outcome['signal']} "
+        f"entry={outcome['entry']} "
+        f"sl={outcome['sl']} "
+        f"tp={outcome['tp']} "
+        "| execution_authority=False"
+    )
+
+
+def _advance_one_outcome(outcome, m1_df):
+    if (
+        not isinstance(outcome, dict)
+        or m1_df is None
+        or len(m1_df) == 0
+    ):
+        return outcome, False
+
+    updated = dict(outcome)
+
+    signal = updated.get("signal")
+    entry = _safe_float(updated.get("entry"))
+    sl = _safe_float(updated.get("sl"))
+    tp = _safe_float(updated.get("tp"))
+
+    if signal not in ("BUY", "SELL") or entry is None:
+        return updated, False
+
+    last_time = pd.Timestamp(
+        updated.get(
+            "last_processed_m1_time",
+            updated.get("confirmation_time"),
+        )
+    )
+    expiry_time = pd.Timestamp(updated["expiry_time"])
+
+    df = m1_df.copy()
+    df["time"] = pd.to_datetime(df["time"])
+
+    fresh = df[
+        (df["time"] > last_time)
+        & (df["time"] <= expiry_time)
+    ].sort_values("time")
+
+    for _, row in fresh.iterrows():
+        row_time = pd.Timestamp(row["time"])
+        high = _safe_float(row.get("high"))
+        low = _safe_float(row.get("low"))
+
+        if high is None or low is None:
+            continue
+
+        if signal == "BUY":
+            favorable = max(0.0, high - entry)
+            adverse = max(0.0, entry - low)
+            plus10_now = high >= entry + 10.0
+            tp_now = tp is not None and high >= tp
+            sl_now = sl is not None and low <= sl
+        else:
+            favorable = max(0.0, entry - low)
+            adverse = max(0.0, high - entry)
+            plus10_now = low <= entry - 10.0
+            tp_now = tp is not None and low <= tp
+            sl_now = sl is not None and high >= sl
+
+        if favorable > float(
+            updated.get("max_favorable_usd", 0.0)
+        ):
+            updated["max_favorable_usd"] = round(
+                favorable,
+                5,
+            )
+            updated["mfe_time"] = str(row_time)
+
+        if adverse > float(
+            updated.get("max_adverse_usd", 0.0)
+        ):
+            updated["max_adverse_usd"] = round(
+                adverse,
+                5,
+            )
+            updated["mae_time"] = str(row_time)
+
+        if plus10_now and not updated.get("hit_plus_10"):
+            updated["hit_plus_10"] = True
+            updated["plus_10_time"] = str(row_time)
+
+        new_tp = tp_now and not updated.get("hit_tp")
+        new_sl = sl_now and not updated.get("hit_sl")
+
+        if new_tp:
+            updated["hit_tp"] = True
+            updated["tp_time"] = str(row_time)
+
+        if new_sl:
+            updated["hit_sl"] = True
+            updated["sl_time"] = str(row_time)
+
+        if updated.get("first_hit") is None:
+            if new_tp and new_sl:
+                updated["first_hit"] = (
+                    "TP_SL_SAME_M1_AMBIGUOUS"
+                )
+                updated["first_hit_time"] = str(row_time)
+            elif new_tp:
+                updated["first_hit"] = "TP"
+                updated["first_hit_time"] = str(row_time)
+            elif new_sl:
+                updated["first_hit"] = "SL"
+                updated["first_hit_time"] = str(row_time)
+
+        updated["last_processed_m1_time"] = str(row_time)
+
+    latest_time = None
+
+    if len(df):
+        latest_time = pd.Timestamp(df.iloc[-1]["time"])
+
+    completed = bool(
+        latest_time is not None
+        and latest_time >= expiry_time
+    )
+
+    if completed:
+        updated["final_outcome"] = (
+            "SETUP_WIN_PLUS_10"
+            if updated.get("hit_plus_10")
+            else "NO_PLUS_10_WITHIN_HORIZON"
+        )
+        updated["terminal_time"] = str(expiry_time)
+
+    return updated, completed
+
+
+def _advance_open_outcomes(m1_df, logger):
+    _load_open_outcomes_once(logger)
+
+    open_outcomes = _RUNTIME.get("open_outcomes", {})
+
+    if not open_outcomes:
+        return
+
+    changed = False
+
+    for outcome_id, outcome in list(
+        open_outcomes.items()
+    ):
+        updated, completed = _advance_one_outcome(
+            outcome,
+            m1_df,
+        )
+
+        if updated != outcome:
+            open_outcomes[outcome_id] = updated
+            changed = True
+
+        if completed:
+            _append_terminal_outcome(updated, logger)
+
+            logger.info(
+                "[DAILY LADDER RECLAIM OUTCOME] "
+                "counterfactual outcome terminal "
+                f"| id={outcome_id} "
+                f"setup_win={updated.get('hit_plus_10')} "
+                f"first_hit={updated.get('first_hit')} "
+                f"mfe={updated.get('max_favorable_usd')} "
+                f"mae={updated.get('max_adverse_usd')} "
+                "| execution_authority=False"
+            )
+
+            del open_outcomes[outcome_id]
+            changed = True
+
+    if changed:
+        _persist_open_outcomes(logger)
+
+
 def observe_daily_ladder_reclaim_reversal_shadow(
     *,
     symbol,
@@ -730,7 +1087,15 @@ def observe_daily_ladder_reclaim_reversal_shadow(
 
     _RUNTIME["last_m5_time"] = current_time
     atr = _atr_from_m5(m5_df)
-    m1_df = _closed_m1(symbol)
+    m1_df = _closed_m1(
+        symbol,
+        bars=300,
+    )
+
+    _advance_open_outcomes(
+        m1_df,
+        logger,
+    )
 
     timeout_minutes = int(
         getattr(
@@ -782,6 +1147,11 @@ def observe_daily_ladder_reclaim_reversal_shadow(
         )
 
         _persist_observation(
+            observation,
+            logger,
+        )
+
+        _register_open_outcome(
             observation,
             logger,
         )
