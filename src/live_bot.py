@@ -170,6 +170,7 @@ from config.settings import (
     ENABLE_BALANCED_AUCTION_RANGE,
     ENABLE_FCR_M1_FVG,
     ENABLE_FCR_M1_FVG_CLOSED_M1_CADENCE,
+    ENABLE_FCR_M1_FVG_REGIME_SHADOW,
     ENABLE_FCR_M1_FVG_STARTUP_GUARD,
     FCR_M1_FVG_SKIP_ON_FIRST_CYCLE_AFTER_STARTUP,
     ENABLE_WAVETREND_PIVOT_M5,
@@ -15288,6 +15289,57 @@ def process_cycle(last_processed_candle_time):
         ]
 
         if not strategy_map:
+            # FCR_REGIME_SHADOW_OBSERVER_V1
+            # Evaluate the same closed-M1 FCR setup counterfactually
+            # when the current live regime map excludes it.
+            # Never pass this shadow result into execution selection.
+            if ENABLE_FCR_M1_FVG_REGIME_SHADOW:
+                try:
+                    fcr_shadow_result = fcr_m1_fvg_signal(df)
+
+                    if (
+                        isinstance(fcr_shadow_result, dict)
+                        and fcr_shadow_result.get("signal") in {"BUY", "SELL"}
+                    ):
+                        from src.fcr_m1_fvg_regime_shadow import (
+                            persist_fcr_regime_shadow_observation,
+                        )
+
+                        (
+                            fcr_shadow_persisted,
+                            fcr_shadow_detail,
+                        ) = persist_fcr_regime_shadow_observation(
+                            signal_data=fcr_shadow_result,
+                            symbol=SYMBOL,
+                            session=session_name,
+                            market_condition=market_condition,
+                            closed_m1_time_epoch=(
+                                _FCR_M1_CADENCE_RUNTIME.get(
+                                    "last_closed_m1_time"
+                                )
+                            ),
+                            mt5_time_epoch=tick.time,
+                        )
+
+                        logger.info(
+                            "[FCR REGIME SHADOW] "
+                            "regime shadow detected "
+                            f"| persisted={fcr_shadow_persisted} "
+                            f"| detail={fcr_shadow_detail} "
+                            f"| market_condition={market_condition} "
+                            f"| signal={fcr_shadow_result.get('signal')} "
+                            f"| setup_id={fcr_shadow_result.get('setup_id')} "
+                            "| decision_impact=OBSERVE_ONLY "
+                            "| execution_authority=False"
+                        )
+
+                except Exception as exc:
+                    logger.warning(
+                        "[FCR REGIME SHADOW] "
+                        "observer failed open "
+                        f"| error={exc}"
+                    )
+
             logger.info(
                 "[PHASE 6R FCR M1 CADENCE] "
                 "skipped for current market regime "
