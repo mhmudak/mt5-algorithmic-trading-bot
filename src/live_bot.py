@@ -13001,6 +13001,28 @@ def process_daily_level_ladder_breakout_v1(
                 "execution_authority=True"
             )
 
+            # DAILY LADDER RECLAIM SHADOW V1 HOOK
+            # Observation only: no trade-plan mutation and no execution authority.
+            try:
+                from src.daily_ladder_reclaim_reversal import (
+                    observe_daily_ladder_reclaim_reversal_shadow,
+                )
+
+                observe_daily_ladder_reclaim_reversal_shadow(
+                    symbol=SYMBOL,
+                    m5_df=m5_df,
+                    tick=tick,
+                    dllb_locals=locals(),
+                    logger=logger,
+                    notifier=send_telegram_message,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[DAILY LADDER RECLAIM SHADOW] observer failed open "
+                    f"| error={exc}"
+                )
+
+
         runtime["provider_state_key"] = valid_provider_key
 
         if broker_date_changed or previous_provider_state_key is not None:
