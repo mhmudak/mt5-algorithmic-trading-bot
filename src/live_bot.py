@@ -169,6 +169,7 @@ from config.settings import (
     ENABLE_VWAP_RANGE_MEAN_REVERSION,
     ENABLE_BALANCED_AUCTION_RANGE,
     ENABLE_FCR_M1_FVG,
+    ENABLE_FCR_M1_FVG_CLOSED_M1_CADENCE,
     ENABLE_FCR_M1_FVG_STARTUP_GUARD,
     FCR_M1_FVG_SKIP_ON_FIRST_CYCLE_AFTER_STARTUP,
     ENABLE_WAVETREND_PIVOT_M5,
@@ -13794,6 +13795,40 @@ def process_daily_level_ladder_breakout_v1(
     return True
 
 
+# PHASE6R_FCR_CLOSED_M1_CADENCE_V1
+_FCR_M1_CADENCE_RUNTIME = {
+    "last_closed_m1_time": None,
+}
+
+
+def _phase6r_latest_closed_m1_time():
+    """
+    Return the open timestamp of the latest CLOSED M1 candle.
+
+    start_pos=1 intentionally excludes the currently forming M1.
+    """
+    try:
+        rates = mt5.copy_rates_from_pos(
+            SYMBOL,
+            mt5.TIMEFRAME_M1,
+            1,
+            1,
+        )
+
+        if rates is None or len(rates) < 1:
+            return None
+
+        return int(rates[0]["time"])
+
+    except Exception as exc:
+        logger.warning(
+            "[PHASE 6R FCR M1 CADENCE] "
+            "closed-M1 time fetch failed open "
+            f"| error={exc}"
+        )
+        return None
+
+
 def process_cycle(last_processed_candle_time):
     global last_signal, reversal_count
 
@@ -14629,6 +14664,53 @@ def process_cycle(last_processed_candle_time):
         return current_candle_time
 
     # =========================
+    # PHASE 6R - FCR CLOSED-M1 CADENCE
+    # =========================
+    # FCR_M1_FVG is M1-native. Detect each newly CLOSED M1 before
+    # the higher-timeframe new-candle gate, but keep its existing
+    # strategy-map eligibility and downstream execution/risk stack.
+    fcr_m1_cycle_due = False
+    fcr_m1_startup_armed = False
+
+    if (
+        ENABLE_FCR_M1_FVG
+        and ENABLE_FCR_M1_FVG_CLOSED_M1_CADENCE
+    ):
+        from src.fcr_m1_cadence import (
+            advance_closed_m1_state,
+        )
+
+        latest_closed_m1_time = _phase6r_latest_closed_m1_time()
+
+        (
+            new_fcr_last_closed_m1_time,
+            fcr_m1_cycle_due,
+            fcr_m1_startup_armed,
+        ) = advance_closed_m1_state(
+            _FCR_M1_CADENCE_RUNTIME.get("last_closed_m1_time"),
+            latest_closed_m1_time,
+        )
+
+        _FCR_M1_CADENCE_RUNTIME[
+            "last_closed_m1_time"
+        ] = new_fcr_last_closed_m1_time
+
+        if fcr_m1_startup_armed:
+            logger.info(
+                "[PHASE 6R FCR M1 CADENCE] "
+                "startup armed on latest closed M1; "
+                "no retroactive execution "
+                f"| closed_m1_time={pd.to_datetime(new_fcr_last_closed_m1_time, unit='s')}"
+            )
+
+        elif fcr_m1_cycle_due:
+            logger.info(
+                "[PHASE 6R FCR M1 CADENCE] "
+                "new closed M1 detected "
+                f"| closed_m1_time={pd.to_datetime(new_fcr_last_closed_m1_time, unit='s')}"
+            )
+
+    # =========================
     # NEW CANDLE CHECK
     # =========================
     from src.session_engine import (
@@ -14638,17 +14720,35 @@ def process_cycle(last_processed_candle_time):
     )
     from config.settings import ENABLE_SESSION_ENGINE
 
-    if (
+    main_candle_due = not (
         last_processed_candle_time is not None
         and current_candle_time == last_processed_candle_time
-    ):
-        logger.info(f"No new candle yet. Current candle: {current_candle_time}")
+    )
+
+    fcr_m1_only_cycle = (
+        ENABLE_FCR_M1_FVG
+        and ENABLE_FCR_M1_FVG_CLOSED_M1_CADENCE
+        and fcr_m1_cycle_due
+        and not main_candle_due
+    )
+
+    if not main_candle_due and not fcr_m1_only_cycle:
+        logger.info(
+            f"No new candle yet. Current candle: {current_candle_time}"
+        )
         return last_processed_candle_time
 
-    from src.strategy_performance import rebuild_strategy_performance
-    rebuild_strategy_performance()
+    if main_candle_due:
+        from src.strategy_performance import rebuild_strategy_performance
+        rebuild_strategy_performance()
 
-    logger.info(f"New candle detected: {current_candle_time}")
+        logger.info(f"New candle detected: {current_candle_time}")
+    else:
+        logger.info(
+            "[PHASE 6R FCR M1 CADENCE] "
+            "closed-M1 evaluation cycle entering normal strategy pipeline "
+            f"| main_candle={current_candle_time}"
+        )
     session_name = detect_session(current_candle_time)
     logger.info(f"[SESSION] {session_name}")
 
@@ -15165,6 +15265,43 @@ def process_cycle(last_processed_candle_time):
             "FCR_M1_FVG skipped on first full cycle after startup/restart"
         )
         
+    # Closed-M1 cadence makes FCR eligible only on a newly closed M1.
+    # This prevents stale re-evaluation on unrelated M15 cycles.
+    if (
+        ENABLE_FCR_M1_FVG
+        and ENABLE_FCR_M1_FVG_CLOSED_M1_CADENCE
+        and not fcr_m1_cycle_due
+    ):
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name != "FCR_M1_FVG"
+        ]
+
+    # On an M1-only cycle preserve the existing regime map: FCR runs
+    # only if the current market-condition map already contains it.
+    if fcr_m1_only_cycle:
+        strategy_map = [
+            (name, strat)
+            for name, strat in strategy_map
+            if name == "FCR_M1_FVG"
+        ]
+
+        if not strategy_map:
+            logger.info(
+                "[PHASE 6R FCR M1 CADENCE] "
+                "skipped for current market regime "
+                f"| market_condition={market_condition}"
+            )
+            return last_processed_candle_time
+
+        logger.info(
+            "[PHASE 6R FCR M1 CADENCE] "
+            "FCR-only normal-pipeline cycle "
+            f"| market_condition={market_condition} "
+            f"| closed_m1_time={pd.to_datetime(_FCR_M1_CADENCE_RUNTIME.get('last_closed_m1_time'), unit='s')}"
+        )
+
     if not ENABLE_KEY_LEVEL_BREAK_HOLD:
         strategy_map = [
             (name, fn)
