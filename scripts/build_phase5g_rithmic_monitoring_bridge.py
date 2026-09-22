@@ -28,6 +28,10 @@ from src.order_flow_providers.rithmic_snapshot_adapter import (
 )
 
 
+from src.order_flow_features.rithmic_liquidity_pull_replenishment import (
+    evaluate_rithmic_liquidity_pull_replenishment,
+    format_liquidity_pull_replenishment_text,
+)
 from src.order_flow_features.rithmic_absorption_exhaustion import (
     evaluate_rithmic_absorption_exhaustion,
     format_absorption_exhaustion_text,
@@ -115,6 +119,28 @@ def main() -> None:
     )
     bridge["absorption_exhaustion"] = absorption_exhaustion
 
+    liquidity_pull_replenishment_history = (
+        output_dir
+        / f"{safe_symbol}_phase5g_rithmic_liquidity_pull_replenishment_history.json"
+    )
+    if not feed_integrity.get("continuity_valid", False):
+        if liquidity_pull_replenishment_history.exists():
+            liquidity_pull_replenishment_history.unlink()
+
+    liquidity_pull_replenishment = (
+        evaluate_rithmic_liquidity_pull_replenishment(
+            snapshot,
+            history_path=liquidity_pull_replenishment_history,
+            feed_integrity=feed_integrity,
+            signal=args.signal,
+            session=args.session,
+            tick_size=args.tick_size,
+        )
+    )
+    bridge["liquidity_pull_replenishment"] = (
+        liquidity_pull_replenishment
+    )
+
     anti_fakeout_history = (
         output_dir
         / f"{safe_symbol}_phase5g_rithmic_anti_fakeout_history.json"
@@ -156,6 +182,13 @@ def main() -> None:
         handle.write("\n")
         handle.write("\n")
         handle.write(
+            format_liquidity_pull_replenishment_text(
+                liquidity_pull_replenishment
+            )
+        )
+        handle.write("\n")
+        handle.write("\n")
+        handle.write(
             format_bridge_anti_fakeout_text(
                 anti_fakeout
             )
@@ -172,6 +205,7 @@ def main() -> None:
     print("feed_integrity_ok =", feed_integrity.get("integrity_ok"))
     print("feed_continuity_valid =", feed_integrity.get("continuity_valid"))
     print("absorption_exhaustion_status =", absorption_exhaustion.get("status"))
+    print("liquidity_pull_replenishment_status =", liquidity_pull_replenishment.get("status"))
     print("anti_fakeout_status =", anti_fakeout.get("status"))
     print("anti_fakeout_data_grade =", anti_fakeout.get("data_grade"))
     print("anti_fakeout_history_snapshots =", anti_fakeout["bridge_history"].get("history_snapshot_count"))
