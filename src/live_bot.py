@@ -13845,6 +13845,42 @@ def process_cycle(last_processed_candle_time):
     atr = signal_candle["atr_14"]
 
     tick = mt5.symbol_info_tick(SYMBOL)
+
+    # FCR forming-M1 research observer. OBSERVE_ONLY.
+    try:
+        from config import settings as _fcr_intrabar_shadow_settings
+        if getattr(
+            _fcr_intrabar_shadow_settings,
+            "ENABLE_FCR_M1_FVG_INTRABAR_SHADOW",
+            False,
+        ):
+            from src.fcr_intrabar_shadow import (
+                observe_fcr_intrabar_shadow,
+            )
+            observe_fcr_intrabar_shadow(
+                symbol=SYMBOL,
+                tick=tick,
+                min_interval_seconds=getattr(
+                    _fcr_intrabar_shadow_settings,
+                    "FCR_M1_FVG_INTRABAR_SHADOW_MIN_INTERVAL_SECONDS",
+                    1.0,
+                ),
+                output_path=getattr(
+                    _fcr_intrabar_shadow_settings,
+                    "FCR_M1_FVG_INTRABAR_SHADOW_OUTPUT",
+                    "data/research/fcr_intrabar_shadow_observations.jsonl",
+                ),
+                state_path=getattr(
+                    _fcr_intrabar_shadow_settings,
+                    "FCR_M1_FVG_INTRABAR_SHADOW_STATE",
+                    "data/research/fcr_intrabar_shadow_state.json",
+                ),
+            )
+    except Exception as _fcr_intrabar_shadow_exc:
+        logger.warning(
+            f"[FCR INTRABAR SHADOW] fail-open | "
+            f"error={_fcr_intrabar_shadow_exc}"
+        )
     if tick is None:
         logger.error(f"Failed to fetch current tick: {mt5.last_error()}")
         return last_processed_candle_time
