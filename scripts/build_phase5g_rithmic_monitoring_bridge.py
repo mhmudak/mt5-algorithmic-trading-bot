@@ -28,6 +28,10 @@ from src.order_flow_providers.rithmic_snapshot_adapter import (
 )
 
 
+from src.order_flow_features.rithmic_feed_integrity import (
+    evaluate_rithmic_feed_integrity,
+    format_feed_integrity_text,
+)
 from src.order_flow_features.rithmic_anti_fakeout_bridge import (
     build_bridge_anti_fakeout,
     format_bridge_anti_fakeout_text,
@@ -79,10 +83,24 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    feed_integrity_history = (
+        output_dir
+        / f"{safe_symbol}_phase5g_rithmic_feed_integrity_history.json"
+    )
+    feed_integrity = evaluate_rithmic_feed_integrity(
+        snapshot,
+        history_path=feed_integrity_history,
+    )
+    bridge["feed_integrity"] = feed_integrity
+
     anti_fakeout_history = (
         output_dir
         / f"{safe_symbol}_phase5g_rithmic_anti_fakeout_history.json"
     )
+    if not feed_integrity.get("continuity_valid", False):
+        if anti_fakeout_history.exists():
+            anti_fakeout_history.unlink()
+
     anti_fakeout = build_bridge_anti_fakeout(
         snapshot,
         history_path=anti_fakeout_history,
@@ -102,6 +120,13 @@ def main() -> None:
     ) as handle:
         handle.write("\n")
         handle.write(
+            format_feed_integrity_text(
+                feed_integrity
+            )
+        )
+        handle.write("\n")
+        handle.write("\n")
+        handle.write(
             format_bridge_anti_fakeout_text(
                 anti_fakeout
             )
@@ -114,6 +139,9 @@ def main() -> None:
     print("provider_status =", bridge.get("provider_status"))
     print("decision_impact =", bridge.get("decision_impact"))
     print("can_influence_decision =", bridge.get("can_influence_decision"))
+    print("feed_integrity_status =", feed_integrity.get("status"))
+    print("feed_integrity_ok =", feed_integrity.get("integrity_ok"))
+    print("feed_continuity_valid =", feed_integrity.get("continuity_valid"))
     print("anti_fakeout_status =", anti_fakeout.get("status"))
     print("anti_fakeout_data_grade =", anti_fakeout.get("data_grade"))
     print("anti_fakeout_history_snapshots =", anti_fakeout["bridge_history"].get("history_snapshot_count"))
