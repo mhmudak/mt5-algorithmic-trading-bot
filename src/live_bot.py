@@ -16608,6 +16608,16 @@ def process_cycle(last_processed_candle_time):
                     reason=reason,
                     extra={
                         "protected_reentry": selected_signal_data.get("protected_reentry"),
+                        "breaker_zone_low": (
+                            selected_signal_data.get("zone_low")
+                            if strategy_name == "BREAKER_BLOCK"
+                            else None
+                        ),
+                        "breaker_zone_high": (
+                            selected_signal_data.get("zone_high")
+                            if strategy_name == "BREAKER_BLOCK"
+                            else None
+                        ),
                         "source": "setup_detected_raw",
                         "news_context": news_context,
                         "news_tag": news_context.get("news_tag") if news_context else None,

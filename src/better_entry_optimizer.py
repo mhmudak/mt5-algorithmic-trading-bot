@@ -260,6 +260,47 @@ def resolve_structural_anchor(
 ) -> dict[str, Any]:
     signal = _signal(setup)
 
+    # Breaker Block has a direction-specific native retest boundary.
+    # Use only detection-time numeric geometry persisted by the
+    # strategy. Never infer this anchor from reason text, history,
+    # or future path data.
+    strategy = _upper(setup.get("strategy"))
+
+    if strategy == "BREAKER_BLOCK":
+        extra = setup.get("extra")
+
+        if not isinstance(extra, dict):
+            extra = {}
+
+        zone_low = _safe_float(
+            extra.get("breaker_zone_low")
+        )
+        zone_high = _safe_float(
+            extra.get("breaker_zone_high")
+        )
+
+        if (
+            zone_low is not None
+            and zone_high is not None
+            and zone_high > zone_low
+        ):
+            if signal == "BUY":
+                boundary = zone_high
+            elif signal == "SELL":
+                boundary = zone_low
+            else:
+                boundary = None
+
+            if boundary is not None:
+                return {
+                    "type": "BREAKER_RETEST_BOUNDARY",
+                    "price": boundary,
+                    "source_fields": [
+                        "extra.breaker_zone_low",
+                        "extra.breaker_zone_high",
+                    ],
+                }
+
     # Strongest exact anchors first.
     for key, anchor_type in (
         ("neckline", "NECKLINE"),
