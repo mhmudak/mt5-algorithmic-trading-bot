@@ -28,6 +28,11 @@ from src.order_flow_providers.rithmic_snapshot_adapter import (
 )
 
 
+from src.order_flow_features.rithmic_anti_fakeout_bridge import (
+    build_bridge_anti_fakeout,
+    format_bridge_anti_fakeout_text,
+)
+
 def _safe_symbol_for_file(symbol: str) -> str:
     return symbol.replace("/", "_").replace("\\", "_").replace(".", "_")
 
@@ -38,6 +43,9 @@ def main() -> None:
     parser.add_argument("--input-dir", default="data/order_flow/rithmic")
     parser.add_argument("--stale-after-seconds", type=int, default=30)
     parser.add_argument("--output-dir", default="data/order_flow/rithmic")
+    parser.add_argument("--signal", choices=("BUY", "SELL"), default=None)
+    parser.add_argument("--session", default="UNSPECIFIED")
+    parser.add_argument("--tick-size", type=float, default=0.1)
     args = parser.parse_args()
 
     try:
@@ -71,11 +79,34 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    anti_fakeout_history = (
+        output_dir
+        / f"{safe_symbol}_phase5g_rithmic_anti_fakeout_history.json"
+    )
+    anti_fakeout = build_bridge_anti_fakeout(
+        snapshot,
+        history_path=anti_fakeout_history,
+        signal=args.signal,
+        session=args.session,
+        tick_size=args.tick_size,
+    )
+    bridge["anti_fakeout"] = anti_fakeout
+
     output_json = output_dir / f"{safe_symbol}_phase5g_rithmic_monitoring_bridge.json"
     output_txt = output_dir / f"{safe_symbol}_phase5g_rithmic_monitoring_bridge.txt"
 
     write_bridge_json(bridge, output_json)
     write_bridge_text(bridge, output_txt)
+    with output_txt.open(
+        "a", encoding="utf-8"
+    ) as handle:
+        handle.write("\n")
+        handle.write(
+            format_bridge_anti_fakeout_text(
+                anti_fakeout
+            )
+        )
+        handle.write("\n")
 
     print("[DONE] Phase 5G Rithmic monitoring bridge built")
     print("symbol =", bridge.get("symbol"))
@@ -83,6 +114,9 @@ def main() -> None:
     print("provider_status =", bridge.get("provider_status"))
     print("decision_impact =", bridge.get("decision_impact"))
     print("can_influence_decision =", bridge.get("can_influence_decision"))
+    print("anti_fakeout_status =", anti_fakeout.get("status"))
+    print("anti_fakeout_data_grade =", anti_fakeout.get("data_grade"))
+    print("anti_fakeout_history_snapshots =", anti_fakeout["bridge_history"].get("history_snapshot_count"))
     print("adapter_metric_format_ready =", bridge["phase4_compatibility"]["adapter_metric_format_ready"])
     print("can_replace_no_order_flow_provider =", bridge["phase4_compatibility"]["can_replace_no_order_flow_provider"])
     print("delta =", bridge["adapter_metrics"]["delta"])
