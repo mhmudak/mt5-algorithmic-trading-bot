@@ -758,9 +758,9 @@ def test_v2_sub_1r_is_f_even_with_raw_100():
     assert result["full_rr"] < 1.0
 
     text = setup_quality.format_setup_quality_block(result)
-    assert "\U0001f7e5 F SETUP" in text
+    assert "\U0001f7e5 ELIGIBILITY GRADE: F" in text
     assert "Raw Score: 10.0/10" in text
-    assert "Full RR: 0.89R" in text
+    assert "Quality RR: 0.89R" in text
 
 
 def test_v2_macro_conflict_plus_low_rr_is_f():

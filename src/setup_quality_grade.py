@@ -1126,7 +1126,7 @@ def build_setup_quality_grade(data: dict[str, Any]) -> dict[str, Any]:
         blockers.append(f"RR {rr:.2f}R < {SQ2_A_PLUS_MIN_RR:.2f}R A+")
 
     if not history.get("available", False):
-        blockers.append("Historical edge unavailable")
+        blockers.append("Exact-cohort historical edge unavailable")
     else:
         trade_sample = int(history.get("trade_sample", 0) or 0)
         trade_rate = _sq2_float(history.get("trade_win_rate"))
@@ -1260,8 +1260,10 @@ def format_setup_quality_block(result: dict[str, Any]) -> str:
         history_line += f" | MAE med ${mae:.2f}"
 
     return (
-        f"{icon} {grade} SETUP\n"
-        f"Raw Score: {score_10:.1f}/10 | Full RR: {rr_text}\n"
+        f"STRUCTURAL QUALITY: {result.get('v1_grade', grade)} | Raw Score: {score_10:.1f}/10\n"
+        f"{icon} ELIGIBILITY GRADE: {grade} | Quality RR: {rr_text}\n"
+        f"A+ Eligibility: {'PASS' if grade == 'A+' else 'FAIL'}\n"
+        f"History Scope: EXACT COHORT\n"
         f"Why: {why}\n"
         f"{history_line}"
     )
