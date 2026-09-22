@@ -16447,13 +16447,21 @@ def process_cycle(last_processed_candle_time):
                 )
                 from src.notifier import build_trade_message
 
+                from src.fcr_runtime_guard import resolve_fcr_signal_entry
+
+                setup_detected_entry = resolve_fcr_signal_entry(
+                    strategy_name,
+                    selected_signal_data,
+                    close_price,
+                )
+
                 detected_data = {
                     "stage": f"SETUP DETECTED #{selected_signal_data.get('setup_id')}",
                     "symbol": SYMBOL,
                     "signal": signal,
                     "strategy": strategy_name,
                     "entry_model": selected_signal_data.get("entry_model", "RAW"),
-                    "entry": close_price,
+                    "entry": setup_detected_entry,
                     "sl": selected_signal_data.get("sl_reference") or "N/A",
                     "tp": (
                         selected_signal_data.get("tp_reference")
@@ -16496,7 +16504,7 @@ def process_cycle(last_processed_candle_time):
                 # notifications. This must never alter entry, SL, TP1-TP3,
                 # RR acceptance, risk, recovery, scoring, or execution.
                 detected_trade_plan = {
-                    "entry_price": close_price,
+                    "entry_price": setup_detected_entry,
                     "stop_loss": (
                         selected_signal_data.get(
                             "sl_reference"
@@ -16556,7 +16564,7 @@ def process_cycle(last_processed_candle_time):
                     score=score,
                     session=session_name,
                     market_condition=market_condition,
-                    entry=close_price,
+                    entry=setup_detected_entry,
                     sl=selected_signal_data.get("sl_reference"),
                     tp=(
                         selected_signal_data.get("tp_reference")
@@ -16599,7 +16607,7 @@ def process_cycle(last_processed_candle_time):
                     score=score,
                     session=session_name,
                     market_condition=market_condition,
-                    entry=close_price,
+                    entry=setup_detected_entry,
                     sl=selected_signal_data.get("sl_reference"),
                     tp=(
                         selected_signal_data.get("tp_reference")
@@ -16811,7 +16819,7 @@ def process_cycle(last_processed_candle_time):
     ):
         execution_engine.register_setup(
             selected_signal_data,
-            close_price,
+            setup_detected_entry,
             atr
         )
 
@@ -18157,6 +18165,139 @@ def process_cycle(last_processed_candle_time):
             )
 
         return current_candle_time
+
+    # =========================
+    # FCR RUNTIME GEOMETRY GUARD
+    # =========================
+    # Closed-M1 remains the FCR signal authority. Immediately before
+    # the normal execution branch, re-price only the executable entry
+    # using a fresh MT5 quote. Never move SL/TP to rescue stale geometry.
+    if (
+        strategy_name == "FCR_M1_FVG"
+        and signal in ["BUY", "SELL"]
+        and trade_plan is not None
+    ):
+        from src.fcr_runtime_guard import (
+            validate_fcr_runtime_geometry,
+        )
+
+        fresh_fcr_tick = mt5.symbol_info_tick(SYMBOL)
+
+        if fresh_fcr_tick is None:
+            fcr_runtime_check = {
+                "applies": True,
+                "allowed": False,
+                "reason": "fresh_tick_unavailable",
+                "runtime_rr": None,
+                "signal_rr": None,
+                "rr_degradation": None,
+                "chase_distance": None,
+                "executable_price": None,
+                "stop_loss": trade_plan.get("stop_loss"),
+                "take_profit": trade_plan.get("take_profit"),
+                "signal_entry": selected_signal_data.get("entry_reference"),
+                "trade_plan": trade_plan,
+            }
+        else:
+            fcr_executable_price = (
+                fresh_fcr_tick.ask
+                if signal == "BUY"
+                else fresh_fcr_tick.bid
+            )
+
+            fcr_runtime_check = validate_fcr_runtime_geometry(
+                strategy_name=strategy_name,
+                signal=signal,
+                signal_data=selected_signal_data,
+                trade_plan=trade_plan,
+                executable_price=fcr_executable_price,
+                min_rr_required=min_rr_required,
+            )
+
+        selected_signal_data["fcr_runtime_geometry"] = {
+            key: value
+            for key, value in fcr_runtime_check.items()
+            if key != "trade_plan"
+        }
+
+        if not fcr_runtime_check.get("allowed"):
+            fcr_runtime_reason = (
+                fcr_runtime_check.get("reason")
+                or "runtime_geometry_rejected"
+            )
+
+            logger.info(
+                "[FCR RUNTIME GEOMETRY] Rejected | "
+                f"setup_id={selected_signal_data.get('setup_id')} "
+                f"signal={signal} "
+                f"signal_entry={fcr_runtime_check.get('signal_entry')} "
+                f"executable={fcr_runtime_check.get('executable_price')} "
+                f"sl={fcr_runtime_check.get('stop_loss')} "
+                f"tp={fcr_runtime_check.get('take_profit')} "
+                f"runtime_rr={fcr_runtime_check.get('runtime_rr')} "
+                f"required_rr={min_rr_required} "
+                f"chase={fcr_runtime_check.get('chase_distance')} "
+                f"reason={fcr_runtime_reason}"
+            )
+
+            if "best_setup" in locals():
+                best_setup["state"] = "SKIPPED"
+                best_setup["wait_reason"] = (
+                    "FCR runtime geometry rejected: "
+                    f"{fcr_runtime_reason}"
+                )
+
+            log_setup_event(
+                setup_id=selected_signal_data.get("setup_id"),
+                event="FCR_RUNTIME_GEOMETRY_REJECTED",
+                strategy=strategy_name,
+                signal=signal,
+                entry_model=selected_signal_data.get("entry_model"),
+                score=score,
+                session=session_name,
+                market_condition=market_condition,
+                entry=fcr_runtime_check.get("executable_price"),
+                sl=fcr_runtime_check.get("stop_loss"),
+                tp=fcr_runtime_check.get("take_profit"),
+                rr=fcr_runtime_check.get("runtime_rr"),
+                required_rr=min_rr_required,
+                reason=fcr_runtime_reason,
+                extra={
+                    "signal_entry": fcr_runtime_check.get("signal_entry"),
+                    "signal_rr": fcr_runtime_check.get("signal_rr"),
+                    "rr_degradation": fcr_runtime_check.get("rr_degradation"),
+                    "chase_distance": fcr_runtime_check.get("chase_distance"),
+                },
+            )
+
+            send_telegram_message(
+                f"🚫 FCR Runtime Entry Rejected\n"
+                f"Setup: #{selected_signal_data.get('setup_id')}\n"
+                f"Signal: {signal}\n"
+                f"Signal Entry: {fcr_runtime_check.get('signal_entry')}\n"
+                f"Market Entry: {fcr_runtime_check.get('executable_price')}\n"
+                f"SL: {fcr_runtime_check.get('stop_loss')}\n"
+                f"TP: {fcr_runtime_check.get('take_profit')}\n"
+                f"Runtime RR: {fcr_runtime_check.get('runtime_rr')} "
+                f"/ Required: {min_rr_required}\n"
+                f"Chase: {fcr_runtime_check.get('chase_distance')}\n"
+                f"Reason: {fcr_runtime_reason}"
+            )
+
+            return current_candle_time
+
+        trade_plan = fcr_runtime_check["trade_plan"]
+        rr_value = fcr_runtime_check.get("runtime_rr")
+
+        logger.info(
+            "[FCR RUNTIME GEOMETRY] Passed | "
+            f"setup_id={selected_signal_data.get('setup_id')} "
+            f"signal_entry={fcr_runtime_check.get('signal_entry')} "
+            f"executable={fcr_runtime_check.get('executable_price')} "
+            f"runtime_rr={rr_value} "
+            f"required_rr={min_rr_required} "
+            f"chase={fcr_runtime_check.get('chase_distance')}"
+        )
 
     # =========================
     # SAFE EXECUTION (ANTI-FLIP)
