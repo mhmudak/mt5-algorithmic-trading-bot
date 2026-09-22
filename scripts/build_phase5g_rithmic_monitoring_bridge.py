@@ -28,6 +28,10 @@ from src.order_flow_providers.rithmic_snapshot_adapter import (
 )
 
 
+from src.order_flow_features.rithmic_absorption_exhaustion import (
+    evaluate_rithmic_absorption_exhaustion,
+    format_absorption_exhaustion_text,
+)
 from src.order_flow_features.rithmic_feed_integrity import (
     evaluate_rithmic_feed_integrity,
     format_feed_integrity_text,
@@ -93,6 +97,24 @@ def main() -> None:
     )
     bridge["feed_integrity"] = feed_integrity
 
+    absorption_exhaustion_history = (
+        output_dir
+        / f"{safe_symbol}_phase5g_rithmic_absorption_exhaustion_history.json"
+    )
+    if not feed_integrity.get("continuity_valid", False):
+        if absorption_exhaustion_history.exists():
+            absorption_exhaustion_history.unlink()
+
+    absorption_exhaustion = evaluate_rithmic_absorption_exhaustion(
+        snapshot,
+        history_path=absorption_exhaustion_history,
+        feed_integrity=feed_integrity,
+        signal=args.signal,
+        session=args.session,
+        tick_size=args.tick_size,
+    )
+    bridge["absorption_exhaustion"] = absorption_exhaustion
+
     anti_fakeout_history = (
         output_dir
         / f"{safe_symbol}_phase5g_rithmic_anti_fakeout_history.json"
@@ -127,6 +149,13 @@ def main() -> None:
         handle.write("\n")
         handle.write("\n")
         handle.write(
+            format_absorption_exhaustion_text(
+                absorption_exhaustion
+            )
+        )
+        handle.write("\n")
+        handle.write("\n")
+        handle.write(
             format_bridge_anti_fakeout_text(
                 anti_fakeout
             )
@@ -142,6 +171,7 @@ def main() -> None:
     print("feed_integrity_status =", feed_integrity.get("status"))
     print("feed_integrity_ok =", feed_integrity.get("integrity_ok"))
     print("feed_continuity_valid =", feed_integrity.get("continuity_valid"))
+    print("absorption_exhaustion_status =", absorption_exhaustion.get("status"))
     print("anti_fakeout_status =", anti_fakeout.get("status"))
     print("anti_fakeout_data_grade =", anti_fakeout.get("data_grade"))
     print("anti_fakeout_history_snapshots =", anti_fakeout["bridge_history"].get("history_snapshot_count"))
