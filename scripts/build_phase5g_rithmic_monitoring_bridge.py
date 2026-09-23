@@ -28,6 +28,10 @@ from src.order_flow_providers.rithmic_snapshot_adapter import (
 )
 
 
+from src.order_flow_features.rithmic_volume_profile_migration import (
+    evaluate_rithmic_volume_profile_migration,
+    format_volume_profile_migration_text,
+)
 from src.order_flow_features.rithmic_delta_price_divergence import (
     evaluate_rithmic_delta_price_divergence,
     format_delta_price_divergence_text,
@@ -167,6 +171,28 @@ def main() -> None:
         delta_price_divergence
     )
 
+    volume_profile_migration_history = (
+        output_dir
+        / f"{safe_symbol}_phase5g_rithmic_volume_profile_migration_history.json"
+    )
+    if not feed_integrity.get("continuity_valid", False):
+        if volume_profile_migration_history.exists():
+            volume_profile_migration_history.unlink()
+
+    volume_profile_migration = (
+        evaluate_rithmic_volume_profile_migration(
+            snapshot,
+            history_path=volume_profile_migration_history,
+            feed_integrity=feed_integrity,
+            signal=args.signal,
+            session=args.session,
+            tick_size=args.tick_size,
+        )
+    )
+    bridge["volume_profile_migration"] = (
+        volume_profile_migration
+    )
+
     anti_fakeout_history = (
         output_dir
         / f"{safe_symbol}_phase5g_rithmic_anti_fakeout_history.json"
@@ -222,6 +248,13 @@ def main() -> None:
         handle.write("\n")
         handle.write("\n")
         handle.write(
+            format_volume_profile_migration_text(
+                volume_profile_migration
+            )
+        )
+        handle.write("\n")
+        handle.write("\n")
+        handle.write(
             format_bridge_anti_fakeout_text(
                 anti_fakeout
             )
@@ -240,6 +273,7 @@ def main() -> None:
     print("absorption_exhaustion_status =", absorption_exhaustion.get("status"))
     print("liquidity_pull_replenishment_status =", liquidity_pull_replenishment.get("status"))
     print("delta_price_divergence_status =", delta_price_divergence.get("status"))
+    print("volume_profile_migration_status =", volume_profile_migration.get("status"))
     print("anti_fakeout_status =", anti_fakeout.get("status"))
     print("anti_fakeout_data_grade =", anti_fakeout.get("data_grade"))
     print("anti_fakeout_history_snapshots =", anti_fakeout["bridge_history"].get("history_snapshot_count"))
