@@ -61,7 +61,7 @@ def manage_positions(symbol: str):
         return
 
     tracked_positions = []
-    dllb_stats_updated = False
+    daily_ladder_stats_updated = False
 
     for position in positions:
         position_id = str(position.ticket)
@@ -78,18 +78,25 @@ def manage_positions(symbol: str):
             update_trade_statistics(position, trade, tick)
             continue
 
-        if (
-            str(
-                trade.get(
-                    "strategy",
-                    "",
-                )
-                or ""
-            ).upper()
-            == "DAILY_LEVEL_LADDER_BREAKOUT"
-        ):
+        strategy_name = str(
+            trade.get(
+                "strategy",
+                "",
+            )
+            or ""
+        ).upper()
+
+        if strategy_name in {
+            "DAILY_LEVEL_LADDER_BREAKOUT",
+            "DAILY_LEVEL_LADDER_RECLAIM_REVERSAL",
+        }:
+            strategy_label = (
+                "DLLB"
+                if strategy_name == "DAILY_LEVEL_LADDER_BREAKOUT"
+                else "DLRR"
+            )
             logger.info(
-                "[MANAGER] DLLB strategy-owned SL/TP; "
+                f"[MANAGER] {strategy_label} strategy-owned SL/TP; "
                 f"statistics only | position={position_id}"
             )
             update_trade_statistics(
@@ -97,13 +104,13 @@ def manage_positions(symbol: str):
                 trade,
                 tick,
             )
-            dllb_stats_updated = True
+            daily_ladder_stats_updated = True
             continue
 
         tracked_positions.append((position, trade))
 
     if not tracked_positions:
-        if dllb_stats_updated:
+        if daily_ladder_stats_updated:
             save_trades(trades)
 
         logger.info("[MANAGER] No tracked open positions to manage")

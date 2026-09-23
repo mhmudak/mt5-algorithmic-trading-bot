@@ -404,8 +404,8 @@ def test_dllb_bypasses_unrelated_intrabar_m15_wrapper_policies_only():
     end = text.index("\nPHASE6W_M15_DIRECTION_LOCK = {}", start)
     block = text[start:end]
 
-    assert "dllb_execution" in block
-    assert block.count("not dllb_execution") >= 3
+    assert "daily_ladder_native_execution" in block
+    assert block.count("not daily_ladder_native_execution") >= 3
 
     # Global funded safety remains in the common wrapper and is not bypassed.
     assert "evaluate_funded_account_safe_mode(" in block
@@ -418,7 +418,7 @@ def test_raw_executor_preserves_dllb_sl_tp_and_freshness_guards():
     block = text[start:]
 
     for required in (
-        "dllb_geometry_authoritative",
+        "daily_ladder_geometry_authoritative",
         "DLLB_NEXT_APPROVED_RUNG",
         "[DLLB EXECUTION GEOMETRY]",
         "fresh_tick_outside_authoritative_geometry",
@@ -428,14 +428,14 @@ def test_raw_executor_preserves_dllb_sl_tp_and_freshness_guards():
     ):
         assert required in block
 
-    assert "not dllb_geometry_authoritative" in block
+    assert "not daily_ladder_geometry_authoritative" in block
 
 
 def test_position_manager_does_not_preempt_dllb_broker_sl_tp():
     text = (ROOT / "src" / "position_manager.py").read_text(encoding="utf-8")
-    assert "DLLB strategy-owned SL/TP" in text
+    assert "strategy-owned SL/TP" in text
     assert '"DAILY_LEVEL_LADDER_BREAKOUT"' in text
-    assert "dllb_stats_updated" in text
+    assert "daily_ladder_stats_updated" in text
 
 
 def test_provider_shadow_stays_observation_only():

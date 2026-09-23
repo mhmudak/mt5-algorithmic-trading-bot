@@ -2999,12 +2999,22 @@ PROP_FIRM_PROFILES = {
 DAILY_LEVEL_LADDER_DISPLAY_MODE = "AUTO_COMPOSITE_DAILY_LADDER"
 DAILY_LEVEL_LADDER_DLLB_EXECUTION_MODE = "AUTO_STRONG_DAILY_LADDER"
 # Daily Level Ladder Reclaim Reversal V1
-# Shadow/research only. This flag grants no execution authority.
+# Executable strategy. Authority is deliberately narrower than DLLB:
+# - AUTO_STRONG_DAILY_LADDER only (manual/shadow/raw levels cannot authorize)
+# - completed-M5 sweep + reclaim of an approved strong upper/lower rung
+# - NEW closed-M1 CISD after the reclaim is mandatory
+# - strategy-owned SL/TP geometry; one execution attempt per confirmed event
+ENABLE_DAILY_LEVEL_LADDER_RECLAIM_REVERSAL = True
+
+# Legacy research observer/outcome tracker remains independently available.
+# It has no execution authority and stays off by default.
 ENABLE_DAILY_LEVEL_LADDER_RECLAIM_REVERSAL_SHADOW = False
+
 DAILY_LEVEL_LADDER_RECLAIM_REVERSAL_MIN_RR = 1.20
 DAILY_LEVEL_LADDER_RECLAIM_REVERSAL_CISD_TIMEOUT_MINUTES = 20
 DAILY_LEVEL_LADDER_RECLAIM_REVERSAL_MIN_SWEEP_USD = 0.10
 DAILY_LEVEL_LADDER_RECLAIM_REVERSAL_ATR_SWEEP_FRACTION = 0.03
+DAILY_LEVEL_LADDER_RECLAIM_REVERSAL_M1_BARS = 120
 DAILY_LEVEL_LADDER_RECLAIM_REVERSAL_OUTCOME_MINUTES = 180
 
 DAILY_LEVEL_LADDER_MANUAL_PATH = "config/daily_ladder_manual.json"

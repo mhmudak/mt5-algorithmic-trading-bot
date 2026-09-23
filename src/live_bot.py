@@ -11538,9 +11538,12 @@ def process_candidate_rejection_recovery_setups(
 
 def execute_trade(signal, trade_plan, symbol):
     plan = trade_plan if isinstance(trade_plan, dict) else {}
-    dllb_execution = (
+    daily_ladder_native_execution = (
         str(plan.get("strategy", "") or "").upper()
-        == "DAILY_LEVEL_LADDER_BREAKOUT"
+        in {
+            "DAILY_LEVEL_LADDER_BREAKOUT",
+            "DAILY_LEVEL_LADDER_RECLAIM_REVERSAL",
+        }
     )
 
     try:
@@ -11552,7 +11555,7 @@ def execute_trade(signal, trade_plan, symbol):
             trade_plan=trade_plan,
             execution_engine=globals().get("execution_engine"),
             enabled=(
-                not dllb_execution
+                not daily_ladder_native_execution
                 and bool(
                     getattr(
                         _phase6w_settings,
@@ -11651,7 +11654,7 @@ def execute_trade(signal, trade_plan, symbol):
             trade_plan=trade_plan,
             lock_state=globals().get("PHASE6W_M15_DIRECTION_LOCK"),
             enabled=(
-                not dllb_execution
+                not daily_ladder_native_execution
                 and bool(
                     getattr(
                         _phase6w4_settings,
@@ -11967,7 +11970,7 @@ def execute_trade(signal, trade_plan, symbol):
             signal=signal,
             trade_plan=trade_plan,
             enabled=(
-                not dllb_execution
+                not daily_ladder_native_execution
                 and bool(
                     getattr(
                         _phase6w2_settings,
@@ -14678,6 +14681,29 @@ def process_cycle(last_processed_candle_time):
 
             return current_candle_time
 
+
+    # =========================
+    # DAILY LEVEL LADDER RECLAIM REVERSAL V1
+    # =========================
+    # AUTO_STRONG-only reversal. Arms on completed M5 reclaim and checks
+    # every loop for a NEW closed-M1 CISD so confirmation is not delayed
+    # until the next M5 close.
+    from src.daily_ladder_reclaim_reversal_runtime import (
+        process_daily_ladder_reclaim_reversal_v1,
+    )
+
+    if process_daily_ladder_reclaim_reversal_v1(
+        symbol=SYMBOL,
+        df=df,
+        tick=tick,
+        account_info=account_info,
+        execute_trade_fn=execute_trade,
+        execution_memory_check_fn=(
+            _daily_level_ladder_execution_memory_blocked_fail_closed
+        ),
+        log_setup_event_fn=log_setup_event,
+    ):
+        return current_candle_time
 
     # =========================
     # DAILY LEVEL LADDER BREAKOUT V1

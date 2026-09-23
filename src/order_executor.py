@@ -1583,9 +1583,18 @@ def execute_trade(signal, trade_plan, symbol):
         else ""
     ).upper()
 
-    dllb_geometry_authoritative = (
+    daily_ladder_geometry_authoritative = (
         strategy_name
-        == "DAILY_LEVEL_LADDER_BREAKOUT"
+        in {
+            "DAILY_LEVEL_LADDER_BREAKOUT",
+            "DAILY_LEVEL_LADDER_RECLAIM_REVERSAL",
+        }
+        and bool(
+            trade_plan.get(
+                "strategy_geometry_authoritative",
+                False,
+            )
+        )
     )
 
     execution_start_ts = perf_counter()
@@ -1788,7 +1797,7 @@ def execute_trade(signal, trade_plan, symbol):
 
     if (
         isinstance(trade_plan, dict)
-        and not dllb_geometry_authoritative
+        and not daily_ladder_geometry_authoritative
         and not trade_plan.get(
             "tp_ladder_child_order"
         )
@@ -1845,7 +1854,7 @@ def execute_trade(signal, trade_plan, symbol):
         old_expected_price = expected_price
 
         if (
-            not dllb_geometry_authoritative
+            not daily_ladder_geometry_authoritative
             and ENABLE_MOMENTUM_CONTINUATION_ON_PRICE_DRIFT
             and adverse_drift <= MOMENTUM_CONTINUATION_MAX_DRIFT_PRICE
             and not (
@@ -1915,7 +1924,7 @@ def execute_trade(signal, trade_plan, symbol):
     skip_slippage_guard = bool(trade_plan.get("skip_slippage_guard"))
 
     if (
-        not dllb_geometry_authoritative
+        not daily_ladder_geometry_authoritative
         and not skip_slippage_guard
         and ENABLE_HIGH_SLIPPAGE_RETRACEMENT
         and pre_execution_slippage > MAX_SLIPPAGE
@@ -1962,9 +1971,9 @@ def execute_trade(signal, trade_plan, symbol):
         send_telegram_message(error_message)
         return False
     
-    if dllb_geometry_authoritative:
-        # DLLB owns one broker TP: the next approved rung.
-        # Universal TP staging/runners must not rewrite it.
+    if daily_ladder_geometry_authoritative:
+        # Daily-ladder strategies own one broker TP and their structural SL.
+        # Universal TP staging/runners must not rewrite either geometry.
         trade_plan = dict(trade_plan)
         trade_plan.pop("tp_ladder", None)
         trade_plan.pop("main_tp1", None)
@@ -1977,10 +1986,20 @@ def execute_trade(signal, trade_plan, symbol):
         )
         trade_plan[
             "tp_management_mode"
-        ] = "DLLB_NEXT_APPROVED_RUNG"
+        ] = str(
+            trade_plan.get(
+                "tp_authority",
+                "DLLB_NEXT_APPROVED_RUNG",
+            )
+        )
 
+        geometry_tag = (
+            "[DLLB EXECUTION GEOMETRY]"
+            if strategy_name == "DAILY_LEVEL_LADDER_BREAKOUT"
+            else "[DLRR EXECUTION GEOMETRY]"
+        )
         logger.info(
-            "[DLLB EXECUTION GEOMETRY] "
+            f"{geometry_tag} "
             "strategy-owned SL/TP preserved "
             f"| sl={trade_plan.get('stop_loss')} "
             f"tp={trade_plan.get('take_profit')}"
@@ -2061,33 +2080,38 @@ def execute_trade(signal, trade_plan, symbol):
         expected_price = float(trade_plan["entry_price"])
         current_execution_price = fresh_tick.ask if signal == "BUY" else fresh_tick.bid
 
-        if dllb_geometry_authoritative:
+        if daily_ladder_geometry_authoritative:
             try:
-                dllb_sl = float(
+                daily_ladder_sl = float(
                     trade_plan["stop_loss"]
                 )
-                dllb_tp = float(
+                daily_ladder_tp = float(
                     trade_plan["take_profit"]
                 )
-                dllb_geometry_ok = (
-                    dllb_sl
+                daily_ladder_geometry_ok = (
+                    daily_ladder_sl
                     < current_execution_price
-                    < dllb_tp
+                    < daily_ladder_tp
                     if signal == "BUY"
-                    else dllb_tp
+                    else daily_ladder_tp
                     < current_execution_price
-                    < dllb_sl
+                    < daily_ladder_sl
                 )
             except (
                 KeyError,
                 TypeError,
                 ValueError,
             ):
-                dllb_geometry_ok = False
+                daily_ladder_geometry_ok = False
 
-            if not dllb_geometry_ok:
+            if not daily_ladder_geometry_ok:
+                blocked_tag = (
+                    "[DLLB EXECUTION BLOCKED]"
+                    if strategy_name == "DAILY_LEVEL_LADDER_BREAKOUT"
+                    else "[DLRR EXECUTION BLOCKED]"
+                )
                 logger.warning(
-                    "[DLLB EXECUTION BLOCKED] "
+                    f"{blocked_tag} "
                     "reason=fresh_tick_outside_authoritative_geometry "
                     f"signal={signal} "
                     f"price={round(current_execution_price, 2)} "
