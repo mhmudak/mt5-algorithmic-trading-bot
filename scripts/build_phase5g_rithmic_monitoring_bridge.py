@@ -28,6 +28,10 @@ from src.order_flow_providers.rithmic_snapshot_adapter import (
 )
 
 
+from src.order_flow_features.rithmic_order_flow_regime import (
+    evaluate_rithmic_order_flow_regime,
+    format_order_flow_regime_text,
+)
 from src.order_flow_features.rithmic_volume_profile_migration import (
     evaluate_rithmic_volume_profile_migration,
     format_volume_profile_migration_text,
@@ -210,6 +214,18 @@ def main() -> None:
     )
     bridge["anti_fakeout"] = anti_fakeout
 
+    order_flow_regime = evaluate_rithmic_order_flow_regime(
+        feed_integrity=feed_integrity,
+        absorption_exhaustion=absorption_exhaustion,
+        liquidity_pull_replenishment=liquidity_pull_replenishment,
+        delta_price_divergence=delta_price_divergence,
+        volume_profile_migration=volume_profile_migration,
+        anti_fakeout=anti_fakeout,
+        signal=args.signal,
+        session=args.session,
+    )
+    bridge["order_flow_regime"] = order_flow_regime
+
     output_json = output_dir / f"{safe_symbol}_phase5g_rithmic_monitoring_bridge.json"
     output_txt = output_dir / f"{safe_symbol}_phase5g_rithmic_monitoring_bridge.txt"
 
@@ -255,6 +271,13 @@ def main() -> None:
         handle.write("\n")
         handle.write("\n")
         handle.write(
+            format_order_flow_regime_text(
+                order_flow_regime
+            )
+        )
+        handle.write("\n")
+        handle.write("\n")
+        handle.write(
             format_bridge_anti_fakeout_text(
                 anti_fakeout
             )
@@ -274,6 +297,7 @@ def main() -> None:
     print("liquidity_pull_replenishment_status =", liquidity_pull_replenishment.get("status"))
     print("delta_price_divergence_status =", delta_price_divergence.get("status"))
     print("volume_profile_migration_status =", volume_profile_migration.get("status"))
+    print("order_flow_regime_status =", order_flow_regime.get("regime"))
     print("anti_fakeout_status =", anti_fakeout.get("status"))
     print("anti_fakeout_data_grade =", anti_fakeout.get("data_grade"))
     print("anti_fakeout_history_snapshots =", anti_fakeout["bridge_history"].get("history_snapshot_count"))
