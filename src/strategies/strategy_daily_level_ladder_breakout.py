@@ -1,15 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from typing import Any
 
-from config.settings import (
-    DAILY_LEVEL_LADDER_MIN_BODY_ATR,
-    DAILY_LEVEL_LADDER_MIN_BREAK_ATR,
-    DAILY_LEVEL_LADDER_MIN_BREAK_PRICE,
-    DAILY_LEVEL_LADDER_MIN_CLOSE_LOCATION,
-    DAILY_LEVEL_LADDER_SL_TARGET_ZONE_PCT,
-)
+from config.settings import DAILY_LEVEL_LADDER_SL_TARGET_ZONE_PCT
 from src.daily_ladder_provider import DailyLadder
 
 
@@ -76,6 +71,7 @@ def _setup_id(
     signal: str,
     broken_boundary: float,
     target_price: float,
+    candle_time: str | None,
 ) -> str:
     raw = (
         f"{STRATEGY_NAME}|"
@@ -83,44 +79,11 @@ def _setup_id(
         f"{approved_ladder.source}|"
         f"{signal}|"
         f"{broken_boundary:.5f}|"
-        f"{target_price:.5f}"
+        f"{target_price:.5f}|"
+        f"{candle_time or 'UNKNOWN_M5'}"
     )
     digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
     return f"DLLB-{signal}-{digest}"
-
-
-def _strong_close_ok(
-    *,
-    signal: str,
-    candle_open: float,
-    candle_high: float,
-    candle_low: float,
-    candle_close: float,
-    atr: float,
-) -> tuple[bool, float, float]:
-    candle_range = candle_high - candle_low
-    if candle_range <= 0:
-        return False, 0.0, 0.0
-
-    body = abs(candle_close - candle_open)
-    min_body = atr * float(DAILY_LEVEL_LADDER_MIN_BODY_ATR)
-    if body < min_body:
-        return False, body, 0.0
-
-    if signal == "BUY":
-        close_location = (candle_close - candle_low) / candle_range
-        passed = (
-            candle_close > candle_open
-            and close_location >= float(DAILY_LEVEL_LADDER_MIN_CLOSE_LOCATION)
-        )
-    else:
-        close_location = (candle_high - candle_close) / candle_range
-        passed = (
-            candle_close < candle_open
-            and close_location >= float(DAILY_LEVEL_LADDER_MIN_CLOSE_LOCATION)
-        )
-
-    return passed, body, close_location
 
 
 def evaluate_daily_level_ladder_breakout(
@@ -128,7 +91,17 @@ def evaluate_daily_level_ladder_breakout(
     m5_df: Any,
     approved_ladder: DailyLadder,
 ) -> dict[str, Any] | None:
-    """Evaluate a fresh closed-M5 break of the approved manual ladder only."""
+    """
+    Evaluate the authoritative DLLB contract from completed M5 closes only.
+
+    Pivot is the directional anchor:
+    - above Pivot: BUY ladder only;
+    - below Pivot: SELL ladder only.
+
+    A completed-M5 close through the active approved rung is the DLLB signal.
+    Legacy body, candle-colour, close-location, ATR-break and strategy-RR
+    thresholds do not define DLLB candidate validity.
+    """
     if not isinstance(approved_ladder, DailyLadder):
         return None
 
@@ -139,25 +112,29 @@ def evaluate_daily_level_ladder_breakout(
     previous, candle = rows
 
     previous_close = _safe_float(previous.get("close"))
+    candle_close = _safe_float(candle.get("close"))
+
+    if previous_close is None or candle_close is None:
+        return None
+
+    try:
+        candle_time = str(candle.get("time"))
+    except Exception:
+        candle_time = None
+
     candle_open = _safe_float(candle.get("open"))
     candle_high = _safe_float(candle.get("high"))
     candle_low = _safe_float(candle.get("low"))
-    candle_close = _safe_float(candle.get("close"))
     atr = _safe_float(candle.get("atr_14"))
 
-    if None in {
-        previous_close,
-        candle_open,
-        candle_high,
-        candle_low,
-        candle_close,
-        atr,
-    }:
-        return None
-    if atr <= 0:
-        return None
+    body = (
+        abs(candle_close - candle_open)
+        if candle_open is not None
+        else 0.0
+    )
 
     pivot = float(approved_ladder.pivot)
+
     if candle_close > pivot:
         signal = "BUY"
     elif candle_close < pivot:
@@ -165,26 +142,26 @@ def evaluate_daily_level_ladder_breakout(
     else:
         return None
 
-    strong_close, body, close_location = _strong_close_ok(
-        signal=signal,
-        candle_open=candle_open,
-        candle_high=candle_high,
-        candle_low=candle_low,
-        candle_close=candle_close,
-        atr=atr,
-    )
-    if not strong_close:
-        return None
-
-    break_buffer = max(
-        float(DAILY_LEVEL_LADDER_MIN_BREAK_PRICE),
-        atr * float(DAILY_LEVEL_LADDER_MIN_BREAK_ATR),
-    )
+    close_location = 0.0
+    if (
+        candle_high is not None
+        and candle_low is not None
+        and candle_high > candle_low
+    ):
+        if signal == "BUY":
+            close_location = (
+                candle_close - candle_low
+            ) / (candle_high - candle_low)
+        else:
+            close_location = (
+                candle_high - candle_close
+            ) / (candle_high - candle_low)
 
     levels = _approved_execution_levels(approved_ladder)
     crossed: list[dict[str, Any]] = []
 
     if signal == "BUY":
+        # Pivot + approved upper rungs only.
         for item in levels:
             boundary = float(item["price"])
             if boundary < pivot:
@@ -195,12 +172,15 @@ def evaluate_daily_level_ladder_breakout(
         if not crossed:
             return None
 
-        broken = max(crossed, key=lambda item: float(item["price"]))
+        # Multi-rung close: the deepest crossed rung is the broken rung.
+        broken = max(
+            crossed,
+            key=lambda item: float(item["price"]),
+        )
         broken_boundary = float(broken["price"])
         break_distance = candle_close - broken_boundary
-        if break_distance < break_buffer:
-            return None
 
+        # Target must still be ahead of the completed close.
         target = next(
             (
                 item
@@ -210,7 +190,9 @@ def evaluate_daily_level_ladder_breakout(
             ),
             None,
         )
+
     else:
+        # Pivot + approved lower rungs only.
         for item in levels:
             boundary = float(item["price"])
             if boundary > pivot:
@@ -221,12 +203,15 @@ def evaluate_daily_level_ladder_breakout(
         if not crossed:
             return None
 
-        broken = min(crossed, key=lambda item: float(item["price"]))
+        # Multi-rung close: the deepest crossed rung is the broken rung.
+        broken = min(
+            crossed,
+            key=lambda item: float(item["price"]),
+        )
         broken_boundary = float(broken["price"])
         break_distance = broken_boundary - candle_close
-        if break_distance < break_buffer:
-            return None
 
+        # Target must still be ahead of the completed close.
         target = next(
             (
                 item
@@ -241,35 +226,31 @@ def evaluate_daily_level_ladder_breakout(
         return None
 
     target_price = float(target["price"])
+    gap = abs(broken_boundary - target_price)
+
+    if gap <= 0:
+        return None
+
+    raw_sl_distance = (
+        gap * float(DAILY_LEVEL_LADDER_SL_TARGET_ZONE_PCT)
+    )
+    practical_sl_distance = float(math.ceil(raw_sl_distance))
+
+    if practical_sl_distance <= 0:
+        return None
 
     if signal == "BUY":
-        zone_distance = target_price - broken_boundary
-        if zone_distance <= 0:
-            return None
-        sl_reference = (
-            broken_boundary
-            - zone_distance * float(DAILY_LEVEL_LADDER_SL_TARGET_ZONE_PCT)
-        )
+        sl_reference = broken_boundary - practical_sl_distance
     else:
-        zone_distance = broken_boundary - target_price
-        if zone_distance <= 0:
-            return None
-        sl_reference = (
-            broken_boundary
-            + zone_distance * float(DAILY_LEVEL_LADDER_SL_TARGET_ZONE_PCT)
-        )
+        sl_reference = broken_boundary + practical_sl_distance
 
     setup_id = _setup_id(
         approved_ladder=approved_ladder,
         signal=signal,
         broken_boundary=broken_boundary,
         target_price=target_price,
+        candle_time=candle_time,
     )
-
-    try:
-        candle_time = str(candle.get("time"))
-    except Exception:
-        candle_time = None
 
     broken_name = str(broken["name"])
     target_name = str(target["name"])
@@ -277,10 +258,14 @@ def evaluate_daily_level_ladder_breakout(
 
     reason = (
         f"{STRATEGY_NAME} {signal} -> "
-        f"closed M5 freshly broke approved {broken_name} "
+        f"completed M5 close freshly broke approved {broken_name} "
         f"level={round(broken_boundary, 2)} -> "
-        f"next approved {target_name} target={round(target_price, 2)} -> "
-        f"SL 40% source-to-target zone={round(sl_reference, 2)}"
+        f"next still-unreached approved {target_name} "
+        f"target={round(target_price, 2)} -> "
+        f"SL distance=ceil({round(gap, 4)}*"
+        f"{float(DAILY_LEVEL_LADDER_SL_TARGET_ZONE_PCT)})="
+        f"{round(practical_sl_distance, 2)} -> "
+        f"SL={round(sl_reference, 2)}"
     )
 
     return {
@@ -312,13 +297,21 @@ def evaluate_daily_level_ladder_breakout(
         "sl_reference": round(sl_reference, 2),
         "tp_reference": round(target_price, 2),
         "entry_reference": round(candle_close, 2),
-        "zone_distance": round(zone_distance, 2),
-        "break_buffer": round(break_buffer, 4),
+        "zone_distance": round(gap, 2),
+        "raw_sl_distance": round(raw_sl_distance, 4),
+        "practical_sl_distance": round(practical_sl_distance, 2),
+        # Legacy filter telemetry retained as diagnostics only.
+        "break_buffer": 0.0,
         "break_distance": round(break_distance, 4),
         "m5_body": round(body, 4),
-        "m5_atr": round(atr, 4),
+        "m5_atr": round(atr, 4) if atr is not None else None,
         "m5_close_location": round(close_location, 4),
         "m5_closed_time": candle_time,
+        "strategy_geometry_authoritative": True,
+        "tp_authority": "DLLB_NEXT_APPROVED_RUNG",
+        "position_management_mode": "DLLB_FIXED_RUNG_EXIT",
         "reason": reason,
-        "duplicate_policy": "broker_date_approved_source_target",
+        "duplicate_policy": (
+            "broker_date_approved_source_closed_m5_broken_target"
+        ),
     }

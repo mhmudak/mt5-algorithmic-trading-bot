@@ -1391,21 +1391,30 @@ SESSION_ORB_DAILY_LEVEL_REQUIRE_M5_CONFIRMATION = True
 # Daily Level Ladder Breakout V1
 # =========================
 # M5-native strategy:
-# - latest completed broker D1 supplies Pivot + daily levels
-# - latest CLOSED M5 candle is the execution signal
+# - latest completed broker D1 supplies the approved ladder
+# - latest COMPLETED M5 close-through is the execution trigger
+# - Pivot is the directional anchor (above=BUY, below=SELL)
 # - no M15-close dependency
-# - TP is the next unresolved daily structural level/cluster
-# - SL is 40% of the source->target structural zone
+# - TP is the next still-unreached approved DLLB rung
+# - SL distance is ceil(40% of broken-rung -> target-rung gap)
 ENABLE_DAILY_LEVEL_LADDER_BREAKOUT = True
 DAILY_LEVEL_LADDER_M5_BARS = 80
 DAILY_LEVEL_LADDER_CLUSTER_ATR = 0.40
 DAILY_LEVEL_LADDER_CLUSTER_MIN_PRICE = 0.50
 DAILY_LEVEL_LADDER_CLUSTER_MAX_PRICE = 3.00
+
+# Legacy DLLB filter values are retained for compatibility/telemetry only.
+# They no longer gate DLLB candidate generation because the authoritative
+# trigger is the completed-M5 close through the approved active rung.
 DAILY_LEVEL_LADDER_MIN_BREAK_ATR = 0.05
 DAILY_LEVEL_LADDER_MIN_BREAK_PRICE = 0.30
 DAILY_LEVEL_LADDER_MIN_BODY_ATR = 0.20
 DAILY_LEVEL_LADDER_MIN_CLOSE_LOCATION = 0.70
+
 DAILY_LEVEL_LADDER_SL_TARGET_ZONE_PCT = 0.40
+
+# Diagnostic reference only. DLLB's own fixed rung TP + SL geometry is not
+# vetoed by a second strategy RR threshold; global execution safeguards remain.
 DAILY_LEVEL_LADDER_MIN_RR = 1.20
 DAILY_LEVEL_LADDER_SKIP_FIRST_M5_AFTER_STARTUP = True
 

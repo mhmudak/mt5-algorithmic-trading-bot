@@ -1577,6 +1577,17 @@ def _format_execution_tp_management(
 
 
 def execute_trade(signal, trade_plan, symbol):
+    strategy_name = str(
+        trade_plan.get("strategy", "")
+        if isinstance(trade_plan, dict)
+        else ""
+    ).upper()
+
+    dllb_geometry_authoritative = (
+        strategy_name
+        == "DAILY_LEVEL_LADDER_BREAKOUT"
+    )
+
     execution_start_ts = perf_counter()
     _log_execution_timing(
         "execute_trade_start",
@@ -1777,6 +1788,7 @@ def execute_trade(signal, trade_plan, symbol):
 
     if (
         isinstance(trade_plan, dict)
+        and not dllb_geometry_authoritative
         and not trade_plan.get(
             "tp_ladder_child_order"
         )
@@ -1833,7 +1845,8 @@ def execute_trade(signal, trade_plan, symbol):
         old_expected_price = expected_price
 
         if (
-            ENABLE_MOMENTUM_CONTINUATION_ON_PRICE_DRIFT
+            not dllb_geometry_authoritative
+            and ENABLE_MOMENTUM_CONTINUATION_ON_PRICE_DRIFT
             and adverse_drift <= MOMENTUM_CONTINUATION_MAX_DRIFT_PRICE
             and not (
                 is_fvg_ce_mitigation_trade(trade_plan)
@@ -1902,7 +1915,8 @@ def execute_trade(signal, trade_plan, symbol):
     skip_slippage_guard = bool(trade_plan.get("skip_slippage_guard"))
 
     if (
-        not skip_slippage_guard
+        not dllb_geometry_authoritative
+        and not skip_slippage_guard
         and ENABLE_HIGH_SLIPPAGE_RETRACEMENT
         and pre_execution_slippage > MAX_SLIPPAGE
     ):
@@ -1948,31 +1962,56 @@ def execute_trade(signal, trade_plan, symbol):
         send_telegram_message(error_message)
         return False
     
-    # Build a fallback ladder from FINAL execution geometry.
-    #
-    # Existing structural/key-level ladders are preserved.
-    # The helper is metadata-only: TP3/RR eligibility is not
-    # changed here.
-    trade_plan = ensure_universal_tp_ladder(
-        signal,
-        trade_plan,
-        source=(
-            "ORDER_EXECUTOR_FINAL_GEOMETRY"
-        ),
-        geometry_phase=(
-            "FINAL_EXECUTION"
-        ),
-    )
+    if dllb_geometry_authoritative:
+        # DLLB owns one broker TP: the next approved rung.
+        # Universal TP staging/runners must not rewrite it.
+        trade_plan = dict(trade_plan)
+        trade_plan.pop("tp_ladder", None)
+        trade_plan.pop("main_tp1", None)
+        trade_plan.pop("main_tp2", None)
+        trade_plan.pop("main_tp3", None)
+        trade_plan["main_tp_ladder_managed"] = False
+        trade_plan["main_runner_after_tp3"] = False
+        trade_plan["broker_take_profit"] = float(
+            trade_plan["take_profit"]
+        )
+        trade_plan[
+            "tp_management_mode"
+        ] = "DLLB_NEXT_APPROVED_RUNG"
 
-    # Freeze MAIN TP1/TP2/TP3/runner only after all
-    # execution-time entry/SL transformations and
-    # symbol validation are complete.
-    trade_plan = prepare_main_tp_ladder_execution(
-        signal,
-        trade_plan,
-        symbol,
-        symbol_info=symbol_info,
-    )
+        logger.info(
+            "[DLLB EXECUTION GEOMETRY] "
+            "strategy-owned SL/TP preserved "
+            f"| sl={trade_plan.get('stop_loss')} "
+            f"tp={trade_plan.get('take_profit')}"
+        )
+
+    else:
+        # Build a fallback ladder from FINAL execution geometry.
+        #
+        # Existing structural/key-level ladders are preserved.
+        # The helper is metadata-only: TP3/RR eligibility is not
+        # changed here.
+        trade_plan = ensure_universal_tp_ladder(
+            signal,
+            trade_plan,
+            source=(
+                "ORDER_EXECUTOR_FINAL_GEOMETRY"
+            ),
+            geometry_phase=(
+                "FINAL_EXECUTION"
+            ),
+        )
+
+        # Freeze MAIN TP1/TP2/TP3/runner only after all
+        # execution-time entry/SL transformations and
+        # symbol validation are complete.
+        trade_plan = prepare_main_tp_ladder_execution(
+            signal,
+            trade_plan,
+            symbol,
+            symbol_info=symbol_info,
+        )
 
     deviation_points = max(1, int(round(MAX_SLIPPAGE / symbol_info.point)))
 
@@ -2021,6 +2060,41 @@ def execute_trade(signal, trade_plan, symbol):
         
         expected_price = float(trade_plan["entry_price"])
         current_execution_price = fresh_tick.ask if signal == "BUY" else fresh_tick.bid
+
+        if dllb_geometry_authoritative:
+            try:
+                dllb_sl = float(
+                    trade_plan["stop_loss"]
+                )
+                dllb_tp = float(
+                    trade_plan["take_profit"]
+                )
+                dllb_geometry_ok = (
+                    dllb_sl
+                    < current_execution_price
+                    < dllb_tp
+                    if signal == "BUY"
+                    else dllb_tp
+                    < current_execution_price
+                    < dllb_sl
+                )
+            except (
+                KeyError,
+                TypeError,
+                ValueError,
+            ):
+                dllb_geometry_ok = False
+
+            if not dllb_geometry_ok:
+                logger.warning(
+                    "[DLLB EXECUTION BLOCKED] "
+                    "reason=fresh_tick_outside_authoritative_geometry "
+                    f"signal={signal} "
+                    f"price={round(current_execution_price, 2)} "
+                    f"sl={trade_plan.get('stop_loss')} "
+                    f"tp={trade_plan.get('take_profit')}"
+                )
+                return False
 
         _log_execution_timing(
             "fresh_tick_received",

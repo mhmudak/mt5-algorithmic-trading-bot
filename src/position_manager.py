@@ -61,6 +61,7 @@ def manage_positions(symbol: str):
         return
 
     tracked_positions = []
+    dllb_stats_updated = False
 
     for position in positions:
         position_id = str(position.ticket)
@@ -77,9 +78,34 @@ def manage_positions(symbol: str):
             update_trade_statistics(position, trade, tick)
             continue
 
+        if (
+            str(
+                trade.get(
+                    "strategy",
+                    "",
+                )
+                or ""
+            ).upper()
+            == "DAILY_LEVEL_LADDER_BREAKOUT"
+        ):
+            logger.info(
+                "[MANAGER] DLLB strategy-owned SL/TP; "
+                f"statistics only | position={position_id}"
+            )
+            update_trade_statistics(
+                position,
+                trade,
+                tick,
+            )
+            dllb_stats_updated = True
+            continue
+
         tracked_positions.append((position, trade))
 
     if not tracked_positions:
+        if dllb_stats_updated:
+            save_trades(trades)
+
         logger.info("[MANAGER] No tracked open positions to manage")
         return
 

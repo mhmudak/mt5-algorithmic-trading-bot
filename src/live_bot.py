@@ -11538,6 +11538,10 @@ def process_candidate_rejection_recovery_setups(
 
 def execute_trade(signal, trade_plan, symbol):
     plan = trade_plan if isinstance(trade_plan, dict) else {}
+    dllb_execution = (
+        str(plan.get("strategy", "") or "").upper()
+        == "DAILY_LEVEL_LADDER_BREAKOUT"
+    )
 
     try:
         from config import settings as _phase6w_settings
@@ -11547,11 +11551,14 @@ def execute_trade(signal, trade_plan, symbol):
             signal=signal,
             trade_plan=trade_plan,
             execution_engine=globals().get("execution_engine"),
-            enabled=bool(
-                getattr(
-                    _phase6w_settings,
-                    "ENABLE_INTRABAR_OPPOSITE_ACTIVE_SETUP_GUARD",
-                    True,
+            enabled=(
+                not dllb_execution
+                and bool(
+                    getattr(
+                        _phase6w_settings,
+                        "ENABLE_INTRABAR_OPPOSITE_ACTIVE_SETUP_GUARD",
+                        True,
+                    )
                 )
             ),
             block_sources=getattr(
@@ -11643,11 +11650,14 @@ def execute_trade(signal, trade_plan, symbol):
             signal=signal,
             trade_plan=trade_plan,
             lock_state=globals().get("PHASE6W_M15_DIRECTION_LOCK"),
-            enabled=bool(
-                getattr(
-                    _phase6w4_settings,
-                    "ENABLE_INTRABAR_M15_DIRECTION_LOCK_GUARD",
-                    True,
+            enabled=(
+                not dllb_execution
+                and bool(
+                    getattr(
+                        _phase6w4_settings,
+                        "ENABLE_INTRABAR_M15_DIRECTION_LOCK_GUARD",
+                        True,
+                    )
                 )
             ),
         )
@@ -11956,11 +11966,14 @@ def execute_trade(signal, trade_plan, symbol):
         intrabar_subprofile_guard = evaluate_intrabar_subprofile_risk_guard(
             signal=signal,
             trade_plan=trade_plan,
-            enabled=bool(
-                getattr(
-                    _phase6w2_settings,
-                    "ENABLE_INTRABAR_SUBPROFILE_RISK_GUARD",
-                    True,
+            enabled=(
+                not dllb_execution
+                and bool(
+                    getattr(
+                        _phase6w2_settings,
+                        "ENABLE_INTRABAR_SUBPROFILE_RISK_GUARD",
+                        True,
+                    )
                 )
             ),
             block_rules=getattr(
@@ -13153,8 +13166,8 @@ def process_daily_level_ladder_breakout_v1(
     #
     # Consume this closed M5 exactly once here.
     #
-    # Downstream RR/news/time/guard/execution-memory rejection
-    # intentionally remains one-shot. Do not chase an old
+    # Downstream news/time/guard/execution-memory/raw-executor
+    # rejection intentionally remains one-shot. Do not chase an old
     # M5 breakout later at a materially different live price.
     runtime[
         "last_closed_m5_time"
@@ -13174,10 +13187,32 @@ def process_daily_level_ladder_breakout_v1(
         "BUY",
         "SELL",
     }:
+        logger.info(
+            "[DLLB BLOCK] reason=invalid_candidate_signal "
+            f"signal={signal} m5={latest_closed_time}"
+        )
         return False
 
     setup_id = candidate.get(
         "setup_id"
+    )
+
+    runtime_entry = (
+        float(tick.ask)
+        if signal == "BUY"
+        else float(tick.bid)
+    )
+
+    logger.info(
+        "[DLLB CANDIDATE] "
+        f"direction={signal} "
+        f"broken={candidate.get('broken_level_name')} "
+        f"broken_price={candidate.get('broken_level')} "
+        f"target={candidate.get('target_level')} "
+        f"m5_close={candidate.get('entry_reference')} "
+        f"sl={candidate.get('sl_reference')} "
+        f"runtime_entry={round(runtime_entry, 2)} "
+        f"m5={candidate.get('m5_closed_time')}"
     )
 
     consumed = runtime.get(
@@ -13195,6 +13230,10 @@ def process_daily_level_ladder_breakout_v1(
         ] = consumed
 
     if setup_id in consumed:
+        logger.info(
+            "[DLLB BLOCK] reason=duplicate_setup "
+            f"setup_id={setup_id} m5={latest_closed_time}"
+        )
         return False
 
     try:
@@ -13231,6 +13270,36 @@ def process_daily_level_ladder_breakout_v1(
         "market_condition"
     ] = market_condition
 
+    try:
+        dllb_sl = float(
+            candidate.get(
+                "sl_reference"
+            )
+        )
+        dllb_tp = float(
+            candidate.get(
+                "tp_reference"
+            )
+        )
+        runtime_geometry_ok = (
+            dllb_sl < runtime_entry < dllb_tp
+            if signal == "BUY"
+            else dllb_tp < runtime_entry < dllb_sl
+        )
+    except (TypeError, ValueError):
+        runtime_geometry_ok = False
+
+    if not runtime_geometry_ok:
+        logger.info(
+            "[DLLB BLOCK] "
+            "reason=runtime_price_outside_authoritative_geometry "
+            f"setup_id={setup_id} "
+            f"runtime_entry={round(runtime_entry, 2)} "
+            f"sl={candidate.get('sl_reference')} "
+            f"tp={candidate.get('tp_reference')}"
+        )
+        return False
+
     trade_plan = calculate_trade_plan(
         df=m5_df,
         signal=signal,
@@ -13246,9 +13315,9 @@ def process_daily_level_ladder_breakout_v1(
         dict,
     ):
         logger.info(
-            "[DAILY LEVEL LADDER] "
-            "fresh trade plan invalid "
-            f"| setup_id={setup_id}"
+            "[DLLB BLOCK] reason=trade_plan_invalid "
+            f"setup_id={setup_id} "
+            f"runtime_entry={round(runtime_entry, 2)}"
         )
         return False
 
@@ -13274,13 +13343,20 @@ def process_daily_level_ladder_breakout_v1(
             )
         ):
             logger.warning(
-                "[DAILY LEVEL LADDER] "
-                "authoritative next-level TP was not preserved; "
-                "execution blocked"
+                "[DLLB BLOCK] "
+                "reason=authoritative_tp_not_preserved "
+                f"setup_id={setup_id} "
+                f"expected_tp={authoritative_tp} "
+                f"actual_tp={trade_plan.get('take_profit')}"
             )
             return False
 
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "[DLLB BLOCK] "
+            "reason=authoritative_tp_validation_error "
+            f"setup_id={setup_id} error={exc}"
+        )
         return False
 
     trade_plan[
@@ -13355,6 +13431,32 @@ def process_daily_level_ladder_breakout_v1(
         "target_level"
     )
 
+    trade_plan[
+        "strategy_geometry_authoritative"
+    ] = True
+
+    trade_plan[
+        "tp_authority"
+    ] = "DLLB_NEXT_APPROVED_RUNG"
+
+    trade_plan[
+        "position_management_mode"
+    ] = "DLLB_FIXED_RUNG_EXIT"
+
+    trade_plan[
+        "broker_take_profit"
+    ] = float(
+        authoritative_tp
+    )
+
+    trade_plan[
+        "main_tp_ladder_managed"
+    ] = False
+
+    trade_plan[
+        "main_runner_after_tp3"
+    ] = False
+
     rr_value = calculate_rr_value(
         trade_plan
     )
@@ -13371,84 +13473,12 @@ def process_daily_level_ladder_breakout_v1(
         ),
     )
 
-    if (
-        rr_value is None
-        or rr_value
-        < required_rr
-    ):
-        logger.info(
-            "[DAILY LEVEL LADDER] "
-            "fresh live RR below requirement "
-            f"| setup_id={setup_id} "
-            f"rr={rr_value} "
-            f"required={required_rr}"
-        )
-
-        try:
-            log_setup_event(
-                setup_id=setup_id,
-                event=(
-                    "DAILY_LEVEL_LADDER_LOW_RR"
-                ),
-                strategy=(
-                    candidate.get(
-                        "strategy"
-                    )
-                ),
-                signal=signal,
-                entry_model=(
-                    candidate.get(
-                        "entry_model"
-                    )
-                ),
-                score=(
-                    candidate.get(
-                        "score"
-                    )
-                ),
-                session=session_name,
-                market_condition=(
-                    market_condition
-                ),
-                entry=(
-                    trade_plan.get(
-                        "entry_price"
-                    )
-                ),
-                sl=(
-                    trade_plan.get(
-                        "stop_loss"
-                    )
-                ),
-                tp=(
-                    trade_plan.get(
-                        "take_profit"
-                    )
-                ),
-                rr=rr_value,
-                required_rr=required_rr,
-                reason=(
-                    "fresh executable RR "
-                    "below strategy minimum"
-                ),
-                extra={
-                    "broken_level": (
-                        candidate.get(
-                            "broken_level"
-                        )
-                    ),
-                    "target_level": (
-                        candidate.get(
-                            "target_level"
-                        )
-                    ),
-                },
-            )
-
-        except Exception:
-            pass
-
-        return False
+    logger.info(
+        "[DLLB RR DIAGNOSTIC] "
+        f"setup_id={setup_id} "
+        f"rr={rr_value} "
+        f"configured_reference={required_rr}"
+    )
 
     trade_plan[
         "rr"
@@ -13464,10 +13494,8 @@ def process_daily_level_ladder_breakout_v1(
 
     if news_blocked:
         logger.info(
-            "[DAILY LEVEL LADDER] "
-            "news blocked "
-            f"| setup_id={setup_id} "
-            f"reason={news_reason}"
+            "[DLLB BLOCK] reason=news_blackout "
+            f"setup_id={setup_id} detail={news_reason}"
         )
         return False
 
@@ -13477,10 +13505,8 @@ def process_daily_level_ladder_breakout_v1(
 
     if time_blocked:
         logger.info(
-            "[DAILY LEVEL LADDER] "
-            "time blocked "
-            f"| setup_id={setup_id} "
-            f"reason={time_reason}"
+            "[DLLB BLOCK] reason=time_blackout "
+            f"setup_id={setup_id} detail={time_reason}"
         )
         return False
 
@@ -13493,10 +13519,8 @@ def process_daily_level_ladder_breakout_v1(
 
     if not trade_allowed:
         logger.info(
-            "[DAILY LEVEL LADDER] "
-            "trade guard blocked "
-            f"| setup_id={setup_id} "
-            f"reason={guard_reason}"
+            "[DLLB BLOCK] reason=trade_guard "
+            f"setup_id={setup_id} detail={guard_reason}"
         )
         return False
 
@@ -13515,9 +13539,8 @@ def process_daily_level_ladder_breakout_v1(
         opposite,
     ):
         logger.info(
-            "[DAILY LEVEL LADDER] "
-            "opposite position exists "
-            f"| setup_id={setup_id}"
+            "[DLLB BLOCK] reason=opposite_position_exists "
+            f"setup_id={setup_id}"
         )
         return False
 
@@ -13546,16 +13569,13 @@ def process_daily_level_ladder_breakout_v1(
 
     if memory_blocked:
         logger.info(
-            "[DAILY LEVEL LADDER] "
-            "execution memory blocked "
-            f"| setup_id={setup_id} "
-            f"reason={memory_reason}"
+            "[DLLB BLOCK] reason=execution_memory "
+            f"setup_id={setup_id} detail={memory_reason}"
         )
         return False
 
     logger.info(
-        "[DAILY LEVEL LADDER] "
-        "execution attempt "
+        "[DLLB EXECUTION ATTEMPT] "
         f"| setup_id={setup_id} "
         f"signal={signal} "
         f"approved_source={candidate.get('daily_approved_source')} "
@@ -13656,9 +13676,9 @@ def process_daily_level_ladder_breakout_v1(
 
     if not execution_result:
         logger.info(
-            "[DAILY LEVEL LADDER] "
-            "execute_trade returned False "
-            f"| setup_id={setup_id}"
+            "[DLLB EXECUTION FAILED] "
+            "reason=execute_trade_returned_false "
+            f"setup_id={setup_id}"
         )
 
         try:
@@ -13792,6 +13812,14 @@ def process_daily_level_ladder_breakout_v1(
 
     except Exception:
         pass
+
+    logger.info(
+        "[DLLB EXECUTED] "
+        f"setup_id={setup_id} direction={signal} "
+        f"entry={trade_plan.get('entry_price')} "
+        f"sl={trade_plan.get('stop_loss')} "
+        f"tp={trade_plan.get('take_profit')}"
+    )
 
     return True
 
