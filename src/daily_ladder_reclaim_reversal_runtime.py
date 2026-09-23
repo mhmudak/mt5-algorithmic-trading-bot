@@ -683,5 +683,3 @@ def process_daily_ladder_reclaim_reversal_v1(
         return True
 
     return False
-
-
