@@ -3022,3 +3022,24 @@ DAILY_LEVEL_LADDER_MANUAL_REQUIRE_CURRENT_BROKER_DATE = True
 DAILY_LEVEL_LADDER_AUTO_SHADOW_ENABLED = True
 DAILY_LEVEL_LADDER_SHADOW_PIVOT_EXCLUSION_RANGE_PCT = 0.015
 DAILY_LEVEL_LADDER_SHADOW_CLUSTER_RANGE_PCT = 0.070
+
+# ============================================================
+# Rithmic Numeric Shadow Trade-Plan Advisory
+# Phase 3D
+# ============================================================
+
+# HARD DEFAULT:
+# Numeric Rithmic Entry / SL / TP are display-only and remain
+# disabled until a fresh market-open calibration is explicitly
+# validated.
+ENABLE_RITHMIC_NUMERIC_SHADOW_ADVISORY = False
+
+# Current production Rithmic contract.
+RITHMIC_NUMERIC_SHADOW_SYMBOL = "GCZ6"
+RITHMIC_NUMERIC_SHADOW_EXCHANGE = "COMEX"
+
+# Fail-closed freshness / market-quality limits.
+RITHMIC_NUMERIC_SHADOW_MAX_BASIS_AGE_SECONDS = 300.0
+RITHMIC_NUMERIC_SHADOW_MAX_STATE_AGE_SECONDS = 15.0
+RITHMIC_NUMERIC_SHADOW_MAX_COMPONENT_AGE_SECONDS = 15.0
+RITHMIC_NUMERIC_SHADOW_MAX_GC_SPREAD = 1.0

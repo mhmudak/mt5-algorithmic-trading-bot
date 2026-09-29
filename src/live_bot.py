@@ -149,6 +149,14 @@ from src.rithmic_setup_verdict import (
     build_rithmic_setup_verdict,
     format_rithmic_setup_verdict_telegram_block,
 )
+from src.order_flow_features.rithmic_trade_plan_advisory import (
+    build_rithmic_trade_plan_advisory,
+    format_rithmic_trade_plan_advisory_telegram_block,
+    load_rithmic_basis_summary,
+)
+from src.order_flow_features.rithmic_numeric_shadow_runtime import (
+    build_rithmic_numeric_shadow_runtime_context,
+)
 
 from config.settings import (
     SYMBOL,
@@ -1241,27 +1249,133 @@ def _rithmic_setup_verdict_telegram_fail_open(
     *,
     signal,
     context,
+    bot_trade_plan=None,
 ):
-    """Build display-only Rithmic setup context with zero trading authority."""
+    """
+    Build display-only Rithmic setup context.
+
+    bot_trade_plan is observation input only.
+    """
 
     try:
         verdict = build_rithmic_setup_verdict(
             context,
             signal,
         )
-        block = format_rithmic_setup_verdict_telegram_block(
-            verdict
+
+        block = (
+            format_rithmic_setup_verdict_telegram_block(
+                verdict
+            )
         )
+
+        if isinstance(
+            bot_trade_plan,
+            dict,
+        ):
+            try:
+                basis_summary = (
+                    load_rithmic_basis_summary()
+                )
+
+                from config.settings import (
+                    ENABLE_RITHMIC_NUMERIC_SHADOW_ADVISORY,
+                    RITHMIC_NUMERIC_SHADOW_EXCHANGE,
+                    RITHMIC_NUMERIC_SHADOW_MAX_BASIS_AGE_SECONDS,
+                    RITHMIC_NUMERIC_SHADOW_MAX_COMPONENT_AGE_SECONDS,
+                    RITHMIC_NUMERIC_SHADOW_MAX_GC_SPREAD,
+                    RITHMIC_NUMERIC_SHADOW_MAX_STATE_AGE_SECONDS,
+                    RITHMIC_NUMERIC_SHADOW_SYMBOL,
+                )
+
+                numeric_shadow_runtime = (
+                    build_rithmic_numeric_shadow_runtime_context(
+                        enabled=(
+                            ENABLE_RITHMIC_NUMERIC_SHADOW_ADVISORY
+                        ),
+                        signal=signal,
+                        rithmic_verdict=verdict,
+                        rithmic_symbol=(
+                            RITHMIC_NUMERIC_SHADOW_SYMBOL
+                        ),
+                        exchange=(
+                            RITHMIC_NUMERIC_SHADOW_EXCHANGE
+                        ),
+                        max_basis_age_seconds=(
+                            RITHMIC_NUMERIC_SHADOW_MAX_BASIS_AGE_SECONDS
+                        ),
+                        max_state_age_seconds=(
+                            RITHMIC_NUMERIC_SHADOW_MAX_STATE_AGE_SECONDS
+                        ),
+                        max_component_age_seconds=(
+                            RITHMIC_NUMERIC_SHADOW_MAX_COMPONENT_AGE_SECONDS
+                        ),
+                        max_gc_spread=(
+                            RITHMIC_NUMERIC_SHADOW_MAX_GC_SPREAD
+                        ),
+                    )
+                )
+
+                verdict[
+                    "numeric_shadow_runtime"
+                ] = numeric_shadow_runtime
+
+                advisory = (
+                    build_rithmic_trade_plan_advisory(
+                        signal=signal,
+                        bot_trade_plan=bot_trade_plan,
+                        rithmic_verdict=verdict,
+                        basis_summary=basis_summary,
+                        numeric_shadow_enabled=(
+                            ENABLE_RITHMIC_NUMERIC_SHADOW_ADVISORY
+                        ),
+                        numeric_shadow_plan=(
+                            numeric_shadow_runtime.get(
+                                "numeric_shadow_plan"
+                            )
+                        ),
+                    )
+                )
+
+                verdict[
+                    "trade_plan_advisory"
+                ] = advisory
+
+                advisory_block = (
+                    format_rithmic_trade_plan_advisory_telegram_block(
+                        advisory
+                    )
+                )
+
+                if advisory_block:
+                    block = (
+                        block
+                        + "\n\n"
+                        + advisory_block
+                    )
+
+            except Exception as advisory_exc:
+                logger.warning(
+                    "[RITHMIC TRADE PLAN ADVISORY] "
+                    "failed open: "
+                    f"{advisory_exc}"
+                )
+
         return verdict, block
+
     except Exception as exc:
         logger.warning(
             "[RITHMIC SETUP VERDICT] failed open: "
             f"{exc}"
         )
+
         verdict = {
             "verdict": "UNAVAILABLE",
             "alignment": "NOT_AVAILABLE_FORMATTER_ERROR",
-            "setup_direction": str(signal or "UNKNOWN").upper(),
+            "setup_direction": str(
+                signal
+                or "UNKNOWN"
+            ).upper(),
             "supports_setup": False,
             "against_setup": False,
             "support_score": 0,
@@ -1273,10 +1387,12 @@ def _rithmic_setup_verdict_telegram_fail_open(
             "safe_for_execution": False,
             "execution_allowed": False,
         }
+
         return (
             verdict,
-            "⚪ RITHMIC: UNAVAILABLE / ERROR\n"
-            "Mode: OBSERVE ONLY — NO EXECUTION AUTHORITY",
+            "? RITHMIC: UNAVAILABLE / ERROR\n"
+            "Mode: OBSERVE ONLY ? "
+            "NO EXECUTION AUTHORITY",
         )
 
 
@@ -16648,6 +16764,9 @@ def process_cycle(last_processed_candle_time):
                         signal=signal,
                         context=(
                             setup_participation_context
+                        ),
+                        bot_trade_plan=(
+                            detected_trade_plan
                         ),
                     )
                 )
