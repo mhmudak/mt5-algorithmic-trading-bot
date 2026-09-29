@@ -412,6 +412,110 @@ def test_stale_basis_blocks():
     )
 
 
+def test_state_block_reason_is_not_masked_by_ready_basis():
+    verdict = deepcopy(
+        VERDICT
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        state_path, basis_path = (
+            write_inputs(
+                Path(tmp)
+            )
+        )
+
+        blocked_state = deepcopy(
+            STATE
+        )
+
+        blocked_state[
+            "state_status"
+        ] = "STARTING"
+
+        state_path.write_text(
+            json.dumps(
+                blocked_state,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        result = (
+            build_rithmic_numeric_shadow_runtime_context(
+                enabled=True,
+                signal="BUY",
+                rithmic_verdict=verdict,
+                rithmic_symbol="GCZ6",
+                exchange="COMEX",
+                state_path=state_path,
+                basis_path=basis_path,
+                now_epoch=NOW,
+            )
+        )
+
+    assert (
+        result["status"]
+        == "BLOCKED"
+    )
+
+    translation = (
+        result[
+            "translation_context"
+        ]
+    )
+
+    assert (
+        translation[
+            "basis_gate"
+        ][
+            "usable_for_numeric_shadow"
+        ]
+        is True
+    )
+
+    assert (
+        translation[
+            "state_gate"
+        ][
+            "usable_for_numeric_shadow"
+        ]
+        is False
+    )
+
+    assert (
+        translation[
+            "state_gate"
+        ][
+            "reason"
+        ]
+        == "phase5c_state_not_ready"
+    )
+
+    assert (
+        result["reason"]
+        == (
+            "translation_blocked:"
+            "phase5c_state_not_ready"
+        )
+    )
+
+    assert (
+        "basis_ready_for_shadow_translation"
+        not in result[
+            "reason"
+        ]
+    )
+
+    assert_zero_authority(
+        result
+    )
+
+    print(
+        "PASS: blocked state reason is not "
+        "masked by ready basis reason"
+    )
+
+
 def test_mixed_verdict_blocks_plan():
     verdict = deepcopy(
         VERDICT
@@ -616,6 +720,7 @@ def main():
     test_disabled_short_circuit()
     test_supportive_runtime_ready()
     test_stale_basis_blocks()
+    test_state_block_reason_is_not_masked_by_ready_basis()
     test_mixed_verdict_blocks_plan()
     test_settings_hard_off()
     test_live_bot_wiring_is_display_only()

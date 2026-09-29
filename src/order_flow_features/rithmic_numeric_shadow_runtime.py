@@ -380,28 +380,39 @@ def build_rithmic_numeric_shadow_runtime_context(
 
         gate_reason = None
 
-        if isinstance(
+        # Report the gate that actually BLOCKED translation.
+        # A READY gate may carry a success reason such as
+        # "basis_ready_for_shadow_translation"; that must not
+        # mask a failing state gate.
+        for gate in (
             basis_gate,
-            dict,
+            state_gate,
         ):
-            gate_reason = (
-                basis_gate.get(
+            if not isinstance(
+                gate,
+                dict,
+            ):
+                continue
+
+            if (
+                gate.get(
+                    "usable_for_numeric_shadow"
+                )
+                is True
+            ):
+                continue
+
+            candidate = (
+                gate.get(
                     "reason"
                 )
             )
 
-        if (
-            gate_reason is None
-            and isinstance(
-                state_gate,
-                dict,
-            )
-        ):
-            gate_reason = (
-                state_gate.get(
-                    "reason"
+            if candidate:
+                gate_reason = (
+                    candidate
                 )
-            )
+                break
 
         if gate_reason is None:
             gate_reason = (
