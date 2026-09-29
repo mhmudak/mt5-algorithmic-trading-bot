@@ -37,6 +37,10 @@ PHASE = "PHASE_5AC_XAUUSD_RITHMIC_BASIS_CALIBRATION"
 ORDER_FLOW_DIR = ROOT / "data" / "order_flow" / "rithmic"
 
 OUT_JSON = ORDER_FLOW_DIR / "phase5ac_xauusd_rithmic_basis_calibration.json"
+CANDIDATE_JSON = (
+    ORDER_FLOW_DIR
+    / "phase5ac_xauusd_rithmic_basis_calibration_candidate.json"
+)
 OUT_TXT = ORDER_FLOW_DIR / "phase5ac_xauusd_rithmic_basis_calibration_summary.txt"
 
 
@@ -76,6 +80,93 @@ def write_json(
         temporary_path,
         path,
     )
+
+
+def promote_candidate_basis_if_ready(
+    *,
+    candidate_path: Path,
+    canonical_path: Path,
+    session_status: str,
+    summary: dict[str, Any],
+) -> bool:
+    """
+    Promote only a completed, observe-ready calibration candidate.
+
+    Failed, interrupted, partial, or low-quality candidates never
+    replace the last good canonical basis. The previous canonical
+    mtime therefore remains unchanged and naturally becomes stale
+    under the numeric-shadow freshness gate.
+    """
+
+    if (
+        str(
+            session_status
+            or ""
+        ).strip().upper()
+        != "COMPLETED"
+    ):
+        return False
+
+    if (
+        summary.get(
+            "basis_ready_observe_only"
+        )
+        is not True
+    ):
+        return False
+
+    try:
+        candidate_payload = json.loads(
+            candidate_path.read_text(
+                encoding="utf-8",
+            )
+        )
+    except Exception:
+        return False
+
+    if not isinstance(
+        candidate_payload,
+        dict,
+    ):
+        return False
+
+    if (
+        str(
+            candidate_payload.get(
+                "session_status"
+            )
+            or ""
+        ).strip().upper()
+        != "COMPLETED"
+    ):
+        return False
+
+    candidate_summary = (
+        candidate_payload.get(
+            "summary"
+        )
+    )
+
+    if not isinstance(
+        candidate_summary,
+        dict,
+    ):
+        return False
+
+    if (
+        candidate_summary.get(
+            "basis_ready_observe_only"
+        )
+        is not True
+    ):
+        return False
+
+    write_json(
+        canonical_path,
+        candidate_payload,
+    )
+
+    return True
 
 
 def append_jsonl(
@@ -764,7 +855,7 @@ async def main_async() -> None:
         ) = None,
     ) -> None:
         write_json(
-            OUT_JSON,
+            CANDIDATE_JSON,
             {
                 "phase": PHASE,
                 "started_at": started_at,
@@ -1113,6 +1204,21 @@ async def main_async() -> None:
         accumulator.summary()
     )
 
+    # Persist the final completed candidate snapshot before
+    # considering promotion to the live canonical basis.
+    write_progress(
+        mt5_status=mt5_status,
+    )
+
+    promoted_to_canonical = (
+        promote_candidate_basis_if_ready(
+            candidate_path=CANDIDATE_JSON,
+            canonical_path=OUT_JSON,
+            session_status=session_status,
+            summary=summary,
+        )
+    )
+
     lines = [
         "[PHASE 5AC XAUUSD "
         "↔ RITHMIC BASIS CALIBRATION]",
@@ -1159,6 +1265,8 @@ async def main_async() -> None:
         "[RECOMMENDATION]",
         recommendation,
         "",
+        f"candidate_json = {CANDIDATE_JSON}",
+        f"canonical_promoted = {promoted_to_canonical}",
         f"json = {OUT_JSON}",
         f"jsonl = {jsonl_path}",
         f"summary = {OUT_TXT}",
