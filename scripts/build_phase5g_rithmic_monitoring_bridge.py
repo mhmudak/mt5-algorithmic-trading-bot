@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ROOT = PROJECT_ROOT
@@ -61,7 +62,9 @@ def _safe_symbol_for_file(symbol: str) -> str:
     return symbol.replace("/", "_").replace("\\", "_").replace(".", "_")
 
 
-def main() -> None:
+def main(
+    argv: Sequence[str] | None = None,
+) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbol", default=None)
     parser.add_argument("--input-dir", default="data/order_flow/rithmic")
@@ -70,7 +73,7 @@ def main() -> None:
     parser.add_argument("--signal", choices=("BUY", "SELL"), default=None)
     parser.add_argument("--session", default="UNSPECIFIED")
     parser.add_argument("--tick-size", type=float, default=0.1)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     try:
         args.symbol = _require_rithmic_symbol(
@@ -225,6 +228,19 @@ def main() -> None:
         session=args.session,
     )
     bridge["order_flow_regime"] = order_flow_regime
+
+    # Evidence Families V2 is a research/observe-only synthesis layer.
+    # It receives the already-built Phase 5G evidence and cannot execute,
+    # block, resize, approve, or otherwise influence MT5 decisions.
+    from src.order_flow_features.rithmic_evidence_families import (
+        build_rithmic_evidence_families,
+    )
+
+    evidence_families_v2 = build_rithmic_evidence_families(
+        bridge,
+        signal=args.signal,
+    )
+    bridge["evidence_families_v2"] = evidence_families_v2
 
     output_json = output_dir / f"{safe_symbol}_phase5g_rithmic_monitoring_bridge.json"
     output_txt = output_dir / f"{safe_symbol}_phase5g_rithmic_monitoring_bridge.txt"

@@ -9,6 +9,16 @@ RITHMIC_SETUP_MIN_TRADES = 5
 RITHMIC_SETUP_DOM_IMBALANCE_THRESHOLD = 0.15
 RITHMIC_SETUP_MIN_DECISIVE_SCORE = 2
 RITHMIC_SETUP_CACHE_MAX_AGE_SECONDS = 5.0
+RITHMIC_SETUP_EVIDENCE_FAMILY_MIN_COVERAGE = 4
+RITHMIC_SETUP_EVIDENCE_FAMILY_EXPECTED_COUNT = 6
+RITHMIC_SETUP_EVIDENCE_FAMILY_ORDER = (
+    "AGGRESSION",
+    "AUCTION_PROFILE",
+    "FOOTPRINT_ACCEPTANCE",
+    "ABSORPTION_EXHAUSTION",
+    "LIQUIDITY_DYNAMICS",
+    "DIVERGENCE_TRAP",
+)
 RITHMIC_PROVIDER_REGISTRATION_PATH = (
     Path(__file__).resolve().parents[1]
     / "data"
@@ -134,6 +144,328 @@ def score_rithmic_setup_alignment_for_direction(
     return support, against, evidence
 
 
+def _load_phase5g_evidence_families_v2(
+    rithmic_symbol: str | None,
+) -> tuple[dict[str, Any], str, float | None]:
+    """
+    Load the observe-only Phase 5G family payload.
+
+    The setup verdict deliberately reads the already-built Phase 5G bridge
+    rather than reconstructing evidence from raw adapter metrics.
+
+    Fail closed on missing, stale, malformed, symbol-mismatched, or
+    execution-capable payloads.
+    """
+
+    import json
+    import time
+    from pathlib import Path
+
+    symbol = _safe_text(
+        rithmic_symbol
+    ).upper()
+
+    if not symbol:
+        return (
+            {},
+            "evidence_families_symbol_missing",
+            None,
+        )
+
+    root = Path(__file__).resolve().parents[1]
+
+    path = (
+        root
+        / "data"
+        / "order_flow"
+        / "rithmic"
+        / (
+            f"{symbol}_phase5g_"
+            "rithmic_monitoring_bridge.json"
+        )
+    )
+
+    if not path.exists():
+        return (
+            {},
+            "evidence_families_bridge_missing",
+            None,
+        )
+
+    try:
+        bridge_age_seconds = max(
+            0.0,
+            time.time() - path.stat().st_mtime,
+        )
+    except OSError:
+        return (
+            {},
+            "evidence_families_bridge_stat_failed",
+            None,
+        )
+
+    if (
+        bridge_age_seconds
+        > RITHMIC_SETUP_CACHE_MAX_AGE_SECONDS
+    ):
+        return (
+            {},
+            "evidence_families_bridge_stale",
+            round(
+                bridge_age_seconds,
+                3,
+            ),
+        )
+
+    try:
+        bridge = json.loads(
+            path.read_text(
+                encoding="utf-8-sig"
+            )
+        )
+    except (
+        OSError,
+        json.JSONDecodeError,
+        UnicodeError,
+    ):
+        return (
+            {},
+            "evidence_families_bridge_unreadable",
+            round(
+                bridge_age_seconds,
+                3,
+            ),
+        )
+
+    if not isinstance(bridge, dict):
+        return (
+            {},
+            "evidence_families_bridge_invalid",
+            round(
+                bridge_age_seconds,
+                3,
+            ),
+        )
+
+    bridge_symbol = _safe_text(
+        bridge.get("symbol")
+    ).upper()
+
+    if (
+        bridge_symbol
+        and bridge_symbol != symbol
+    ):
+        return (
+            {},
+            "evidence_families_bridge_symbol_mismatch",
+            round(
+                bridge_age_seconds,
+                3,
+            ),
+        )
+
+    payload = bridge.get(
+        "evidence_families_v2"
+    )
+
+    if not isinstance(payload, dict):
+        return (
+            {},
+            "evidence_families_v2_missing",
+            round(
+                bridge_age_seconds,
+                3,
+            ),
+        )
+
+    if (
+        _safe_text(
+            payload.get("engine")
+        ).upper()
+        != "RITHMIC_EVIDENCE_FAMILIES_V2"
+    ):
+        return (
+            {},
+            "evidence_families_v2_engine_invalid",
+            round(
+                bridge_age_seconds,
+                3,
+            ),
+        )
+
+    # Hard observe-only contract.
+    if (
+        payload.get("decision_impact") != "NONE"
+        or bool(
+            payload.get(
+                "can_influence_decision"
+            )
+        )
+        or bool(
+            payload.get(
+                "safe_for_execution"
+            )
+        )
+        or bool(
+            payload.get(
+                "execution_allowed"
+            )
+        )
+    ):
+        return (
+            {},
+            "evidence_families_v2_safety_contract_failed",
+            round(
+                bridge_age_seconds,
+                3,
+            ),
+        )
+
+    return (
+        payload,
+        "ok",
+        round(
+            bridge_age_seconds,
+            3,
+        ),
+    )
+
+
+def score_rithmic_evidence_families_for_direction(
+    direction: str,
+    evidence_families_v2: dict[str, Any] | None,
+) -> tuple[int, int, list[str], dict[str, Any]]:
+    """
+    Convert independent V2 family states into setup-relative counts.
+
+    Each family contributes at most one directional vote.
+    UNAVAILABLE is distinct from NEUTRAL.
+    CONFLICT contributes coverage but no directional vote.
+    """
+
+    direction = _safe_text(
+        direction
+    ).upper()
+
+    payload = (
+        evidence_families_v2
+        if isinstance(
+            evidence_families_v2,
+            dict,
+        )
+        else {}
+    )
+
+    families = (
+        payload.get("families")
+        if isinstance(
+            payload.get("families"),
+            dict,
+        )
+        else {}
+    )
+
+    opposite = (
+        "SELL"
+        if direction == "BUY"
+        else "BUY"
+    )
+
+    support = 0
+    against = 0
+    available_count = 0
+    neutral_count = 0
+    conflict_count = 0
+    unavailable_count = 0
+
+    evidence: list[str] = []
+    states: dict[str, str] = {}
+    reasons: dict[str, str] = {}
+
+    valid_states = {
+        "BUY",
+        "SELL",
+        "NEUTRAL",
+        "CONFLICT",
+        "UNAVAILABLE",
+    }
+
+    for name in (
+        RITHMIC_SETUP_EVIDENCE_FAMILY_ORDER
+    ):
+        family = (
+            families.get(name)
+            if isinstance(
+                families.get(name),
+                dict,
+            )
+            else {}
+        )
+
+        state = _safe_text(
+            family.get("state"),
+            "UNAVAILABLE",
+        ).upper()
+
+        if state not in valid_states:
+            state = "UNAVAILABLE"
+
+        reason = _safe_text(
+            family.get("reason"),
+            "family_reason_unavailable",
+        )
+
+        states[name] = state
+        reasons[name] = reason
+
+        if state == "UNAVAILABLE":
+            unavailable_count += 1
+
+        else:
+            available_count += 1
+
+            if state == direction:
+                support += 1
+
+            elif state == opposite:
+                against += 1
+
+            elif state == "NEUTRAL":
+                neutral_count += 1
+
+            elif state == "CONFLICT":
+                conflict_count += 1
+
+        evidence.append(
+            f"{name}: {state} | {reason}"
+        )
+
+    summary = {
+        "family_count": (
+            RITHMIC_SETUP_EVIDENCE_FAMILY_EXPECTED_COUNT
+        ),
+        "available_count": available_count,
+        "coverage": (
+            f"{available_count}/"
+            f"{RITHMIC_SETUP_EVIDENCE_FAMILY_EXPECTED_COUNT}"
+        ),
+        "support_count": support,
+        "against_count": against,
+        "neutral_count": neutral_count,
+        "conflict_count": conflict_count,
+        "unavailable_count": unavailable_count,
+        "states": states,
+        "reasons": reasons,
+    }
+
+    return (
+        support,
+        against,
+        evidence,
+        summary,
+    )
+
+
 def _load_phase5v_registration() -> dict[str, Any]:
     try:
         if not RITHMIC_PROVIDER_REGISTRATION_PATH.exists():
@@ -212,6 +544,28 @@ def build_rithmic_setup_verdict(
         "order_book_count": None,
         "freshness": {},
         "metrics": {},
+        "evidence_model": None,
+        "evidence_bridge_age_seconds": None,
+        "evidence_family_coverage": "0/6",
+        "evidence_family_available_count": 0,
+        "evidence_family_unavailable_count": 6,
+        "evidence_family_states": {},
+        "evidence_family_reasons": {},
+
+        # Legacy V1 scoring remains available only as a
+        # research/shadow benchmark. It must never determine
+        # the production V2 verdict.
+        "legacy_v1_evaluated": False,
+        "legacy_v1_support_score": 0,
+        "legacy_v1_against_score": 0,
+        "legacy_v1_alignment": "NOT_EVALUATED",
+        "legacy_v1_evidence": [],
+        "legacy_v1_mode": "SHADOW_ONLY",
+        "legacy_v1_can_influence_decision": False,
+
+        # Non-voting V2 presentation metadata.
+        "evidence_feed_status": None,
+        "evidence_order_flow_regime": None,
     }
 
     if direction not in {"BUY", "SELL"}:
@@ -415,18 +769,207 @@ def build_rithmic_setup_verdict(
         result["alignment"] = "NOT_AVAILABLE_TWO_SIDED_DOM_MISSING"
         return result
 
-    support, against, evidence = (
-        score_rithmic_setup_alignment_for_direction(
-            direction,
-            metrics,
-        )
+    # --------------------------------------------------------
+    # V1 LEGACY SHADOW BENCHMARK
+    #
+    # Preserve the original raw delta/CVD/DOM scoring only for
+    # display/research comparison. These fields are NEVER used
+    # to set verdict/supports_setup/against_setup or execution.
+    # --------------------------------------------------------
+
+    (
+        legacy_v1_support,
+        legacy_v1_against,
+        legacy_v1_evidence,
+    ) = score_rithmic_setup_alignment_for_direction(
+        direction,
+        metrics,
     )
+
+    result["legacy_v1_evaluated"] = True
+    result["legacy_v1_support_score"] = (
+        legacy_v1_support
+    )
+    result["legacy_v1_against_score"] = (
+        legacy_v1_against
+    )
+    result["legacy_v1_evidence"] = (
+        legacy_v1_evidence[:12]
+    )
+
+    if (
+        legacy_v1_support
+        >= RITHMIC_SETUP_MIN_DECISIVE_SCORE
+        and legacy_v1_support
+        > legacy_v1_against
+    ):
+        result["legacy_v1_alignment"] = (
+            f"SUPPORTS_{direction}"
+        )
+
+    elif (
+        legacy_v1_against
+        >= RITHMIC_SETUP_MIN_DECISIVE_SCORE
+        and legacy_v1_against
+        > legacy_v1_support
+    ):
+        result["legacy_v1_alignment"] = (
+            f"AGAINST_{direction}"
+        )
+
+    elif (
+        legacy_v1_support == 0
+        and legacy_v1_against == 0
+    ):
+        result["legacy_v1_alignment"] = (
+            "NEUTRAL_INSUFFICIENT_RITHMIC_EVIDENCE"
+        )
+
+    else:
+        result["legacy_v1_alignment"] = (
+            "NEUTRAL_OR_MIXED_RITHMIC_EVIDENCE"
+        )
+
+    (
+        evidence_families_v2,
+        evidence_load_reason,
+        evidence_bridge_age_seconds,
+    ) = _load_phase5g_evidence_families_v2(
+        result.get("rithmic_symbol")
+    )
+
+    result["evidence_model"] = (
+        "RITHMIC_EVIDENCE_FAMILIES_V2"
+    )
+    result["evidence_bridge_age_seconds"] = (
+        evidence_bridge_age_seconds
+    )
+
+    if not evidence_families_v2:
+        result["reason"] = evidence_load_reason
+        result["alignment"] = (
+            "NOT_AVAILABLE_EVIDENCE_FAMILIES_V2"
+        )
+        return result
+
+    feed_gate = (
+        evidence_families_v2.get("feed_gate")
+        if isinstance(
+            evidence_families_v2.get("feed_gate"),
+            dict,
+        )
+        else {}
+    )
+
+    result["evidence_feed_status"] = _safe_text(
+        feed_gate.get("feed_status"),
+        "UNKNOWN",
+    ).upper()
+
+    modifiers = (
+        evidence_families_v2.get("modifiers")
+        if isinstance(
+            evidence_families_v2.get("modifiers"),
+            dict,
+        )
+        else {}
+    )
+
+    regime_context = (
+        modifiers.get("order_flow_regime")
+        if isinstance(
+            modifiers.get("order_flow_regime"),
+            dict,
+        )
+        else {}
+    )
+
+    result["evidence_order_flow_regime"] = (
+        _safe_text(
+            regime_context.get("regime"),
+            "UNAVAILABLE",
+        ).upper()
+    )
+
+    if feed_gate.get("usable") is not True:
+        result["reason"] = (
+            "evidence_families_feed_gate_unusable"
+        )
+        result["alignment"] = (
+            "NOT_AVAILABLE_EVIDENCE_FAMILIES_FEED_GATE"
+        )
+        return result
+
+    (
+        support,
+        against,
+        evidence,
+        family_summary,
+    ) = score_rithmic_evidence_families_for_direction(
+        direction,
+        evidence_families_v2,
+    )
+
     result["support_score"] = support
     result["against_score"] = against
     result["evidence"] = evidence[:12]
 
+    result["evidence_family_coverage"] = (
+        family_summary.get(
+            "coverage",
+            "0/6",
+        )
+    )
+    result["evidence_family_available_count"] = int(
+        family_summary.get(
+            "available_count",
+            0,
+        )
+        or 0
+    )
+    result["evidence_family_unavailable_count"] = int(
+        family_summary.get(
+            "unavailable_count",
+            0,
+        )
+        or 0
+    )
+    result["evidence_family_states"] = dict(
+        family_summary.get(
+            "states"
+        )
+        or {}
+    )
+    result["evidence_family_reasons"] = dict(
+        family_summary.get(
+            "reasons"
+        )
+        or {}
+    )
+
     if (
-        support >= RITHMIC_SETUP_MIN_DECISIVE_SCORE
+        result[
+            "evidence_family_available_count"
+        ]
+        < RITHMIC_SETUP_EVIDENCE_FAMILY_MIN_COVERAGE
+    ):
+        result.update(
+            {
+                "verdict": "NEUTRAL",
+                "alignment": (
+                    "NEUTRAL_INSUFFICIENT_"
+                    "EVIDENCE_FAMILY_COVERAGE"
+                ),
+                "reason": (
+                    "evidence_family_coverage_"
+                    "below_minimum"
+                ),
+            }
+        )
+
+    elif (
+        support
+        >= RITHMIC_SETUP_MIN_DECISIVE_SCORE
         and support > against
     ):
         result.update(
@@ -434,11 +977,15 @@ def build_rithmic_setup_verdict(
                 "verdict": "SUPPORTS_SETUP",
                 "alignment": f"SUPPORTS_{direction}",
                 "supports_setup": True,
-                "reason": "rithmic_evidence_supports_setup",
+                "reason": (
+                    "evidence_families_support_setup"
+                ),
             }
         )
+
     elif (
-        against >= RITHMIC_SETUP_MIN_DECISIVE_SCORE
+        against
+        >= RITHMIC_SETUP_MIN_DECISIVE_SCORE
         and against > support
     ):
         result.update(
@@ -446,23 +993,37 @@ def build_rithmic_setup_verdict(
                 "verdict": "AGAINST_SETUP",
                 "alignment": f"AGAINST_{direction}",
                 "against_setup": True,
-                "reason": "rithmic_evidence_against_setup",
+                "reason": (
+                    "evidence_families_against_setup"
+                ),
             }
         )
+
     elif support == 0 and against == 0:
         result.update(
             {
                 "verdict": "NEUTRAL",
-                "alignment": "NEUTRAL_INSUFFICIENT_RITHMIC_EVIDENCE",
-                "reason": "no_directional_rithmic_evidence",
+                "alignment": (
+                    "NEUTRAL_INSUFFICIENT_"
+                    "DIRECTIONAL_EVIDENCE_FAMILIES"
+                ),
+                "reason": (
+                    "no_directional_evidence_families"
+                ),
             }
         )
+
     else:
         result.update(
             {
                 "verdict": "NEUTRAL",
-                "alignment": "NEUTRAL_OR_MIXED_RITHMIC_EVIDENCE",
-                "reason": "mixed_rithmic_evidence",
+                "alignment": (
+                    "NEUTRAL_OR_MIXED_"
+                    "EVIDENCE_FAMILIES"
+                ),
+                "reason": (
+                    "mixed_evidence_families"
+                ),
             }
         )
 
@@ -480,91 +1041,360 @@ def _format_signed(value: Any) -> str:
     )
 
 
+
 def format_rithmic_setup_verdict_telegram_block(
     verdict: dict | None,
 ) -> str:
-    """Format the compact block shown above the normal setup form."""
+    """Format V1 shadow + V2 production Rithmic context."""
 
-    verdict = verdict if isinstance(verdict, dict) else {}
+    verdict = (
+        verdict
+        if isinstance(verdict, dict)
+        else {}
+    )
+
     state = _safe_text(
         verdict.get("verdict"),
         "UNAVAILABLE",
     ).upper()
+
     direction = _safe_text(
         verdict.get("setup_direction"),
         "UNKNOWN",
     ).upper()
 
+    reason = _safe_text(
+        verdict.get("reason"),
+        "rithmic_context_unavailable",
+    )
+    reason_lower = reason.lower()
+
     if state == "SUPPORTS_SETUP":
-        headline = f"🟢 RITHMIC: SUPPORTS {direction}"
+        headline = (
+            f"🟢 RITHMIC: SUPPORTS {direction}"
+        )
+
     elif state == "AGAINST_SETUP":
-        headline = f"🔴 RITHMIC: AGAINST {direction}"
+        headline = (
+            f"🔴 RITHMIC: AGAINST {direction}"
+        )
+
     elif state == "NEUTRAL":
-        headline = "⚪ RITHMIC: NEUTRAL / MIXED"
+        if (
+            "coverage_below_minimum"
+            in reason_lower
+        ):
+            headline = (
+                "⚪ RITHMIC: NEUTRAL / "
+                "INSUFFICIENT COVERAGE"
+            )
+        else:
+            headline = (
+                "⚪ RITHMIC: NEUTRAL / MIXED"
+            )
+
     else:
-        headline = "⚪ RITHMIC: UNAVAILABLE / STALE"
+        if any(
+            token in reason_lower
+            for token in (
+                "stale",
+                "not_fully_fresh",
+                "source_age",
+                "age_missing",
+            )
+        ):
+            headline = (
+                "⚪ RITHMIC: UNAVAILABLE / STALE"
+            )
+
+        elif any(
+            token in reason_lower
+            for token in (
+                "disconnect",
+                "not_connected",
+                "connection",
+            )
+        ):
+            headline = (
+                "⚪ RITHMIC: UNAVAILABLE / "
+                "DISCONNECTED"
+            )
+
+        else:
+            headline = (
+                "⚪ RITHMIC: UNAVAILABLE"
+            )
 
     symbol = _safe_text(
         verdict.get("rithmic_symbol"),
         "RITHMIC",
     )
+
     exchange = _safe_text(
         verdict.get("exchange"),
         "COMEX",
     )
+
     source_age = _safe_float(
         verdict.get("source_age_seconds")
     )
+
     cache_age = _safe_float(
         verdict.get("cache_age_seconds")
     )
+
     display_age = (
         source_age
         if source_age is not None
         else cache_age
     )
-    freshness = (
-        f"Fresh {round(display_age, 1)}s"
-        if display_age is not None
-        and display_age <= RITHMIC_SETUP_CACHE_MAX_AGE_SECONDS
-        else "Freshness unavailable"
-    )
-    metrics = (
-        verdict.get("metrics")
-        if isinstance(verdict.get("metrics"), dict)
+
+    if display_age is None:
+        freshness = "Freshness unavailable"
+
+    elif (
+        display_age
+        <= RITHMIC_SETUP_CACHE_MAX_AGE_SECONDS
+    ):
+        freshness = (
+            f"Fresh {round(display_age, 1)}s"
+        )
+
+    else:
+        freshness = (
+            f"Stale {round(display_age, 1)}s"
+        )
+
+    lines = [
+        headline,
+        f"{symbol} | {exchange} | {freshness}",
+    ]
+
+    # ========================================================
+    # V1 LEGACY — SHADOW ONLY
+    # ========================================================
+
+    if bool(
+        verdict.get("legacy_v1_evaluated")
+    ):
+        metrics = (
+            verdict.get("metrics")
+            if isinstance(
+                verdict.get("metrics"),
+                dict,
+            )
+            else {}
+        )
+
+        trades = verdict.get("trade_count")
+
+        trades_label = (
+            str(trades)
+            if trades is not None
+            else "N/A"
+        )
+
+        v1_support = int(
+            verdict.get(
+                "legacy_v1_support_score",
+                0,
+            )
+            or 0
+        )
+
+        v1_against = int(
+            verdict.get(
+                "legacy_v1_against_score",
+                0,
+            )
+            or 0
+        )
+
+        lines.extend(
+            [
+                "",
+                "V1 LEGACY — SHADOW ONLY",
+                (
+                    f"Trades {trades_label} | "
+                    f"Δ {_format_signed(metrics.get('delta'))} | "
+                    f"CumΔ {_format_signed(metrics.get('cumulative_delta'))} | "
+                    f"DOM {_format_signed(metrics.get('dom_depth_imbalance'))}"
+                ),
+                (
+                    f"Evidence: {v1_support} SUPPORT / "
+                    f"{v1_against} AGAINST"
+                ),
+            ]
+        )
+
+    # ========================================================
+    # V2 — production Rithmic verdict model
+    # ========================================================
+
+    family_states = (
+        verdict.get("evidence_family_states")
+        if isinstance(
+            verdict.get(
+                "evidence_family_states"
+            ),
+            dict,
+        )
         else {}
     )
-    trades = verdict.get("trade_count")
-    trades_label = (
-        str(trades)
-        if trades is not None
-        else "N/A"
-    )
 
-    lines = [headline]
-    if state == "UNAVAILABLE":
-        lines.append(
-            "Reason: "
-            + _safe_text(
-                verdict.get("reason"),
-                "rithmic_context_unavailable",
+    if family_states:
+        lines.extend(
+            [
+                "",
+                "V2 EVIDENCE FAMILIES — VERDICT MODEL",
+            ]
+        )
+
+        family_labels = (
+            (
+                "AGGRESSION",
+                "Aggression",
+            ),
+            (
+                "AUCTION_PROFILE",
+                "Auction / Profile",
+            ),
+            (
+                "FOOTPRINT_ACCEPTANCE",
+                "Footprint",
+            ),
+            (
+                "ABSORPTION_EXHAUSTION",
+                "Absorp / Exhaust",
+            ),
+            (
+                "LIQUIDITY_DYNAMICS",
+                "Liquidity",
+            ),
+            (
+                "DIVERGENCE_TRAP",
+                "Divergence / Trap",
+            ),
+        )
+
+        opposite = (
+            "SELL"
+            if direction == "BUY"
+            else "BUY"
+        )
+
+        for key, label in family_labels:
+            family_state = _safe_text(
+                family_states.get(key),
+                "UNAVAILABLE",
+            ).upper()
+
+            if (
+                direction in {"BUY", "SELL"}
+                and family_state == direction
+            ):
+                marker = "🟢"
+                relative = "SUPPORT"
+
+            elif (
+                direction in {"BUY", "SELL"}
+                and family_state == opposite
+            ):
+                marker = "🔴"
+                relative = "AGAINST"
+
+            elif family_state == "NEUTRAL":
+                marker = "⚪"
+                relative = "NEUTRAL"
+
+            elif family_state == "CONFLICT":
+                marker = "🟡"
+                relative = "CONFLICT"
+
+            else:
+                marker = "⚫"
+                relative = "N/A"
+
+            lines.append(
+                f"{label}: {marker} {relative}"
             )
+
+        v2_support = int(
+            verdict.get(
+                "support_score",
+                0,
+            )
+            or 0
+        )
+
+        v2_against = int(
+            verdict.get(
+                "against_score",
+                0,
+            )
+            or 0
+        )
+
+        coverage = _safe_text(
+            verdict.get(
+                "evidence_family_coverage"
+            ),
+            "0/6",
+        )
+
+        coverage = (
+            coverage.replace(
+                "/",
+                " / ",
+                1,
+            )
+            if "/" in coverage
+            else coverage
+        )
+
+        regime = _safe_text(
+            verdict.get(
+                "evidence_order_flow_regime"
+            ),
+            "UNAVAILABLE",
+        ).upper()
+
+        feed = _safe_text(
+            verdict.get(
+                "evidence_feed_status"
+            ),
+            "UNKNOWN",
+        ).upper()
+
+        lines.extend(
+            [
+                "",
+                (
+                    f"Families: {v2_support} SUPPORT / "
+                    f"{v2_against} AGAINST"
+                ),
+                f"Coverage: {coverage}",
+                f"Regime: {regime}",
+                f"Feed Integrity: {feed}",
+            ]
+        )
+
+    elif state == "UNAVAILABLE":
+        lines.extend(
+            [
+                "",
+                "V2 VERDICT MODEL",
+                "Reason: " + reason,
+            ]
         )
 
     lines.extend(
         [
+            "",
             (
-                f"{symbol} | {exchange} | {freshness} | "
-                f"Trades {trades_label}"
+                "Mode: OBSERVE ONLY — "
+                "NO EXECUTION AUTHORITY"
             ),
-            (
-                f"Δ {_format_signed(metrics.get('delta'))} | "
-                f"CumΔ {_format_signed(metrics.get('cumulative_delta'))} | "
-                f"DOM {_format_signed(metrics.get('dom_depth_imbalance'))} | "
-                f"S/A {verdict.get('support_score', 0)}/"
-                f"{verdict.get('against_score', 0)}"
-            ),
-            "Mode: OBSERVE ONLY — NO EXECUTION AUTHORITY",
         ]
     )
 

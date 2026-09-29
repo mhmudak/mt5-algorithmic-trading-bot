@@ -84,10 +84,84 @@ def _context(
     }
 
 
+def _evidence_families_payload(
+    *,
+    aggression: str = "NEUTRAL",
+    auction_profile: str = "NEUTRAL",
+    footprint: str = "UNAVAILABLE",
+    absorption: str = "NEUTRAL",
+    liquidity: str = "NEUTRAL",
+    divergence: str = "NEUTRAL",
+) -> dict:
+    def family(
+        state: str,
+        reason: str,
+    ) -> dict:
+        return {
+            "state": state,
+            "reason": reason,
+            "available": state != "UNAVAILABLE",
+            "directional": state in {
+                "BUY",
+                "SELL",
+            },
+            "decision_impact": "NONE",
+            "can_influence_decision": False,
+            "safe_for_execution": False,
+        }
+
+    return {
+        "engine": "RITHMIC_EVIDENCE_FAMILIES_V2",
+        "feed_gate": {
+            "usable": True,
+            "reason": "healthy",
+        },
+        "families": {
+            "AGGRESSION": family(
+                aggression,
+                "synthetic_aggression",
+            ),
+            "AUCTION_PROFILE": family(
+                auction_profile,
+                "synthetic_auction_profile",
+            ),
+            "FOOTPRINT_ACCEPTANCE": family(
+                footprint,
+                "synthetic_footprint",
+            ),
+            "ABSORPTION_EXHAUSTION": family(
+                absorption,
+                "synthetic_absorption",
+            ),
+            "LIQUIDITY_DYNAMICS": family(
+                liquidity,
+                "synthetic_liquidity",
+            ),
+            "DIVERGENCE_TRAP": family(
+                divergence,
+                "synthetic_divergence",
+            ),
+        },
+        "decision_impact": "NONE",
+        "can_influence_decision": False,
+        "safe_for_execution": False,
+        "execution_allowed": False,
+    }
+
+
 def main() -> None:
     original_registration_path = (
         verdict_module.RITHMIC_PROVIDER_REGISTRATION_PATH
     )
+    original_evidence_loader = getattr(
+        verdict_module,
+        "_load_phase5g_evidence_families_v2",
+        None,
+    )
+
+    active_evidence_payload = {
+        "value": _evidence_families_payload()
+    }
 
     try:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -103,6 +177,14 @@ def main() -> None:
                 registration_path
             )
 
+            verdict_module._load_phase5g_evidence_families_v2 = (
+                lambda symbol: (
+                    active_evidence_payload["value"],
+                    "ok",
+                    0.2,
+                )
+            )
+
             current_like = _context(
                 delta=3,
                 cumulative_delta=3,
@@ -110,6 +192,14 @@ def main() -> None:
                 bid_depth=2495,
                 ask_depth=3178,
             )
+            active_evidence_payload["value"] = (
+                _evidence_families_payload(
+                    aggression="BUY",
+                    auction_profile="BUY",
+                    liquidity="SELL",
+                )
+            )
+
             support_buy = verdict_module.build_rithmic_setup_verdict(
                 current_like,
                 "BUY",
@@ -134,6 +224,13 @@ def main() -> None:
             assert "GCZ6 | COMEX" in support_block
             assert "Mode: OBSERVE ONLY" in support_block
 
+            active_evidence_payload["value"] = (
+                _evidence_families_payload(
+                    aggression="SELL",
+                    auction_profile="SELL",
+                )
+            )
+
             against_buy = verdict_module.build_rithmic_setup_verdict(
                 _context(
                     delta=-7,
@@ -146,6 +243,13 @@ def main() -> None:
             )
             assert against_buy["verdict"] == "AGAINST_SETUP"
             assert against_buy["alignment"] == "AGAINST_BUY"
+
+            active_evidence_payload["value"] = (
+                _evidence_families_payload(
+                    aggression="SELL",
+                    auction_profile="SELL",
+                )
+            )
 
             support_sell = verdict_module.build_rithmic_setup_verdict(
                 _context(
@@ -160,6 +264,10 @@ def main() -> None:
             assert support_sell["verdict"] == "SUPPORTS_SETUP"
             assert support_sell["alignment"] == "SUPPORTS_SELL"
 
+            active_evidence_payload["value"] = (
+                _evidence_families_payload()
+            )
+
             neutral = verdict_module.build_rithmic_setup_verdict(
                 _context(
                     delta=0,
@@ -171,6 +279,13 @@ def main() -> None:
                 "BUY",
             )
             assert neutral["verdict"] == "NEUTRAL"
+
+            active_evidence_payload["value"] = (
+                _evidence_families_payload(
+                    aggression="BUY",
+                    auction_profile="BUY",
+                )
+            )
 
             low_sample = verdict_module.build_rithmic_setup_verdict(
                 _context(
@@ -242,6 +357,19 @@ def main() -> None:
         verdict_module.RITHMIC_PROVIDER_REGISTRATION_PATH = (
             original_registration_path
         )
+
+        if original_evidence_loader is not None:
+            verdict_module._load_phase5g_evidence_families_v2 = (
+                original_evidence_loader
+            )
+        elif hasattr(
+            verdict_module,
+            "_load_phase5g_evidence_families_v2",
+        ):
+            delattr(
+                verdict_module,
+                "_load_phase5g_evidence_families_v2",
+            )
 
     live_text = (ROOT / "src" / "live_bot.py").read_text(
         encoding="utf-8"

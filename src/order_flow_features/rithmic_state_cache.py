@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import tempfile
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
@@ -747,6 +748,56 @@ class RithmicRollingStateCache:
         }
 
 
+def _atomic_write_text(
+    output_path: str | Path,
+    content: str,
+) -> None:
+    """
+    Atomically replace a small state-cache text file.
+
+    The temporary file is created in the destination directory so
+    os.replace() stays on the same filesystem. Readers therefore see
+    either the previous complete snapshot or the new complete snapshot,
+    never a partially truncated destination file.
+    """
+
+    destination = Path(output_path)
+    temp_path: Path | None = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            dir=str(destination.parent),
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(
+            temp_path,
+            destination,
+        )
+
+        temp_path = None
+
+    finally:
+        if (
+            temp_path is not None
+            and temp_path.exists()
+        ):
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+
+
 def write_state_text(snapshot: dict[str, Any], output_path: str | Path) -> None:
     lines = [
         "PHASE 5E RITHMIC REAL-TIME STATE CACHE WITH DOM",
@@ -821,8 +872,18 @@ def write_state_text(snapshot: dict[str, Any], output_path: str | Path) -> None:
         "This cache is observe-only and cannot influence MT5 execution yet.",
     ]
 
-    Path(output_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _atomic_write_text(
+        output_path,
+        "\n".join(lines) + "\n",
+    )
 
 
 def write_state_json(snapshot: dict[str, Any], output_path: str | Path) -> None:
-    Path(output_path).write_text(json.dumps(snapshot, indent=2, ensure_ascii=False), encoding="utf-8")
+    _atomic_write_text(
+        output_path,
+        json.dumps(
+            snapshot,
+            indent=2,
+            ensure_ascii=False,
+        ),
+    )

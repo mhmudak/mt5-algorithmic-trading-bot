@@ -1,7 +1,15 @@
 from __future__ import annotations
 
-import tempfile
+import sys
 from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import tempfile
 
 from src.order_flow_features.rithmic_feed_integrity import (
     evaluate_rithmic_feed_integrity,

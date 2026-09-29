@@ -112,6 +112,63 @@ def registration_payload() -> dict:
     }
 
 
+def evidence_families_payload() -> dict:
+    def family(
+        state: str,
+        reason: str,
+    ) -> dict:
+        return {
+            "state": state,
+            "reason": reason,
+            "available": state != "UNAVAILABLE",
+            "directional": state in {
+                "BUY",
+                "SELL",
+            },
+            "decision_impact": "NONE",
+            "can_influence_decision": False,
+            "safe_for_execution": False,
+        }
+
+    return {
+        "engine": "RITHMIC_EVIDENCE_FAMILIES_V2",
+        "feed_gate": {
+            "usable": True,
+            "reason": "healthy",
+        },
+        "families": {
+            "AGGRESSION": family(
+                "BUY",
+                "synthetic_fresh_buy_aggression",
+            ),
+            "AUCTION_PROFILE": family(
+                "BUY",
+                "synthetic_fresh_buy_profile",
+            ),
+            "FOOTPRINT_ACCEPTANCE": family(
+                "UNAVAILABLE",
+                "independent_price_level_footprint_not_ready",
+            ),
+            "ABSORPTION_EXHAUSTION": family(
+                "NEUTRAL",
+                "no_absorption_event",
+            ),
+            "LIQUIDITY_DYNAMICS": family(
+                "NEUTRAL",
+                "stable_or_mixed_liquidity",
+            ),
+            "DIVERGENCE_TRAP": family(
+                "NEUTRAL",
+                "no_independent_trap_signal",
+            ),
+        },
+        "decision_impact": "NONE",
+        "can_influence_decision": False,
+        "safe_for_execution": False,
+        "execution_allowed": False,
+    }
+
+
 def main() -> None:
     rithmic = refresh_rithmic_participation_context(
         symbol="XAUUSD",
@@ -131,6 +188,12 @@ def main() -> None:
     assert rithmic["freshness"]["has_fresh_order_book"] is True
 
     original_registration_path = verdict_module.RITHMIC_PROVIDER_REGISTRATION_PATH
+    original_evidence_loader = getattr(
+        verdict_module,
+        "_load_phase5g_evidence_families_v2",
+        None,
+    )
+
     try:
         with tempfile.TemporaryDirectory() as tmp_dir:
             registration_path = Path(tmp_dir) / "phase5v.json"
@@ -139,6 +202,14 @@ def main() -> None:
                 encoding="utf-8",
             )
             verdict_module.RITHMIC_PROVIDER_REGISTRATION_PATH = registration_path
+
+            verdict_module._load_phase5g_evidence_families_v2 = (
+                lambda symbol: (
+                    evidence_families_payload(),
+                    "ok",
+                    0.2,
+                )
+            )
 
             context = {"rithmic": rithmic}
             fresh = verdict_module.build_rithmic_setup_verdict(context, "BUY")
@@ -223,6 +294,19 @@ def main() -> None:
             assert result["reason"] == "rithmic_two_sided_dom_missing"
     finally:
         verdict_module.RITHMIC_PROVIDER_REGISTRATION_PATH = original_registration_path
+
+        if original_evidence_loader is not None:
+            verdict_module._load_phase5g_evidence_families_v2 = (
+                original_evidence_loader
+            )
+        elif hasattr(
+            verdict_module,
+            "_load_phase5g_evidence_families_v2",
+        ):
+            delattr(
+                verdict_module,
+                "_load_phase5g_evidence_families_v2",
+            )
 
     for path in [
         ROOT / "src" / "market_participation_context.py",
