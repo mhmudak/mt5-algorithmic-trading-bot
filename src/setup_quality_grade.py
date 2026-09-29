@@ -701,6 +701,26 @@ def _sq2_resolve_account_dir(data):
         if (path / "trades.json").exists() and (path / "setup_outcomes.json").exists():
             return path
 
+    try:
+        from src.account_context import get_account_key
+
+        current_account_key = str(get_account_key() or "").strip()
+    except Exception:
+        current_account_key = ""
+
+    if current_account_key and current_account_key != "unknown_account":
+        current_account_dir = (
+            _sq2_repo_root()
+            / "data"
+            / "accounts"
+            / current_account_key
+        )
+        if (
+            (current_account_dir / "trades.json").exists()
+            and (current_account_dir / "setup_outcomes.json").exists()
+        ):
+            return current_account_dir
+
     base = _sq2_repo_root() / "data" / "accounts"
     if not base.exists():
         return None
@@ -1126,7 +1146,9 @@ def build_setup_quality_grade(data: dict[str, Any]) -> dict[str, Any]:
         blockers.append(f"RR {rr:.2f}R < {SQ2_A_PLUS_MIN_RR:.2f}R A+")
 
     if not history.get("available", False):
-        blockers.append("Exact-cohort historical edge unavailable")
+        blockers.append(
+            f"Historical edge unavailable ({history.get('source', 'UNKNOWN')})"
+        )
     else:
         trade_sample = int(history.get("trade_sample", 0) or 0)
         trade_rate = _sq2_float(history.get("trade_win_rate"))
@@ -1249,21 +1271,30 @@ def format_setup_quality_block(result: dict[str, Any]) -> str:
     trade_sample = int(history.get("trade_sample", 0) or 0)
     path_sample = int(history.get("path_sample", 0) or 0)
 
-    history_line = (
-        "History: "
-        f"Win {_sq2_pct(history.get('trade_win_rate'))} (n={trade_sample}) | "
-        f"+10 {_sq2_pct(history.get('hit_plus_10_rate'))} (n={path_sample})"
-    )
+    trade_scope = str(history.get("trade_scope") or "UNAVAILABLE")
+    path_scope = str(history.get("path_scope") or "UNAVAILABLE")
 
-    mae = _sq2_float(history.get("mae_median"))
-    if mae is not None:
-        history_line += f" | MAE med ${mae:.2f}"
+    if history.get("available", False):
+        history_line = (
+            "History: "
+            f"Win {_sq2_pct(history.get('trade_win_rate'))} (n={trade_sample}) | "
+            f"+10 {_sq2_pct(history.get('hit_plus_10_rate'))} (n={path_sample})"
+        )
+
+        mae = _sq2_float(history.get("mae_median"))
+        if mae is not None:
+            history_line += f" | MAE med ${mae:.2f}"
+    else:
+        history_line = (
+            "History: UNAVAILABLE | "
+            f"Source: {history.get('source', 'UNKNOWN')}"
+        )
 
     return (
         f"STRUCTURAL QUALITY: {result.get('v1_grade', grade)} | Raw Score: {score_10:.1f}/10\n"
         f"{icon} ELIGIBILITY GRADE: {grade} | Quality RR: {rr_text}\n"
         f"A+ Eligibility: {'PASS' if grade == 'A+' else 'FAIL'}\n"
-        f"History Scope: EXACT COHORT\n"
+        f"History Scope: Trade {trade_scope} | Path {path_scope}\n"
         f"Why: {why}\n"
         f"{history_line}"
     )

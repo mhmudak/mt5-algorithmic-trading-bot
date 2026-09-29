@@ -1,4 +1,5 @@
 import json
+import os
 import time
 from datetime import datetime, timedelta
 
@@ -31,21 +32,85 @@ def load_trades():
 
     try:
         with open(tracker_file, "r", encoding="utf-8") as f:
-            return json.load(f)
+            trades = json.load(f)
     except Exception as e:
-        logger.error(f"[TRACKER] Failed to load trades: {e}")
-        return {}
+        logger.error(
+            f"[TRACKER] Failed to load trades: {e} | "
+            "refusing to continue with empty tracker state"
+        )
+        raise RuntimeError(
+            f"Trade tracker load failed: {tracker_file}"
+        ) from e
+
+    if not isinstance(trades, dict):
+        logger.error(
+            "[TRACKER] Invalid tracker root type | "
+            f"path={tracker_file} type={type(trades).__name__}"
+        )
+        raise RuntimeError(
+            f"Trade tracker root must be a JSON object: {tracker_file}"
+        )
+
+    return trades
 
 
 def save_trades(trades):
     tracker_file = get_tracker_file()
 
+    if not isinstance(trades, dict):
+        raise TypeError(
+            "Trade tracker save refused: trades must be a dict"
+        )
+
+    tracker_file.parent.mkdir(parents=True, exist_ok=True)
+
+    temp_file = tracker_file.with_name(
+        f".{tracker_file.name}.{os.getpid()}.{time.time_ns()}.tmp"
+    )
+
     try:
-        tracker_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(tracker_file, "w", encoding="utf-8") as f:
-            json.dump(trades, f, indent=2, ensure_ascii=False)
+        with open(temp_file, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(
+                trades,
+                f,
+                indent=2,
+                ensure_ascii=False,
+            )
+            f.flush()
+            os.fsync(f.fileno())
+
+        # Validate the complete temporary payload before it can
+        # replace the authoritative tracker file.
+        with open(temp_file, "r", encoding="utf-8") as f:
+            validated = json.load(f)
+
+        if not isinstance(validated, dict):
+            raise RuntimeError(
+                "Temporary tracker payload is not a JSON object"
+            )
+
+        if len(validated) != len(trades):
+            raise RuntimeError(
+                "Temporary tracker validation count mismatch | "
+                f"expected={len(trades)} actual={len(validated)}"
+            )
+
+        # Same-directory replace is atomic: readers see either
+        # the old complete JSON or the new complete JSON.
+        os.replace(temp_file, tracker_file)
+
     except Exception as e:
-        logger.error(f"[TRACKER] Failed to save trades: {e}")
+        logger.error(
+            f"[TRACKER] Failed to save trades atomically: {e}"
+        )
+
+        try:
+            if temp_file.exists():
+                temp_file.unlink()
+        except Exception:
+            pass
+
+        raise
 
 def _first_mt5_item(items):
     if not items:
@@ -628,6 +693,17 @@ def register_executed_trade(symbol, signal, trade_plan, result):
         position_id
     ]
 
+    try:
+        from src.intrabar_optimization_recorder import (
+            attach_pending_intrabar_context,
+        )
+        attach_pending_intrabar_context(tracked_trade, trade_plan)
+    except Exception as exc:
+        logger.warning(
+            "[INTRABAR OPTIMIZATION] trade attach failed open | "
+            f"position={position_id} error={exc}"
+        )
+
     tracked_trade[
         "main_tp_ladder_managed"
     ] = bool(
@@ -726,6 +802,10 @@ def register_executed_trade(symbol, signal, trade_plan, result):
     tracked_trade[
         "runner_tp3_lock_done"
     ] = False
+
+    for field_name, field_value in trade_plan.items():
+        if str(field_name).startswith("micro_momentum_"):
+            tracked_trade[field_name] = field_value
 
     save_trades(trades)
 
@@ -1058,6 +1138,45 @@ def detect_close_details(
     }
 
 
+def _micro_momentum_lifecycle_policy(trade):
+    strategy = str((trade or {}).get("strategy") or "").upper()
+    is_micro_momentum = strategy == "INTRABAR_MICRO_MOMENTUM"
+
+    if not is_micro_momentum:
+        return {
+            "is_micro_momentum": False,
+            "trigger_post_sl_cooldown": True,
+            "notify_close": True,
+        }
+
+    try:
+        from config import settings as runtime_settings
+
+        trigger_post_sl_cooldown = bool(
+            getattr(
+                runtime_settings,
+                "MICRO_MOMENTUM_TRIGGER_POST_SL_COOLDOWN",
+                False,
+            )
+        )
+        notify_close = bool(
+            getattr(
+                runtime_settings,
+                "MICRO_MOMENTUM_TELEGRAM_CLOSE_NOTIFICATIONS",
+                False,
+            )
+        )
+    except Exception:
+        trigger_post_sl_cooldown = False
+        notify_close = False
+
+    return {
+        "is_micro_momentum": True,
+        "trigger_post_sl_cooldown": trigger_post_sl_cooldown,
+        "notify_close": notify_close,
+    }
+
+
 def update_trade_lifecycle(symbol: str):
     trades = load_trades()
     if not trades:
@@ -1298,30 +1417,52 @@ def update_trade_lifecycle(symbol: str):
                     trade["final_result"] = "LOSS"
                 else:
                     trade["final_result"] = "BREAKEVEN"
+
+                try:
+                    from src.intrabar_optimization_recorder import (
+                        finalize_intrabar_optimization_trade,
+                    )
+                    finalize_intrabar_optimization_trade(
+                        position_id=position_id,
+                        trade=trade,
+                        close_details=close_details,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[INTRABAR OPTIMIZATION] close finalization "
+                        f"failed open | position={position_id} error={exc}"
+                    )
+
                 changed = True
 
                 logger.info(f"[TRACKER] Trade fully closed {position_id} | reason={close_reason}")
 
-                if close_reason in ["SL_LOSS", "SL_LIKELY_LOSS"]:
+                lifecycle_policy = _micro_momentum_lifecycle_policy(trade)
+
+                if close_reason in ["SL", "SL_LIKELY"] and (
+                    not lifecycle_policy["is_micro_momentum"]
+                    or lifecycle_policy["trigger_post_sl_cooldown"]
+                ):
                     activate_cooldown()
 
-                send_telegram_message(
-                    f"Trade Fully Closed\n"
-                    f"Position: {position_id}\n"
-                    f"Role: {trade.get('trade_role', 'UNKNOWN')}\n"
-                    f"Symbol: {trade['symbol']}\n"
-                    f"Side: {trade['signal']}\n"
-                    f"Initial Volume: {trade['initial_volume']}\n"
-                    f"Closed Volume: {trade['closed_volume']}\n"
-                    f"Remaining Volume: 0.0\n"
-                    f"Setup Score: {trade.get('setup_score', 0)}\n"
-                    f"Strategy: {trade.get('strategy', 'UNKNOWN')}\n"
-                    f"Market: {trade.get('market_condition', 'UNKNOWN')}\n"
-                    f"Reason: {trade.get('reason', 'N/A')}\n"
-                    f"TP Buffer: {trade.get('tp_buffer', 0.0)}\n"
-                    f"Max Profit Price: {trade.get('max_profit_price', 0.0)}\n"
-                    f"Close Reason: {close_reason}"
-                )
+                if lifecycle_policy["notify_close"]:
+                    send_telegram_message(
+                        f"Trade Fully Closed\n"
+                        f"Position: {position_id}\n"
+                        f"Role: {trade.get('trade_role', 'UNKNOWN')}\n"
+                        f"Symbol: {trade['symbol']}\n"
+                        f"Side: {trade['signal']}\n"
+                        f"Initial Volume: {trade['initial_volume']}\n"
+                        f"Closed Volume: {trade['closed_volume']}\n"
+                        f"Remaining Volume: 0.0\n"
+                        f"Setup Score: {trade.get('setup_score', 0)}\n"
+                        f"Strategy: {trade.get('strategy', 'UNKNOWN')}\n"
+                        f"Market: {trade.get('market_condition', 'UNKNOWN')}\n"
+                        f"Reason: {trade.get('reason', 'N/A')}\n"
+                        f"TP Buffer: {trade.get('tp_buffer', 0.0)}\n"
+                        f"Max Profit Price: {trade.get('max_profit_price', 0.0)}\n"
+                        f"Close Reason: {close_reason}"
+                    )
 
                 log_setup_event(
                     setup_id=trade.get("setup_id", f"MANUAL-{position_id}"),

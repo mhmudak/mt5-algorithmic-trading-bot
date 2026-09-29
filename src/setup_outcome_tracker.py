@@ -1793,6 +1793,49 @@ def _update_better_entry_counterfactuals(
 
     return changed
 
+
+
+def _capture_setup_selection_shadow(
+    *,
+    strategy,
+    signal,
+    entry_model,
+    session,
+    market_condition,
+    event,
+    extra,
+):
+    """
+    Fail-open research capture. Any advisory failure must leave the existing
+    setup-outcome registration path completely unchanged.
+    """
+    try:
+        from src.setup_selection_advisory import (
+            build_setup_selection_shadow_snapshot,
+        )
+
+        return build_setup_selection_shadow_snapshot(
+            strategy=strategy,
+            direction=signal,
+            entry_model=entry_model,
+            session=session,
+            market_condition=market_condition,
+            event=event,
+            extra=extra,
+        )
+    except Exception as exc:
+        logger.warning(
+            f"[SETUP SELECTION SHADOW] capture failed open | "
+            f"strategy={strategy} signal={signal} event={event} error={exc}"
+        )
+        return {
+            "schema_version": 1,
+            "capture_error": str(exc),
+            "live_authority": False,
+            "decision_impact": "NONE",
+        }
+
+
 def register_setup_outcome(
     *,
     symbol,
@@ -1908,6 +1951,19 @@ def register_setup_outcome(
         "tp": round(tp, 2) if tp is not None else None,
         "reason": reason,
         "extra": extra or {},
+
+        # Immutable OOS research snapshot captured only when this setup ID is
+        # first registered. Existing setup IDs return through the earlier
+        # branch and therefore never recompute this evidence with future data.
+        "setup_selection_shadow": _capture_setup_selection_shadow(
+            strategy=strategy,
+            signal=signal,
+            entry_model=entry_model,
+            session=session,
+            market_condition=market_condition,
+            event=event,
+            extra=extra,
+        ),
 
         "context_key": None,
         "scenario_key": scenario_key,

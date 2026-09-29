@@ -968,16 +968,7 @@ def format_market_participation_telegram_block(
         "MT5_ONLY",
     )
 
-    if source_coverage == "MT5_PLUS_RITHMIC":
-        title = (
-            "🏦 Market Participation — "
-            "MT5 + Rithmic"
-        )
-    else:
-        title = (
-            "🏦 Market Participation — "
-            "MT5 Proxy"
-        )
+    title = "🏦 MARKET PARTICIPATION"
 
     mt5_context = (
         context.get(
@@ -1015,7 +1006,7 @@ def format_market_participation_telegram_block(
             )
         ),
         (
-            "Pressure: "
+            "MT5 Pressure: "
             + _short_pressure_state(
                 mt5_context.get(
                     "pressure_state"
@@ -1085,50 +1076,19 @@ def format_market_participation_telegram_block(
         else {}
     )
 
-    if bool(
-        rithmic.get(
-            "available"
-        )
-    ):
-        lines.extend(
-            [
-                (
-                    "Rithmic Aggression: "
-                    + _safe_text(
-                        rithmic.get(
-                            "aggression_state"
-                        ),
-                        "UNAVAILABLE",
-                    )
-                ),
-                (
-                    "DOM: "
-                    + _safe_text(
-                        rithmic.get(
-                            "dom_state"
-                        ),
-                        "UNAVAILABLE",
-                    )
-                ),
-                (
-                    "Combined: "
-                    + _safe_text(
-                        context.get(
-                            "combined_state"
-                        ),
-                        "UNRESOLVED",
-                    )
-                ),
-            ]
-        )
+    combined_state = _safe_text(
+        context.get("combined_state"),
+        "UNRESOLVED",
+    ).upper()
 
-    else:
-        lines.append(
-            "Rithmic: UNAVAILABLE / NOT CONNECTED"
-        )
+    if combined_state.startswith("CROSS_MARKET_"):
+        combined_state = combined_state[len("CROSS_MARKET_"):]
+
+    combined_label = combined_state.replace("_", " ")
 
     lines.append(
-        "Mode: OBSERVE ONLY"
+        "Cross-Market Context: "
+        + combined_label
     )
 
     return "\n".join(

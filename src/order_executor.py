@@ -2362,6 +2362,39 @@ def execute_trade(signal, trade_plan, symbol):
                 f"deviation_price={round(effective_deviation_price, 4)}"
             )
 
+        if (
+            str(trade_plan.get("strategy") or "").upper()
+            == "INTRABAR_MICRO_MOMENTUM"
+        ):
+            from src.intrabar_micro_momentum_execution_geometry import (
+                apply_authoritative_micro_momentum_geometry,
+            )
+
+            micro_geometry = apply_authoritative_micro_momentum_geometry(
+                signal=signal,
+                trade_plan=trade_plan,
+                request=request,
+                execution_price=current_execution_price,
+            )
+
+            if micro_geometry is None:
+                logger.error(
+                    "[MICRO MOMENTUM FINAL GEOMETRY] BLOCKED | "
+                    f"setup_id={trade_plan.get('setup_id')} "
+                    "reason=invalid_or_missing_authoritative_geometry"
+                )
+                return False
+
+            logger.warning(
+                "[MICRO MOMENTUM FINAL GEOMETRY] "
+                f"setup_id={trade_plan.get('setup_id')} "
+                f"entry={micro_geometry['entry_price']} "
+                f"sl={micro_geometry['stop_loss']} "
+                f"tp={micro_geometry['take_profit']} "
+                f"sl_distance={micro_geometry['sl_distance']} "
+                f"tp_distance={micro_geometry['tp_distance']}"
+            )
+
         _log_execution_timing(
             "before_order_send",
             execution_start_ts,
@@ -2372,6 +2405,82 @@ def execute_trade(signal, trade_plan, symbol):
             deviation_points=request.get("deviation"),
             max_deviation_price=round(effective_deviation_price, 4),
         )
+
+        if str(trade_plan.get("strategy") or "").upper() == "INTRABAR_MICRO_MOMENTUM":
+            from config import settings as _mm_quote_settings
+            from src.intrabar_micro_momentum_quote_safety import (
+                apply_micro_momentum_quote_safety,
+            )
+
+            _mm_quote_decision = apply_micro_momentum_quote_safety(
+                signal=signal,
+                request=request,
+                trade_plan=trade_plan,
+                bid=float(fresh_tick.bid),
+                ask=float(fresh_tick.ask),
+                digits=int(getattr(symbol_info, "digits", 2) or 2),
+                max_spread_price=float(
+                    getattr(
+                        _mm_quote_settings,
+                        "MICRO_MOMENTUM_FINAL_MAX_SPREAD_PRICE",
+                        0.20,
+                    )
+                ),
+                stop_cushion_price=float(
+                    getattr(
+                        _mm_quote_settings,
+                        "MICRO_MOMENTUM_QUOTE_STOP_CUSHION_PRICE",
+                        0.15,
+                    )
+                ),
+                min_rr=float(
+                    getattr(
+                        _mm_quote_settings,
+                        "MICRO_MOMENTUM_LIVE_MIN_RR",
+                        1.50,
+                    )
+                ),
+                max_sl_distance=float(
+                    getattr(
+                        _mm_quote_settings,
+                        "MICRO_MOMENTUM_QUOTE_SAFE_MAX_SL_DISTANCE",
+                        0.50,
+                    )
+                ),
+            )
+
+            if not _mm_quote_decision.get("allowed", False):
+                logger.warning(
+                    "[MICRO MOMENTUM QUOTE SAFETY] blocked | "
+                    f"setup_id={trade_plan.get('setup_id')} "
+                    f"signal={signal} "
+                    f"reason={_mm_quote_decision.get('reason')} "
+                    f"spread={_mm_quote_decision.get('spread')} "
+                    f"nominal_sl_distance="
+                    f"{_mm_quote_decision.get('nominal_sl_distance')} "
+                    f"required_sl_distance="
+                    f"{_mm_quote_decision.get('required_sl_distance')} "
+                    f"allowed_max_sl_distance="
+                    f"{_mm_quote_decision.get('allowed_max_sl_distance')}"
+                )
+                return False
+
+            request = _mm_quote_decision["request"]
+            trade_plan = _mm_quote_decision["trade_plan"]
+
+            if _mm_quote_decision.get("adjusted", False):
+                logger.warning(
+                    "[MICRO MOMENTUM QUOTE SAFETY] adjusted | "
+                    f"setup_id={trade_plan.get('setup_id')} "
+                    f"signal={signal} "
+                    f"spread={_mm_quote_decision.get('spread')} "
+                    f"nominal_sl_distance="
+                    f"{_mm_quote_decision.get('nominal_sl_distance')} "
+                    f"final_sl_distance="
+                    f"{_mm_quote_decision.get('final_sl_distance')} "
+                    f"final_rr={_mm_quote_decision.get('final_rr')} "
+                    f"sl={request.get('sl')} tp={request.get('tp')}"
+                )
 
         result = mt5.order_send(request)
 
@@ -2469,19 +2578,22 @@ def execute_trade(signal, trade_plan, symbol):
         executed_price=executed_price,
     )
 
-    send_telegram_message(
-        f"✅ Trade Executed\n"
-        f"Symbol: {symbol}\n"
-        f"Signal: {signal}\n"
-        f"Expected: {expected_price}\n"
-        f"Executed: {executed_price}\n"
-        f"SL: {trade_plan['stop_loss']}\n"
-        f"{_format_execution_tp_management(signal, trade_plan)}\n"
-        f"Lot: {trade_plan['lot']}\n"
-        f"Adverse Slippage: {round(adverse_slippage or 0.0, 2)}\n"
-        f"Favorable Slippage: {round(favorable_slippage or 0.0, 2)}\n"
-        f"Absolute Movement: {round(slippage or 0.0, 2)}\n"
-        f"Filling Mode: {successful_filling_mode}"
-    )
+    if not bool(
+        trade_plan.get("suppress_routine_telegram", False)
+    ):
+        send_telegram_message(
+            f"✅ Trade Executed\n"
+            f"Symbol: {symbol}\n"
+            f"Signal: {signal}\n"
+            f"Expected: {expected_price}\n"
+            f"Executed: {executed_price}\n"
+            f"SL: {trade_plan['stop_loss']}\n"
+            f"{_format_execution_tp_management(signal, trade_plan)}\n"
+            f"Lot: {trade_plan['lot']}\n"
+            f"Adverse Slippage: {round(adverse_slippage or 0.0, 2)}\n"
+            f"Favorable Slippage: {round(favorable_slippage or 0.0, 2)}\n"
+            f"Absolute Movement: {round(slippage or 0.0, 2)}\n"
+            f"Filling Mode: {successful_filling_mode}"
+        )
 
     return True

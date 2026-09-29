@@ -26,10 +26,10 @@ def reached_max_trades_today(symbol: str) -> bool:
 
         if deal.entry == mt5.DEAL_ENTRY_IN:
             count += 1
-            print(
-                f"[DAILY GUARD] Counted entry deal | "
-                f"ticket={deal.ticket} symbol={deal.symbol} entry={deal.entry} volume={deal.volume}"
-            )
 
-    print(f"[DAILY GUARD] Total entry deals today for {symbol}: {count}")
+    if count >= MAX_TRADES_PER_DAY:
+        print(
+            f"[DAILY GUARD] Daily entry limit reached for {symbol}: "
+            f"{count}/{MAX_TRADES_PER_DAY}"
+        )
     return count >= MAX_TRADES_PER_DAY

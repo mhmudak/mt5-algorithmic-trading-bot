@@ -239,7 +239,7 @@ TAKE_PROFIT_R_MULTIPLIER = 1.5
 # =========================
 # Trading Limits
 # =========================
-MAX_TRADES_PER_DAY = 500
+MAX_TRADES_PER_DAY = 4000
 # MAX_ALLOWED_SPREAD = 0.50
 MAX_SPREAD = 0.5
 MAX_SLIPPAGE = 0.3
@@ -287,7 +287,7 @@ COOLDOWN_AFTER_SL_MINUTES = 4
 # Same Direction Entries
 # =========================
 ALLOW_SAME_DIRECTION_ENTRIES = True
-MAX_SAME_DIRECTION_TRADES = 3  # main + extras = total max open same-side trades
+MAX_SAME_DIRECTION_TRADES = 4  # main + extras = total max open same-side trades
 
 # =========================
 # Runtime / Safety
@@ -566,10 +566,14 @@ SMC_MIN_FINAL_SCORE = 88
 # Strategy Toggles
 # =========================
 ENABLE_FCR_M1_FVG = True # may turn it off
+FCR_M1_FVG_NATIVE_DIRECTIONAL_AUTHORITY = True  # FCR owns generic MTF/HTF directional confirmation
 ENABLE_FCR_M1_FVG_CLOSED_M1_CADENCE = True
 ENABLE_FCR_M1_FVG_REGIME_SHADOW = False
 ENABLE_FCR_M1_FVG_STARTUP_GUARD = True
 FCR_M1_FVG_SKIP_ON_FIRST_CYCLE_AFTER_STARTUP = True
+# Maximum adverse movement from the closed-M1 FCR signal entry before
+# the live setup is considered chased/stale. 0.50 = half of original 1R.
+FCR_M1_FVG_RUNTIME_MAX_CHASE_R = 0.50
 
 # =========================
 # Session Engine
@@ -1217,6 +1221,7 @@ MTF_CONFLICT_SOFT_EXECUTION_STRATEGIES = [
     "LIQUIDITY_SWEEP",
     "CRT_TBS",
     "LIQUIDITY_TRAP",
+    "PRO_TRADER_REPLICATION",
 ]
 
 MTF_CONFLICT_RETRACE_FIRST_STRATEGIES = [
@@ -1250,6 +1255,31 @@ MTF_CONFLICT_COUNTER_SCALP_SL_PRICE = 8.0
 MTF_CONFLICT_COUNTER_SCALP_LOT_MULTIPLIER = 0.50
 
 MTF_CONFLICT_REQUIRE_M5_CONFIRMATION = True
+
+
+# ============================================================
+# MTF Conflict Confirmation -> Live Execution Authority V2
+# ============================================================
+# "MANUAL_FULL_MARGIN_FORENSIC" remains a research/source label only.
+# This bridge NEVER grants full-margin sizing or bypasses the risk engine.
+ENABLE_MTF_CONFLICT_CONFIRMATION_EXECUTION_AUTHORITY_V2 = True
+
+MTF_CONFLICT_CONFIRMATION_EXECUTION_PROFILES_V2 = {
+    "STRUCTURE_LIQUIDITY": {
+        "min_confidence": 80.0,
+        "min_score_delta": 3.0,
+    },
+    "PRO_TRADER_REPLICATION": {
+        "min_confidence": 75.0,
+        "min_score_delta": 3.0,
+    },
+}
+
+MTF_CONFLICT_CONFIRMATION_OVERRIDE_REASON_PREFIXES_V2 = (
+    "m5_confirmation_failed",
+)
+
+MTF_CONFLICT_CONFIRMATION_REQUIRE_ZERO_FAILS_V2 = True
 MTF_CONFLICT_REQUIRE_SHADOW_TRADE_PLAN = True
 MTF_CONFLICT_REQUIRE_SHADOW_RR_FOR_NORMAL_EXECUTION = True
 MTF_CONFLICT_REQUIRE_SHADOW_RR_FOR_SCALP = False
@@ -1955,6 +1985,122 @@ SMC_FAILED_LOW_RR_SL_ZONE_STRATEGIES = [
     "ORDER_BLOCK",
     "STRUCTURE_LIQUIDITY",
 ]
+
+# ============================================================
+# Intrabar Micro Momentum / Low-MAE Momentum Family V1
+# ============================================================
+# Research-only detector:
+# - runs every bot loop before the M15 gate
+# - never sends an order
+# - never blocks another strategy
+# - qualified impulses are registered into setup_outcomes for MAE/MFE research
+# - approved DLLB ladder is location context only; it has ZERO authority here
+ENABLE_INTRABAR_MICRO_MOMENTUM_SHADOW = True
+MICRO_MOMENTUM_SHADOW_WINDOW_SECONDS = 5.0
+MICRO_MOMENTUM_SHADOW_MIN_SAMPLES = 6
+MICRO_MOMENTUM_SHADOW_MIN_SPAN_SECONDS = 2.0
+MICRO_MOMENTUM_SHADOW_MIN_MOVE_PRICE = 0.30
+MICRO_MOMENTUM_SHADOW_MIN_VELOCITY_PRICE_PER_SEC = 0.06
+MICRO_MOMENTUM_SHADOW_MIN_PERSISTENCE = 0.67
+MICRO_MOMENTUM_SHADOW_MIN_ACCELERATION_RATIO = 1.00
+MICRO_MOMENTUM_SHADOW_MAX_SPREAD_PRICE = 0.20
+MICRO_MOMENTUM_SHADOW_BREAKOUT_BUFFER_PRICE = 0.01
+MICRO_MOMENTUM_SHADOW_MIN_SCORE = 88
+MICRO_MOMENTUM_SHADOW_MIN_SECONDS_BETWEEN_ANY = 3.0
+MICRO_MOMENTUM_SHADOW_SAME_DIRECTION_REARM_SECONDS = 10.0
+MICRO_MOMENTUM_SHADOW_SAME_DIRECTION_REARM_RETRACE_PRICE = 0.20
+
+# Live promotion for the same qualified micro-momentum impulses.
+# Uses fresh executable bid/ask, the normal risk engine, trade guard,
+# news/time blackouts and execution memory. Shadow outcome capture
+# remains enabled in parallel for MAE/MFE research.
+ENABLE_INTRABAR_MICRO_MOMENTUM_LIVE = True
+# High-frequency routine detect/execute Telegram is intentionally silent.
+# Master authority: suppress all identifiable INTRABAR_MICRO_MOMENTUM Telegram when False.
+MICRO_MOMENTUM_TELEGRAM_ENABLED = False
+
+# ============================================================
+# Micro Momentum independent breakeven protection
+# Protects trades before Low-MAE Runner qualification.
+# At 50% of original TP distance, move SL to entry.
+# ============================================================
+ENABLE_MICRO_MOMENTUM_BREAKEVEN_PROTECTION = True
+MICRO_MOMENTUM_BREAKEVEN_TP_PROGRESS = 0.50
+MICRO_MOMENTUM_BREAKEVEN_LOCK_PRICE = 0.0
+MICRO_MOMENTUM_BREAKEVEN_POLL_SECONDS = 0.25
+ENABLE_MICRO_MOMENTUM_AGGRESSIVE_EARLY_BE = False
+MICRO_MOMENTUM_AGGRESSIVE_EARLY_BE_TRIGGER_PRICE = 0.10
+MICRO_MOMENTUM_AGGRESSIVE_EARLY_BE_LOCK_PRICE = 0.0
+MICRO_MOMENTUM_AGGRESSIVE_EARLY_BE_STRENGTHS = ("NORMAL", "EXPLOSIVE")
+MICRO_MOMENTUM_AGGRESSIVE_STAGE2_PROFILES = {
+    "NORMAL": {"trigger_price": 0.40, "lock_price": 0.20},
+    "EXPLOSIVE": {"trigger_price": 0.70, "lock_price": 0.40},
+}
+ENABLE_MICRO_MOMENTUM_PROFIT_CAPTURE = True
+MICRO_MOMENTUM_PROFIT_CAPTURE_PRICE = 1.50
+MICRO_MOMENTUM_TELEGRAM_ROUTINE_NOTIFICATIONS = False
+MICRO_MOMENTUM_TELEGRAM_CLOSE_NOTIFICATIONS = False
+MICRO_MOMENTUM_TRIGGER_POST_SL_COOLDOWN = False
+
+# Micro Momentum directional authority: reuse the active M15 setup lock.
+# Same-direction/no-lock behavior is unchanged; only opposite impulses are blocked.
+ENABLE_MICRO_MOMENTUM_M15_DIRECTION_LOCK_GUARD = True
+MICRO_MOMENTUM_FINAL_MAX_SPREAD_PRICE = 0.20
+MICRO_MOMENTUM_QUOTE_STOP_CUSHION_PRICE = 0.15
+MICRO_MOMENTUM_QUOTE_SAFE_MAX_SL_DISTANCE = 0.50
+MICRO_MOMENTUM_LIVE_MIN_SCORE = 88
+MICRO_MOMENTUM_LIVE_MIN_RR = 1.50
+# Experimental Micro-only live execution reversal. Detector direction stays unchanged.
+ENABLE_MICRO_MOMENTUM_EXECUTION_REVERSAL = False
+# All Micro Momentum strength buckets remain live by operator choice.
+# Stratification/analyzer output is advisory until a later policy change.
+MICRO_MOMENTUM_LIVE_ALLOWED_STRENGTHS = ("NORMAL", "EXPLOSIVE")
+# Daily ladder remains research/context by default, not a hard live gate.
+MICRO_MOMENTUM_LIVE_REQUIRE_DAILY_ALIGNMENT = False
+
+
+
+# ============================================================
+# INTRABAR_STEP_TRAIL V1
+# Distinct impulse -> pullback -> resume intrabar strategy.
+# Shadow-first. Live promotion is one toggle after observation.
+# ============================================================
+ENABLE_INTRABAR_STEP_TRAIL_SHADOW = True
+ENABLE_INTRABAR_STEP_TRAIL_LIVE = True
+INTRABAR_STEP_TRAIL_POLL_SECONDS = 0.25
+INTRABAR_STEP_TRAIL_FIXED_LOT = 0.25
+INTRABAR_STEP_TRAIL_HARD_STOP_PRICE = 7.00
+INTRABAR_STEP_TRAIL_ACTIVATION_PROFIT = 0.60
+INTRABAR_STEP_TRAIL_FIRST_LOCK_PROFIT = 0.10
+INTRABAR_STEP_TRAIL_TRAIL_STEP = 0.50
+INTRABAR_STEP_TRAIL_TRAIL_GAP = 0.50
+INTRABAR_STEP_TRAIL_EARLY_FAILURE_GRACE_SECONDS = 2.00
+INTRABAR_STEP_TRAIL_EARLY_FAILURE_MIN_ADVERSE = 0.75
+
+# Intrabar optimization telemetry only; never execution authority.
+ENABLE_INTRABAR_OPTIMIZATION_TELEMETRY = True
+INTRABAR_OPTIMIZATION_PERSIST_SECONDS = 2.0
+
+# Dedicated sub-second lane for true intrabar micro-momentum sampling.
+ENABLE_INTRABAR_MICRO_MOMENTUM_FAST_LANE = True
+MICRO_MOMENTUM_FAST_LANE_POLL_SECONDS = 0.25
+MICRO_MOMENTUM_FAST_LANE_WAIT_SECONDS = 10.0
+
+
+# ============================================================
+# Low-MAE Momentum Runner V1 — live post-entry management
+# ============================================================
+ENABLE_LOW_MAE_MOMENTUM_RUNNER_LIVE = True
+LOW_MAE_RUNNER_PROMOTION_TRIGGER_R = 1.50
+LOW_MAE_RUNNER_MAX_MAE_R = 0.50
+LOW_MAE_RUNNER_MIN_EFFICIENCY = 3.00
+LOW_MAE_RUNNER_MIN_SAMPLES = 4
+LOW_MAE_RUNNER_INITIAL_LOCK_R = 0.50
+LOW_MAE_RUNNER_STAGE2_TRIGGER_R = 3.00
+LOW_MAE_RUNNER_STAGE2_LOCK_R = 1.50
+LOW_MAE_RUNNER_STAGE3_TRIGGER_R = 4.00
+LOW_MAE_RUNNER_STAGE3_LOCK_R = 2.50
+LOW_MAE_RUNNER_TARGET_PRICE = 2.00
 
 # =========================
 # Setup Outcome Tracker

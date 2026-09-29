@@ -22,14 +22,29 @@ def resolve_fcr_signal_entry(
     strategy_name: str | None,
     signal_data: dict[str, Any] | None,
     fallback_entry: Any,
+    live_executable_entry: Any = None,
 ) -> float | Any:
-    """Use FCR's detection-time entry reference; preserve existing behavior otherwise."""
+    """
+    Resolve the operational/display entry for FCR.
+
+    The closed-M1 entry_reference remains immutable signal evidence. If the
+    current cycle has already passed the FCR freshness guard, the validated
+    live executable quote is used for operational entry/display.
+    """
     if str(strategy_name or "").upper() != FCR_STRATEGY:
         return fallback_entry
 
-    data = signal_data if isinstance(signal_data, dict) else {}
-    entry_reference = _safe_float(data.get("entry_reference"))
+    live_entry = _safe_float(live_executable_entry)
+    if live_entry is not None:
+        return round(float(live_entry), 2)
 
+    data = signal_data if isinstance(signal_data, dict) else {}
+
+    runtime_entry = _safe_float(data.get("fcr_runtime_entry"))
+    if runtime_entry is not None:
+        return round(float(runtime_entry), 2)
+
+    entry_reference = _safe_float(data.get("entry_reference"))
     if entry_reference is None:
         return fallback_entry
 
@@ -44,6 +59,7 @@ def validate_fcr_runtime_geometry(
     trade_plan: dict[str, Any] | None,
     executable_price: Any,
     min_rr_required: Any,
+    max_chase_r: Any = 0.50,
 ) -> dict[str, Any]:
     """
     Revalidate FCR immediately before market execution.
@@ -77,6 +93,9 @@ def validate_fcr_runtime_geometry(
     sl = _safe_float(plan.get("stop_loss"))
     tp = _safe_float(plan.get("take_profit"))
     required_rr = _safe_float(min_rr_required)
+    max_chase_r_value = _safe_float(max_chase_r)
+    if max_chase_r_value is None or max_chase_r_value < 0:
+        max_chase_r_value = 0.50
 
     result = {
         "applies": True,
@@ -88,6 +107,8 @@ def validate_fcr_runtime_geometry(
         "stop_loss": sl,
         "take_profit": tp,
         "required_rr": required_rr,
+        "max_chase_r": max_chase_r_value,
+        "max_chase_distance": None,
         "runtime_rr": None,
         "signal_rr": None,
         "rr_degradation": None,
@@ -137,13 +158,27 @@ def validate_fcr_runtime_geometry(
     runtime_rr = runtime_reward / runtime_risk
     result["runtime_rr"] = round(float(runtime_rr), 6)
 
-    if signal_risk > 0 and signal_reward > 0:
-        signal_rr = signal_reward / signal_risk
-        result["signal_rr"] = round(float(signal_rr), 6)
-        result["rr_degradation"] = round(
-            float(runtime_rr - signal_rr),
-            6,
-        )
+    if signal_risk <= 0 or signal_reward <= 0:
+        result["reason"] = "invalid_signal_geometry"
+        return result
+
+    signal_rr = signal_reward / signal_risk
+    result["signal_rr"] = round(float(signal_rr), 6)
+
+    max_chase_distance = float(signal_risk) * float(max_chase_r_value)
+    result["max_chase_distance"] = round(float(max_chase_distance), 6)
+
+    # Positive chase_distance means adverse chasing:
+    # BUY above signal entry, SELL below signal entry.
+    # Better prices (negative chase) remain eligible.
+    if chase_distance > max_chase_distance + 1e-9:
+        result["reason"] = "runtime_chase_exceeded"
+        return result
+
+    result["rr_degradation"] = round(
+        float(runtime_rr - signal_rr),
+        6,
+    )
 
     if required_rr is not None and runtime_rr < required_rr:
         result["reason"] = "runtime_rr_below_required"
@@ -154,6 +189,8 @@ def validate_fcr_runtime_geometry(
     runtime_plan["fcr_signal_entry"] = round(float(signal_entry), 2)
     runtime_plan["fcr_runtime_rr"] = round(float(runtime_rr), 4)
     runtime_plan["fcr_chase_distance"] = round(float(chase_distance), 2)
+    runtime_plan["fcr_max_chase_r"] = round(float(max_chase_r_value), 4)
+    runtime_plan["fcr_max_chase_distance"] = round(float(max_chase_distance), 2)
 
     result["allowed"] = True
     result["reason"] = "runtime_geometry_valid"

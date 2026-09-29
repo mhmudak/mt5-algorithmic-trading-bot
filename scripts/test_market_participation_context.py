@@ -243,16 +243,19 @@ def test_mt5_proxy_telegram_block_is_honest():
     )
 
     assert (
-        "Market Participation — MT5 Proxy"
+        "MARKET PARTICIPATION"
         in block
     )
 
     assert "Activity: ACCELERATING" in block
-    assert "Pressure: SELL" in block
+    assert "MT5 Pressure: SELL" in block
     assert "5s Imbalance: -0.78" in block
     assert "Signal Relation: WITH_SIGNAL" in block
-    assert "Rithmic: UNAVAILABLE" in block
-    assert "Mode: OBSERVE ONLY" in block
+    assert "Cross-Market Context:" in block
+
+    # Detailed Rithmic state belongs only in the top Rithmic verdict block.
+    assert "Rithmic Aggression:" not in block
+    assert "DOM:" not in block
 
     # Never overclaim participant identity.
     assert "Institutional Confirmed" not in block
@@ -278,19 +281,15 @@ def test_rithmic_formatter_auto_enriches_when_available():
     )
 
     assert (
-        "Market Participation — MT5 + Rithmic"
+        "MARKET PARTICIPATION"
         in block
     )
 
-    assert (
-        "Rithmic Aggression: BUY_AGGRESSION"
-        in block
-    )
+    assert "Cross-Market Context:" in block
 
-    assert (
-        "DOM: BID_DEPTH_DOMINANT"
-        in block
-    )
+    # Do not duplicate detailed Rithmic evidence below the setup form.
+    assert "Rithmic Aggression:" not in block
+    assert "DOM:" not in block
 
 
 def test_high_impact_alert_is_notification_only():
@@ -448,13 +447,23 @@ def test_live_notifications_surface_context_without_authority():
         encoding="utf-8-sig"
     )
 
-    # Definition + five lifecycle notification uses.
+    # Direct Market Participation helper remains available for
+    # non-directional / legacy presentation paths.
     assert (
         live_source.count(
             "_market_participation_telegram_"
             "block_fail_open("
         )
-        == 6
+        == 4
+    )
+
+    # Definition + six directional setup/candidate notification uses.
+    assert (
+        live_source.count(
+            "_directional_alert_context_"
+            "blocks_fail_open("
+        )
+        == 7
     )
 
     # Definition + cycle-level invocation.

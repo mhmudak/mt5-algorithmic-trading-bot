@@ -11,7 +11,7 @@ from config.settings import (
 )
 
 
-def check_trade_guard(signal, tick):
+def check_trade_guard(signal, tick, *, skip_cooldown=False):
     if signal not in ["BUY", "SELL"]:
         return False, "Signal is not tradable"
 
@@ -37,7 +37,7 @@ def check_trade_guard(signal, tick):
     if reached_max_trades_today(SYMBOL):
         return False, f"Max trades per day reached for {SYMBOL}"
 
-    if in_cooldown_period(SYMBOL):
+    if not skip_cooldown and in_cooldown_period(SYMBOL):
         return False, f"Cooldown active for {SYMBOL}"
 
     return True, "Trade allowed"
