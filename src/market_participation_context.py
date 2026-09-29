@@ -520,6 +520,26 @@ def _read_rithmic_participation_context(
         snapshot = provider.get_latest_snapshot(symbol)
         snapshot = snapshot if isinstance(snapshot, dict) else {}
         metrics = snapshot.get("metrics") or {}
+        rithmic_status = (
+            snapshot.get("rithmic_status")
+            if isinstance(snapshot.get("rithmic_status"), dict)
+            else {}
+        )
+        sample = (
+            rithmic_status.get("sample")
+            if isinstance(rithmic_status.get("sample"), dict)
+            else {}
+        )
+        order_book = (
+            rithmic_status.get("order_book")
+            if isinstance(rithmic_status.get("order_book"), dict)
+            else {}
+        )
+        freshness = (
+            rithmic_status.get("freshness")
+            if isinstance(rithmic_status.get("freshness"), dict)
+            else {}
+        )
         available = bool(snapshot.get("available"))
 
         return {
@@ -536,6 +556,44 @@ def _read_rithmic_participation_context(
             "metrics": {
                 "bid_volume": metrics.get("bid_volume"),
                 "ask_volume": metrics.get("ask_volume"),
+                "trade_count": (
+                    metrics.get("trade_count")
+                    if metrics.get("trade_count") is not None
+                    else sample.get("rolling_trade_count")
+                ),
+                "bbo_count": (
+                    metrics.get("bbo_count")
+                    if metrics.get("bbo_count") is not None
+                    else sample.get("bbo_count")
+                ),
+                "nonzero_bbo_count": (
+                    metrics.get("nonzero_bbo_count")
+                    if metrics.get("nonzero_bbo_count") is not None
+                    else sample.get("nonzero_bbo_count")
+                ),
+                "order_book_count": (
+                    metrics.get("order_book_count")
+                    if metrics.get("order_book_count") is not None
+                    else sample.get("order_book_count")
+                ),
+                "last_bid": (
+                    metrics.get("last_bid")
+                    if metrics.get("last_bid") is not None
+                    else (
+                        metrics.get("latest_bid")
+                        if metrics.get("latest_bid") is not None
+                        else order_book.get("top_bid_price")
+                    )
+                ),
+                "last_ask": (
+                    metrics.get("last_ask")
+                    if metrics.get("last_ask") is not None
+                    else (
+                        metrics.get("latest_ask")
+                        if metrics.get("latest_ask") is not None
+                        else order_book.get("top_ask_price")
+                    )
+                ),
                 "delta": metrics.get("delta"),
                 "cumulative_delta": metrics.get("cumulative_delta"),
                 "footprint_imbalance": metrics.get("footprint_imbalance"),
@@ -546,7 +604,7 @@ def _read_rithmic_participation_context(
             },
             "aggression_state": _classify_rithmic_direction(metrics) if available else "UNAVAILABLE",
             "dom_state": _classify_dom_direction(metrics) if available else "UNAVAILABLE",
-            "freshness": (snapshot.get("rithmic_status") or {}).get("freshness"),
+            "freshness": freshness,
             "warning": snapshot.get("warning"),
         }
     except Exception as exc:

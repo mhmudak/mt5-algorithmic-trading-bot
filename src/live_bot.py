@@ -145,6 +145,10 @@ from src.market_participation_context import (
     record_mt5_tick,
     refresh_rithmic_participation_context,
 )
+from src.rithmic_setup_verdict import (
+    build_rithmic_setup_verdict,
+    format_rithmic_setup_verdict_telegram_block,
+)
 
 from config.settings import (
     SYMBOL,
@@ -1231,6 +1235,49 @@ def _market_participation_telegram_block_fail_open(
         )
 
         return ""
+
+
+def _rithmic_setup_verdict_telegram_fail_open(
+    *,
+    signal,
+    context,
+):
+    """Build display-only Rithmic setup context with zero trading authority."""
+
+    try:
+        verdict = build_rithmic_setup_verdict(
+            context,
+            signal,
+        )
+        block = format_rithmic_setup_verdict_telegram_block(
+            verdict
+        )
+        return verdict, block
+    except Exception as exc:
+        logger.warning(
+            "[RITHMIC SETUP VERDICT] failed open: "
+            f"{exc}"
+        )
+        verdict = {
+            "verdict": "UNAVAILABLE",
+            "alignment": "NOT_AVAILABLE_FORMATTER_ERROR",
+            "setup_direction": str(signal or "UNKNOWN").upper(),
+            "supports_setup": False,
+            "against_setup": False,
+            "support_score": 0,
+            "against_score": 0,
+            "evidence": [],
+            "reason": "rithmic_setup_verdict_error",
+            "decision_impact": "NONE",
+            "can_influence_decision": False,
+            "safe_for_execution": False,
+            "execution_allowed": False,
+        }
+        return (
+            verdict,
+            "⚪ RITHMIC: UNAVAILABLE / ERROR\n"
+            "Mode: OBSERVE ONLY — NO EXECUTION AUTHORITY",
+        )
 
 
 def _notify_market_participation_high_impact_fail_open(
@@ -16593,6 +16640,29 @@ def process_cycle(last_processed_candle_time):
                     )
                 )
 
+                (
+                    detected_rithmic_verdict,
+                    detected_rithmic_verdict_block,
+                ) = (
+                    _rithmic_setup_verdict_telegram_fail_open(
+                        signal=signal,
+                        context=(
+                            setup_participation_context
+                        ),
+                    )
+                )
+
+                selected_signal_data[
+                    "rithmic_setup_verdict"
+                ] = detected_rithmic_verdict
+
+                if detected_rithmic_verdict_block:
+                    detected_message = (
+                        detected_rithmic_verdict_block
+                        + "\n--------------------------------\n\n"
+                        + detected_message
+                    )
+
                 if detected_entry_tp_block:
                     detected_message += (
                         "\n\n"
@@ -16627,6 +16697,11 @@ def process_cycle(last_processed_candle_time):
                     reason=reason,
                     extra={
                         "protected_reentry": selected_signal_data.get("protected_reentry"),
+                        "rithmic_setup_verdict": (
+                            selected_signal_data.get(
+                                "rithmic_setup_verdict"
+                            )
+                        ),
                     },
                 )
                 
@@ -16681,6 +16756,11 @@ def process_cycle(last_processed_candle_time):
                             else None
                         ),
                         "source": "setup_detected_raw",
+                        "rithmic_setup_verdict": (
+                            selected_signal_data.get(
+                                "rithmic_setup_verdict"
+                            )
+                        ),
                         "news_context": news_context,
                         "news_tag": news_context.get("news_tag") if news_context else None,
                     },

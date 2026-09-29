@@ -23,6 +23,9 @@ from src.order_flow_providers.rithmic_contract_identity import (
     resolve_rithmic_symbol as _resolve_rithmic_symbol,
     safe_symbol_for_file as _rithmic_safe_symbol_for_file,
 )
+from src.rithmic_setup_verdict import (
+    score_rithmic_setup_alignment_for_direction,
+)
 
 ACCOUNT_NAME = "Tickmill-Demo_25323531"
 INTEL_DIR = ROOT / "data" / "strategy_intelligence" / ACCOUNT_NAME
@@ -477,81 +480,14 @@ def get_primary_setup_direction(events: list[dict[str, Any]]) -> str | None:
     return None
 
 
-def score_alignment_for_direction(direction: str, metrics: dict[str, Any]) -> tuple[int, int, list[str]]:
-    support = 0
-    against = 0
-    evidence: list[str] = []
-
-    delta = as_float(metrics.get("delta"))
-    cumulative_delta = as_float(metrics.get("cumulative_delta"))
-    dom_imbalance = metrics.get("dom_depth_imbalance")
-    dom_imbalance_float = as_float(dom_imbalance) if dom_imbalance is not None else None
-    bid_depth = as_float(metrics.get("dom_bid_depth"))
-    ask_depth = as_float(metrics.get("dom_ask_depth"))
-
-    if direction == "BUY":
-        if delta > 0:
-            support += 1
-            evidence.append(f"delta positive supports BUY: {delta}")
-        elif delta < 0:
-            against += 1
-            evidence.append(f"delta negative is against BUY: {delta}")
-
-        if cumulative_delta > 0:
-            support += 1
-            evidence.append(f"cumulative_delta positive supports BUY: {cumulative_delta}")
-        elif cumulative_delta < 0:
-            against += 1
-            evidence.append(f"cumulative_delta negative is against BUY: {cumulative_delta}")
-
-        if dom_imbalance_float is not None:
-            if dom_imbalance_float > 0.15:
-                support += 1
-                evidence.append(f"DOM bid-heavy supports BUY: {dom_imbalance_float}")
-            elif dom_imbalance_float < -0.15:
-                against += 1
-                evidence.append(f"DOM ask-heavy is against BUY: {dom_imbalance_float}")
-
-        if bid_depth > 0 or ask_depth > 0:
-            if bid_depth > ask_depth:
-                support += 1
-                evidence.append(f"bid_depth > ask_depth supports BUY: {bid_depth} > {ask_depth}")
-            elif ask_depth > bid_depth:
-                against += 1
-                evidence.append(f"ask_depth > bid_depth is against BUY: {ask_depth} > {bid_depth}")
-
-    elif direction == "SELL":
-        if delta < 0:
-            support += 1
-            evidence.append(f"delta negative supports SELL: {delta}")
-        elif delta > 0:
-            against += 1
-            evidence.append(f"delta positive is against SELL: {delta}")
-
-        if cumulative_delta < 0:
-            support += 1
-            evidence.append(f"cumulative_delta negative supports SELL: {cumulative_delta}")
-        elif cumulative_delta > 0:
-            against += 1
-            evidence.append(f"cumulative_delta positive is against SELL: {cumulative_delta}")
-
-        if dom_imbalance_float is not None:
-            if dom_imbalance_float < -0.15:
-                support += 1
-                evidence.append(f"DOM ask-heavy supports SELL: {dom_imbalance_float}")
-            elif dom_imbalance_float > 0.15:
-                against += 1
-                evidence.append(f"DOM bid-heavy is against SELL: {dom_imbalance_float}")
-
-        if bid_depth > 0 or ask_depth > 0:
-            if ask_depth > bid_depth:
-                support += 1
-                evidence.append(f"ask_depth > bid_depth supports SELL: {ask_depth} > {bid_depth}")
-            elif bid_depth > ask_depth:
-                against += 1
-                evidence.append(f"bid_depth > ask_depth is against SELL: {bid_depth} > {ask_depth}")
-
-    return support, against, evidence
+def score_alignment_for_direction(
+    direction: str,
+    metrics: dict[str, Any],
+) -> tuple[int, int, list[str]]:
+    return score_rithmic_setup_alignment_for_direction(
+        direction,
+        metrics,
+    )
 
 
 def compute_rithmic_directional_alignment(
