@@ -143,11 +143,19 @@ def test_runtime_wiring():
         encoding="utf-8-sig",
     )
 
-    tree = ast.parse(source)
+    tree = ast.parse(
+        source
+    )
+
+    helper_name = (
+        "_rithmic_setup_verdict_telegram_fail_open"
+    )
 
     calls = [
         node
-        for node in ast.walk(tree)
+        for node in ast.walk(
+            tree
+        )
         if (
             isinstance(
                 node,
@@ -158,22 +166,166 @@ def test_runtime_wiring():
                 ast.Name,
             )
             and node.func.id
-            == "_rithmic_setup_verdict_telegram_fail_open"
+            == helper_name
         )
     ]
 
-    assert len(calls) == 1
+    assert calls, (
+        "Rithmic setup-verdict helper "
+        "has no runtime call sites"
+    )
 
-    keywords = {
-        keyword.arg
-        for keyword
-        in calls[0].keywords
-        if keyword.arg is not None
-    }
+    function_nodes = [
+        node
+        for node in ast.walk(
+            tree
+        )
+        if isinstance(
+            node,
+            (
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+            ),
+        )
+    ]
+
+    def enclosing_function_name(
+        call,
+    ):
+        candidates = [
+            node
+            for node
+            in function_nodes
+            if (
+                node.lineno
+                <= call.lineno
+                <= node.end_lineno
+            )
+        ]
+
+        if not candidates:
+            return None
+
+        owner = min(
+            candidates,
+            key=lambda node: (
+                node.end_lineno
+                - node.lineno
+            ),
+        )
+
+        return owner.name
+
+    setup_plan_calls = []
+
+    for call in calls:
+        keywords = {
+            keyword.arg
+            for keyword
+            in call.keywords
+            if keyword.arg
+            is not None
+        }
+
+        assert (
+            "signal"
+            in keywords
+        ), (
+            "every Rithmic helper call "
+            "must pass signal"
+        )
+
+        assert (
+            "context"
+            in keywords
+        ), (
+            "every Rithmic helper call "
+            "must pass context"
+        )
+
+        bot_plan_keywords = [
+            keyword
+            for keyword
+            in call.keywords
+            if keyword.arg
+            == "bot_trade_plan"
+        ]
+
+        assert (
+            len(
+                bot_plan_keywords
+            )
+            <= 1
+        )
+
+        if not bot_plan_keywords:
+            # Qualitative-only helper call.
+            # It cannot create a trade-plan advisory
+            # because bot_trade_plan defaults to None.
+            continue
+
+        setup_plan_calls.append(
+            (
+                call,
+                bot_plan_keywords[0],
+                enclosing_function_name(
+                    call
+                ),
+            )
+        )
 
     assert (
-        "bot_trade_plan"
-        in keywords
+        len(
+            setup_plan_calls
+        )
+        == 1
+    ), (
+        "exactly one runtime helper call "
+        "may receive bot_trade_plan"
+    )
+
+    (
+        setup_call,
+        bot_plan_keyword,
+        owner_name,
+    ) = setup_plan_calls[0]
+
+    assert (
+        owner_name
+        == "process_cycle"
+    ), (
+        "bot_trade_plan advisory wiring "
+        "must remain inside process_cycle"
+    )
+
+    assert isinstance(
+        bot_plan_keyword.value,
+        ast.Name,
+    )
+
+    assert (
+        bot_plan_keyword.value.id
+        == "detected_trade_plan"
+    ), (
+        "process_cycle must pass the "
+        "authoritative detected_trade_plan "
+        "as observation input"
+    )
+
+    setup_keywords = {
+        keyword.arg
+        for keyword
+        in setup_call.keywords
+        if keyword.arg
+        is not None
+    }
+
+    assert {
+        "signal",
+        "context",
+        "bot_trade_plan",
+    }.issubset(
+        setup_keywords
     )
 
     forbidden = (
@@ -198,8 +350,23 @@ def test_runtime_wiring():
         assert token not in source
 
     print(
-        "PASS: bot trade plan is passed "
+        "PASS: exactly one setup-detection "
+        "runtime call passes bot trade plan "
         "as observation input only"
+    )
+
+    qualitative_count = (
+        len(calls)
+        - len(
+            setup_plan_calls
+        )
+    )
+
+    print(
+        "PASS: "
+        f"{qualitative_count} additional "
+        "Rithmic helper call(s) remain "
+        "qualitative-only"
     )
 
 
