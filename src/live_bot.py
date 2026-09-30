@@ -181,6 +181,7 @@ from config.settings import (
     ENABLE_VWAP_RANGE_MEAN_REVERSION,
     ENABLE_BALANCED_AUCTION_RANGE,
     ENABLE_FCR_M1_FVG,
+    FCR_M1_FVG_NATIVE_DIRECTIONAL_AUTHORITY,
     ENABLE_FCR_M1_FVG_CLOSED_M1_CADENCE,
     ENABLE_FCR_M1_FVG_REGIME_SHADOW,
     ENABLE_FCR_M1_FVG_STARTUP_GUARD,
@@ -1394,6 +1395,7 @@ def _rithmic_setup_verdict_telegram_fail_open(
             "Mode: OBSERVE ONLY ? "
             "NO EXECUTION AUTHORITY",
         )
+
 
 
 def _directional_alert_context_blocks_fail_open(
@@ -3472,6 +3474,7 @@ def _entry_tp_opportunity_block_fail_open(
         return ""
 
 
+
 def notify_rejected_candidate_if_relevant(
     *,
     setup_id,
@@ -3509,7 +3512,10 @@ def notify_rejected_candidate_if_relevant(
         return
 
     now_ts = time.time()
-    cooldown_seconds = REJECTED_CANDIDATE_TELEGRAM_COOLDOWN_MINUTES * 60
+    cooldown_seconds = (
+        REJECTED_CANDIDATE_TELEGRAM_COOLDOWN_MINUTES
+        * 60
+    )
 
     alert_key = (
         strategy,
@@ -3520,18 +3526,33 @@ def notify_rejected_candidate_if_relevant(
         reason,
     )
 
-    last_sent_ts = _REJECTED_CANDIDATE_TELEGRAM_CACHE.get(alert_key, 0)
+    last_sent_ts = (
+        _REJECTED_CANDIDATE_TELEGRAM_CACHE.get(
+            alert_key,
+            0,
+        )
+    )
 
     if now_ts - last_sent_ts < cooldown_seconds:
         logger.info(
-            f"[REJECTED CANDIDATE] Telegram skipped by cooldown | "
+            "[REJECTED CANDIDATE] Telegram skipped by cooldown | "
             f"key={alert_key}"
         )
         return
 
-    _REJECTED_CANDIDATE_TELEGRAM_CACHE[alert_key] = now_ts
+    _REJECTED_CANDIDATE_TELEGRAM_CACHE[
+        alert_key
+    ] = now_ts
 
-    send_telegram_message_async(
+    (
+        _rejected_context,
+        rejected_rithmic_block,
+        rejected_participation_block,
+    ) = _directional_alert_context_blocks_fail_open(
+        signal=signal,
+    )
+
+    message = (
         "📌 STRONG REJECTED CANDIDATE TRACKED\n"
         f"Setup ID: {setup_id}\n"
         f"Strategy: {strategy}\n"
@@ -3545,8 +3566,25 @@ def notify_rejected_candidate_if_relevant(
         f"SL: {sl}\n"
         f"{_format_telegram_tp123_from_levels(signal, entry, sl, tp)}\n\n"
         f"Reason: {reason}\n"
-        "Action: tracked for promotion ? execution only if RR and confirmation gate pass; low RR waits for better entry."
+        "Action: tracked for promotion; execution only if RR and "
+        "confirmation gate pass; low RR waits for better entry."
     )
+
+    if rejected_rithmic_block:
+        message = (
+            rejected_rithmic_block
+            + "\n--------------------------------\n\n"
+            + message
+        )
+
+    if rejected_participation_block:
+        message += (
+            "\n\n"
+            + rejected_participation_block
+        )
+
+    send_telegram_message_async(message)
+
 
 def calculate_candidate_selection_rank(
     candidate,
@@ -8124,6 +8162,111 @@ def process_mtf_conflict_candidate(
         execution_mode=execution_mode,
     )
     
+    from src.mtf_conflict_confirmation_execution_v2 import (
+        maybe_apply_mtf_confirmation_execution_authority_v2,
+    )
+
+    confirmation_execution_authority_v2 = (
+        maybe_apply_mtf_confirmation_execution_authority_v2(
+            candidate=candidate,
+            shadow_trade_plan=shadow_trade_plan,
+            df=df,
+            tick=tick,
+            session_name=session_name,
+            market_condition=market_condition,
+            shadow_rr=shadow_rr,
+            required_rr=required_rr,
+            execution_mode=execution_mode,
+            original_allowed=execution_allowed,
+            original_reason=execution_reason,
+            max_spread=MAX_SPREAD,
+        )
+    )
+
+    if confirmation_execution_authority_v2.get("promoted", False):
+        execution_allowed = True
+        execution_reason = confirmation_execution_authority_v2.get("reason")
+        authority_report_v2 = (
+            confirmation_execution_authority_v2.get("report") or {}
+        )
+
+        logger.warning(
+            f"[MTF CONFLICT CONFIRMATION AUTHORITY V2] PROMOTED | "
+            f"setup_id={setup_id} strategy={strategy} signal={signal} "
+            f"mode={execution_mode} "
+            f"confidence={authority_report_v2.get('confidence')} "
+            f"score_delta={authority_report_v2.get('score_delta')} "
+            f"original_reason="
+            f"{confirmation_execution_authority_v2.get('original_reason')}"
+        )
+
+        log_setup_event(
+            setup_id=setup_id,
+            event="MTF_CONFLICT_CONFIRMATION_AUTHORITY_V2_PROMOTED",
+            strategy=strategy,
+            signal=signal,
+            entry_model=entry_model,
+            score=candidate.get("score"),
+            session=session_name,
+            market_condition=market_condition,
+            entry=(
+                shadow_trade_plan.get("entry_price")
+                if shadow_trade_plan
+                else None
+            ),
+            sl=(
+                shadow_trade_plan.get("stop_loss")
+                if shadow_trade_plan
+                else None
+            ),
+            tp=(
+                shadow_trade_plan.get("take_profit")
+                if shadow_trade_plan
+                else None
+            ),
+            rr=shadow_rr,
+            required_rr=required_rr,
+            reason=execution_reason,
+            extra={
+                "mtf_bias": mtf_bias,
+                "execution_mode": execution_mode,
+                "confirmation_confidence": authority_report_v2.get(
+                    "confidence"
+                ),
+                "confirmation_score_delta": authority_report_v2.get(
+                    "score_delta"
+                ),
+                "confirmation_status_counts": (
+                    confirmation_execution_authority_v2.get(
+                        "status_counts"
+                    )
+                ),
+                "original_execution_reason": (
+                    confirmation_execution_authority_v2.get(
+                        "original_reason"
+                    )
+                ),
+                "authority_scope": "MTF_CONFLICT_TRACKED_ONLY",
+                "full_margin_sizing_allowed": False,
+            },
+        )
+
+        send_telegram_message_async(
+            "🟢 MTF Confirmation Authority V2 PROMOTED\n"
+            f"Symbol: {SYMBOL}\n"
+            f"Setup ID: {setup_id}\n"
+            f"Strategy: {strategy}\n"
+            f"Signal: {signal}\n"
+            f"Mode: {execution_mode}\n"
+            f"Confidence: {authority_report_v2.get('confidence')}\n"
+            f"Score Delta: {authority_report_v2.get('score_delta')}\n"
+            f"RR: {shadow_rr} / Required: {required_rr}\n"
+            f"Original Block: "
+            f"{confirmation_execution_authority_v2.get('original_reason')}\n\n"
+            "Action: promoted into existing guarded MTF live execution. "
+            "Risk sizing remains normal; full-margin sizing is NOT enabled."
+        )
+
     strategy_mode = get_mtf_conflict_strategy_mode(strategy)
 
     recovery_registered = False
@@ -8290,11 +8433,13 @@ def process_mtf_conflict_candidate(
             )
 
             if strong_mtf_candidate:
-                mtf_participation_block = (
-                    _market_participation_telegram_block_fail_open(
-                        signal=signal,
-                        tick=tick,
-                    )
+                (
+                    _mtf_alert_context,
+                    mtf_rithmic_block,
+                    mtf_participation_block,
+                ) = _directional_alert_context_blocks_fail_open(
+                    signal=signal,
+                    tick=tick,
                 )
 
                 # Display-only TP context for strong tracked MTF conflicts.
@@ -8343,6 +8488,13 @@ def process_mtf_conflict_candidate(
                     f"Required RR: {required_rr}\n\n"
                     "Action: tracked for promotion ? execution only if RR and confirmation gate pass; low RR waits for better entry."
                 )
+
+                if mtf_rithmic_block:
+                    mtf_message = (
+                        mtf_rithmic_block
+                        + "\n--------------------------------\n\n"
+                        + mtf_message
+                    )
 
                 if mtf_entry_tp_block:
                     mtf_message += (
@@ -9017,6 +9169,79 @@ def validate_candidate_pre_execution(
         return False, candidate, "trading_mode_sell_only"
 
     # =========================
+    # FCR FRESH-ENTRY / ANTI-CHASE GUARD
+    # =========================
+    # CLOSED M1 remains signal authority. The current executable quote must
+    # still be close enough to that frozen setup before selection/notifier.
+    # SL/TP are never moved to rescue a stale/chased FCR.
+    if str(strategy_name or "").upper() == "FCR_M1_FVG":
+        from config import settings as _fcr_settings
+        from src.fcr_runtime_guard import validate_fcr_runtime_geometry
+
+        fcr_executable_price = (
+            getattr(tick, "ask", None)
+            if signal == "BUY"
+            else getattr(tick, "bid", None)
+            if signal == "SELL"
+            else None
+        )
+
+        fcr_candidate_plan = {
+            "entry_price": candidate.get("entry_reference"),
+            "stop_loss": (
+                candidate.get("sl_reference")
+                if candidate.get("sl_reference") is not None
+                else candidate.get("stop_loss")
+            ),
+            "take_profit": (
+                candidate.get("tp_reference")
+                if candidate.get("tp_reference") is not None
+                else candidate.get("take_profit")
+            ),
+            "signal": signal,
+            "strategy": strategy_name,
+        }
+
+        fcr_required_rr = get_min_rr(
+            strategy_name,
+            candidate.get("entry_model"),
+            candidate.get("sl_model"),
+        )
+
+        fcr_freshness = validate_fcr_runtime_geometry(
+            strategy_name=strategy_name,
+            signal=signal,
+            signal_data=candidate,
+            trade_plan=fcr_candidate_plan,
+            executable_price=fcr_executable_price,
+            min_rr_required=fcr_required_rr,
+            max_chase_r=getattr(
+                _fcr_settings,
+                "FCR_M1_FVG_RUNTIME_MAX_CHASE_R",
+                0.50,
+            ),
+        )
+
+        candidate["fcr_runtime_geometry"] = {
+            key: value
+            for key, value in fcr_freshness.items()
+            if key != "trade_plan"
+        }
+
+        if not fcr_freshness.get("allowed"):
+            return (
+                False,
+                candidate,
+                "fcr_" + str(
+                    fcr_freshness.get("reason")
+                    or "runtime_geometry_rejected"
+                ),
+            )
+
+        fcr_runtime_plan = fcr_freshness.get("trade_plan") or {}
+        candidate["fcr_runtime_entry"] = fcr_runtime_plan.get("entry_price")
+
+    # =========================
     # ORB ANTI-CHASE FILTER
     # =========================
     if strategy_name == "ORB":
@@ -9062,6 +9287,11 @@ def validate_candidate_pre_execution(
     # =========================
     from config.settings import ENABLE_MTF_CONFIRMATION
 
+    fcr_native_directional_authority = (
+        FCR_M1_FVG_NATIVE_DIRECTIONAL_AUTHORITY
+        and strategy_name == "FCR_M1_FVG"
+    )
+
     if ENABLE_MTF_CONFIRMATION:
         mtf_bias = get_mtf_bias()
         logger.info(f"[MTF] candidate={strategy_name} bias={mtf_bias} signal={signal}")
@@ -9077,8 +9307,11 @@ def validate_candidate_pre_execution(
         ]
 
         allow_mtf_override = (
-            strategy_name in mtf_override_strategies
-            and score >= 98
+            fcr_native_directional_authority
+            or (
+                strategy_name in mtf_override_strategies
+                and score >= 98
+            )
         )
 
         if mtf_conflict and not allow_mtf_override:
@@ -9086,16 +9319,28 @@ def validate_candidate_pre_execution(
 
         if mtf_conflict and allow_mtf_override:
             reason = candidate.get("reason", "N/A")
-            candidate["reason"] = f"{reason} | MTF override: counter-bias {mtf_bias}"
-            candidate.setdefault("mtf_reasons", [])
-            candidate["mtf_reasons"].append(f"mtf_override_{mtf_bias}")
+            if fcr_native_directional_authority:
+                candidate["reason"] = (
+                    f"{reason} | FCR native directional authority: counter-bias {mtf_bias}"
+                )
+                candidate.setdefault("mtf_reasons", [])
+                candidate["mtf_reasons"].append(
+                    f"fcr_native_mtf_override_{mtf_bias}"
+                )
+            else:
+                candidate["reason"] = f"{reason} | MTF override: counter-bias {mtf_bias}"
+                candidate.setdefault("mtf_reasons", [])
+                candidate["mtf_reasons"].append(f"mtf_override_{mtf_bias}")
 
     # =========================
     # HTF FILTER
     # =========================
     htf_context = get_htf_context()
 
-    if not htf_allows_signal(signal, htf_context, allow_neutral=True):
+    if (
+        not fcr_native_directional_authority
+        and not htf_allows_signal(signal, htf_context, allow_neutral=True)
+    ):
         return (
             False,
             candidate,
@@ -11091,7 +11336,15 @@ def process_candidate_rejection_recovery_setups(
                 ENABLE_CANDIDATE_REJECTION_TELEGRAM_ALERTS
                 and TELEGRAM_NOTIFY_CANDIDATE_RECOVERY_INVALIDATED
             ):
-                send_telegram_message(
+                (
+                    _recovery_invalidated_context,
+                    recovery_invalidated_rithmic_block,
+                    recovery_invalidated_participation_block,
+                ) = _directional_alert_context_blocks_fail_open(
+                    signal=signal,
+                )
+
+                recovery_invalidated_message = (
                     f"🛑 Candidate Recovery Invalidated\n"
                     f"Symbol: {SYMBOL}\n"
                     f"Strategy: {strategy_name}\n"
@@ -11102,6 +11355,23 @@ def process_candidate_rejection_recovery_setups(
                     f"Current Price: {current_recovery_price}\n"
                     f"Original TP: {signal_data.get('tp_reference') or signal_data.get('take_profit') or signal_data.get('tp')}\n"
                     f"Original SL: {signal_data.get('sl_reference') or signal_data.get('stop_loss') or signal_data.get('sl')}"
+                )
+
+                if recovery_invalidated_rithmic_block:
+                    recovery_invalidated_message = (
+                        recovery_invalidated_rithmic_block
+                        + "\n--------------------------------\n\n"
+                        + recovery_invalidated_message
+                    )
+
+                if recovery_invalidated_participation_block:
+                    recovery_invalidated_message += (
+                        "\n\n"
+                        + recovery_invalidated_participation_block
+                    )
+
+                send_telegram_message(
+                    recovery_invalidated_message
                 )
 
             continue
@@ -11689,13 +11959,38 @@ def process_candidate_rejection_recovery_setups(
                     "Moved to WAIT_BETTER_ENTRY retry after execution failure",
                 )
 
-                send_telegram_message(
+                (
+                    _recovery_retry_context,
+                    recovery_retry_rithmic_block,
+                    recovery_retry_participation_block,
+                ) = _directional_alert_context_blocks_fail_open(
+                    signal=signal,
+                )
+
+                recovery_retry_message = (
                     f"⏳ Low RR Recovery Moved to Better Entry Retry\n"
                     f"Symbol: {SYMBOL}\n"
                     f"Strategy: {strategy_name}\n"
                     f"Signal: {signal}\n"
                     f"Setup ID: {setup_id}\n"
                     f"RR: {rr_value} / Required: {min_rr}"
+                )
+
+                if recovery_retry_rithmic_block:
+                    recovery_retry_message = (
+                        recovery_retry_rithmic_block
+                        + "\n--------------------------------\n\n"
+                        + recovery_retry_message
+                    )
+
+                if recovery_retry_participation_block:
+                    recovery_retry_message += (
+                        "\n\n"
+                        + recovery_retry_participation_block
+                    )
+
+                send_telegram_message(
+                    recovery_retry_message
                 )
 
                 return True
@@ -13383,6 +13678,21 @@ def process_daily_level_ladder_breakout_v1(
     )
 
     try:
+        # Publish the already-approved DLLB ladder as LOCATION CONTEXT only
+        # for the shadow momentum family. This does not grant momentum execution
+        # authority and does not modify DLLB's provider/evaluator contract.
+        try:
+            from src.intrabar_micro_momentum_shadow import (
+                update_approved_daily_ladder_context,
+            )
+
+            update_approved_daily_ladder_context(approved_ladder)
+        except Exception as exc:
+            logger.warning(
+                "[MICRO MOMENTUM SHADOW] daily ladder context publish failed open "
+                f"| error={exc}"
+            )
+
         candidate = evaluate_daily_level_ladder_breakout(
             m5_df=m5_df,
             approved_ladder=approved_ladder,
@@ -14094,6 +14404,1079 @@ def _phase6r_latest_closed_m1_time():
         return None
 
 
+
+def process_intrabar_micro_momentum_live(
+    *,
+    shadow_setup,
+    df,
+    account_info,
+):
+    """
+    Promote one already-qualified micro-momentum impulse to one live order
+    attempt. Returns True once an execution attempt is handled so process_cycle
+    stops for that loop. Returns False when blocked before execution.
+    """
+    from config import settings as _mm_settings
+    from src.intrabar_micro_momentum_shadow import (
+        build_live_signal_data_from_shadow,
+    )
+
+    if not getattr(_mm_settings, "ENABLE_INTRABAR_MICRO_MOMENTUM_LIVE", False):
+        return False
+
+    if not isinstance(shadow_setup, dict):
+        return False
+
+    signal = str(shadow_setup.get("signal") or "").upper()
+    strategy_name = "INTRABAR_MICRO_MOMENTUM"
+    from src.micro_momentum_execution_reversal import resolve_micro_momentum_execution_signal
+    execution_reversal_enabled = bool(getattr(
+        _mm_settings, "ENABLE_MICRO_MOMENTUM_EXECUTION_REVERSAL", False
+    ))
+    execution_signal = resolve_micro_momentum_execution_signal(
+        signal, enabled=execution_reversal_enabled
+    )
+    if execution_signal is None:
+        logger.info(
+            "[MICRO MOMENTUM LIVE BLOCK] "
+            f"setup_id={shadow_setup.get('setup_id')} reason=invalid_signal signal={signal}"
+        )
+        return False
+    setup_id = shadow_setup.get("setup_id")
+    score = int(shadow_setup.get("score") or 0)
+    session_name = shadow_setup.get("session") or "UNKNOWN"
+    market_condition = shadow_setup.get("market_condition") or "UNKNOWN"
+
+    extra = (
+        shadow_setup.get("extra")
+        if isinstance(shadow_setup.get("extra"), dict)
+        else {}
+    )
+    strength = str(extra.get("strength") or "UNKNOWN").upper()
+
+    min_score = int(
+        getattr(_mm_settings, "MICRO_MOMENTUM_LIVE_MIN_SCORE", 88)
+    )
+    allowed_strengths = {
+        str(value).upper()
+        for value in getattr(
+            _mm_settings,
+            "MICRO_MOMENTUM_LIVE_ALLOWED_STRENGTHS",
+            ("WEAK_VALID", "NORMAL", "EXPLOSIVE"),
+        )
+    }
+
+    if score < min_score or strength not in allowed_strengths:
+        logger.info(
+            "[MICRO MOMENTUM LIVE BLOCK] "
+            f"setup_id={setup_id} score={score}/{min_score} "
+            f"strength={strength}"
+        )
+        return False
+
+    daily = extra.get("daily_level_context")
+    if not isinstance(daily, dict):
+        daily = {}
+
+    if (
+        getattr(
+            _mm_settings,
+            "MICRO_MOMENTUM_LIVE_REQUIRE_DAILY_ALIGNMENT",
+            False,
+        )
+        and daily.get("pivot_direction_aligned") is not True
+    ):
+        logger.info(
+            "[MICRO MOMENTUM LIVE BLOCK] "
+            f"setup_id={setup_id} reason=daily_alignment_required"
+        )
+        return False
+
+    live_tick = mt5.symbol_info_tick(SYMBOL)
+    if live_tick is None:
+        logger.warning(
+            "[MICRO MOMENTUM LIVE BLOCK] "
+            f"setup_id={setup_id} reason=no_fresh_tick"
+        )
+        return False
+
+    live_spread = float(live_tick.ask) - float(live_tick.bid)
+    micro_max_spread = float(
+        getattr(
+            _mm_settings,
+            "MICRO_MOMENTUM_SHADOW_MAX_SPREAD_PRICE",
+            0.20,
+        )
+    )
+    if live_spread > micro_max_spread:
+        logger.info(
+            "[MICRO MOMENTUM LIVE BLOCK] "
+            f"setup_id={setup_id} reason=micro_spread_too_wide "
+            f"spread={round(live_spread, 4)} "
+            f"max={round(micro_max_spread, 4)}"
+        )
+        return False
+
+    signal_data = build_live_signal_data_from_shadow(
+        shadow_setup,
+        live_tick,
+    )
+    if signal_data is None:
+        logger.info(
+            "[MICRO MOMENTUM LIVE BLOCK] "
+            f"setup_id={setup_id} reason=invalid_live_handoff"
+        )
+        return False
+
+    news_blocked, news_reason = is_news_blackout_active()
+    if news_blocked:
+        logger.info(
+            "[MICRO MOMENTUM LIVE BLOCK] "
+            f"setup_id={setup_id} reason=news_blackout detail={news_reason}"
+        )
+        return False
+
+    time_blocked, time_reason = is_trading_blackout_active()
+    if time_blocked:
+        logger.info(
+            "[MICRO MOMENTUM LIVE BLOCK] "
+            f"setup_id={setup_id} reason=time_blackout detail={time_reason}"
+        )
+        return False
+
+    trade_allowed, guard_reason = check_trade_guard(
+        execution_signal,
+        live_tick,
+        skip_cooldown=True,
+    )
+    if not trade_allowed:
+        logger.info(
+            "[MICRO MOMENTUM LIVE BLOCK] "
+            f"setup_id={setup_id} reason=trade_guard detail={guard_reason}"
+        )
+        return False
+
+    if bool(getattr(_mm_settings, "ENABLE_GLOBAL_DRAWDOWN_STOP", False)):
+        try:
+            drawdown_exceeded, floating_pnl = is_drawdown_exceeded(SYMBOL)
+        except Exception as exc:
+            logger.exception(
+                "[MICRO MOMENTUM LIVE BLOCK] "
+                f"setup_id={setup_id} reason=global_drawdown_check_failed "
+                f"error={exc}"
+            )
+            return False
+
+        if drawdown_exceeded:
+            logger.critical(
+                "[MICRO MOMENTUM LIVE BLOCK] "
+                f"setup_id={setup_id} reason=global_drawdown_stop "
+                f"floating_pnl={floating_pnl}"
+            )
+            return False
+
+    trade_plan = calculate_trade_plan(
+        df=df,
+        signal=signal,
+        tick=live_tick,
+        account_balance=account_info.balance,
+        signal_data=signal_data,
+    )
+
+    if trade_plan is None:
+        logger.info(
+            "[MICRO MOMENTUM LIVE BLOCK] "
+            f"setup_id={setup_id} reason=trade_plan_refused"
+        )
+        return False
+
+    trade_plan["setup_id"] = setup_id
+    trade_plan["strategy"] = strategy_name
+    trade_plan["entry_model"] = signal_data.get("entry_model")
+    trade_plan["score"] = score
+    trade_plan["session"] = session_name
+    trade_plan["market_condition"] = market_condition
+    trade_plan["reason"] = signal_data.get("reason")
+    trade_plan["execution_mode"] = "LIVE_INTRABAR_MICRO_MOMENTUM"
+    trade_plan["suppress_routine_telegram"] = True
+    trade_plan["strength"] = strength
+    trade_plan["execution_geometry_authority"] = strategy_name
+    trade_plan["micro_momentum_execution_sl_distance"] = round(
+        abs(
+            float(trade_plan["entry_price"])
+            - float(trade_plan["stop_loss"])
+        ),
+        6,
+    )
+    trade_plan["micro_momentum_execution_tp_distance"] = round(
+        abs(
+            float(trade_plan["take_profit"])
+            - float(trade_plan["entry_price"])
+        ),
+        6,
+    )
+
+    entry = float(trade_plan["entry_price"])
+    sl = float(trade_plan["stop_loss"])
+    tp = float(trade_plan["take_profit"])
+    risk_distance = abs(entry - sl)
+    reward_distance = abs(tp - entry)
+    rr_value = (
+        round(reward_distance / risk_distance, 4)
+        if risk_distance > 0
+        else None
+    )
+
+    min_rr_required = float(
+        getattr(_mm_settings, "MICRO_MOMENTUM_LIVE_MIN_RR", 1.50)
+    )
+
+    if (
+        rr_value is None
+        or rr_value < min_rr_required
+        or not is_rr_valid(trade_plan, min_rr=min_rr_required)
+    ):
+        logger.info(
+            "[MICRO MOMENTUM LIVE BLOCK] "
+            f"setup_id={setup_id} reason=low_rr "
+            f"rr={rr_value} required={min_rr_required}"
+        )
+        return False
+
+    if is_trade_blocked_by_execution_memory(
+        trade_plan=trade_plan,
+        signal_data=signal_data,
+        setup=None,
+        strategy_name=strategy_name,
+        signal=signal,
+    ):
+        save_execution_memory_report(
+            selected_signal_data=signal_data,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=score,
+            session_name=session_name,
+            market_condition=market_condition,
+            reason=signal_data.get("reason"),
+            trade_plan=trade_plan,
+            decision="MICRO_MOMENTUM_EXECUTION_BLOCKED_BY_MEMORY",
+            decision_reason="execution memory blocked micro-momentum impulse",
+            rr_value=rr_value,
+            required_rr=min_rr_required,
+        )
+        return False
+
+    # Original detector geometry/RR and execution memory are intentionally evaluated
+    # above. From here onward, local `signal` is the actual MT5 execution direction.
+    from src.micro_momentum_execution_reversal import apply_micro_momentum_execution_reversal
+
+    reversal_result = apply_micro_momentum_execution_reversal(
+        signal=signal,
+        trade_plan=trade_plan,
+        enabled=execution_reversal_enabled,
+    )
+    if reversal_result is None:
+        logger.warning(
+            "[MICRO MOMENTUM EXECUTION REVERSAL] blocked invalid geometry "
+            f"| setup_id={setup_id} signal={signal}"
+        )
+        return False
+
+    trade_plan = reversal_result["trade_plan"]
+    reversal_telemetry = dict(reversal_result["telemetry"])
+    signal_data.update(reversal_telemetry)
+    signal_data["micro_momentum_original_rr_gate_required"] = min_rr_required
+    signal_data["micro_momentum_original_rr_gate_passed"] = True
+    trade_plan["micro_momentum_original_rr_gate_required"] = min_rr_required
+    trade_plan["micro_momentum_original_rr_gate_passed"] = True
+    signal = reversal_result["execution_signal"]
+    rr_value = reversal_result["execution_rr"]
+
+    if execution_reversal_enabled:
+        logger.warning(
+            "[MICRO MOMENTUM EXECUTION REVERSAL] applied "
+            f"| setup_id={setup_id} "
+            f"original_signal={reversal_telemetry.get('micro_momentum_original_signal')} "
+            f"execution_signal={signal} "
+            f"original_entry={reversal_telemetry.get('micro_momentum_original_entry_price')} "
+            f"original_sl={reversal_telemetry.get('micro_momentum_original_stop_loss')} "
+            f"original_tp={reversal_telemetry.get('micro_momentum_original_take_profit')} "
+            f"execution_sl={trade_plan.get('stop_loss')} "
+            f"execution_tp={trade_plan.get('take_profit')} rr={rr_value}"
+        )
+
+
+    # Micro Momentum directional authority:
+    # reuse the already-active M15 setup direction lock used by legacy intrabars.
+    # Blocked impulses are audited but do not add Telegram noise.
+    try:
+        from config import settings as _micro_momentum_m15_settings
+        from src.micro_momentum_m15_direction_lock import (
+            evaluate_micro_momentum_m15_direction_lock,
+        )
+
+        micro_momentum_m15_guard = evaluate_micro_momentum_m15_direction_lock(
+            signal=signal,
+            lock_state=globals().get("PHASE6W_M15_DIRECTION_LOCK"),
+            enabled=bool(
+                getattr(
+                    _micro_momentum_m15_settings,
+                    "ENABLE_MICRO_MOMENTUM_M15_DIRECTION_LOCK_GUARD",
+                    True,
+                )
+            ),
+        )
+    except Exception as exc:
+        logger.warning(
+            "[MICRO MOMENTUM M15 LOCK] evaluation failed open "
+            f"| setup_id={setup_id} signal={signal} error={exc}"
+        )
+        micro_momentum_m15_guard = {
+            "allowed": True,
+            "reason": "evaluation_failed_open",
+            "active_lock": None,
+        }
+
+    if not micro_momentum_m15_guard.get("allowed", True):
+        active_m15_lock = micro_momentum_m15_guard.get("active_lock") or {}
+
+        logger.info(
+            "[MICRO MOMENTUM M15 LOCK] blocked opposite direction "
+            f"| setup_id={setup_id} signal={signal} "
+            f"m15_setup_id={active_m15_lock.get('setup_id')} "
+            f"m15_strategy={active_m15_lock.get('strategy')} "
+            f"m15_signal={active_m15_lock.get('signal')} "
+            f"m15_session={active_m15_lock.get('session')}"
+        )
+
+        try:
+            log_setup_event(
+                setup_id=setup_id,
+                event="MICRO_MOMENTUM_M15_DIRECTION_LOCK_BLOCKED",
+                strategy=strategy_name,
+                signal=signal,
+                entry_model=signal_data.get("entry_model"),
+                score=score,
+                session=session_name,
+                market_condition=market_condition,
+                entry=trade_plan.get("entry_price"),
+                sl=trade_plan.get("stop_loss"),
+                tp=trade_plan.get("take_profit"),
+                rr=rr_value,
+                required_rr=min_rr_required,
+                reason=(
+                    "micro-momentum impulse blocked because active M15 setup "
+                    "direction lock is opposite"
+                ),
+                extra={
+                    "strength": strength,
+                    "m15_lock": active_m15_lock,
+                    "guard_reason": micro_momentum_m15_guard.get("reason"),
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "[MICRO MOMENTUM M15 LOCK] setup audit failed "
+                f"| setup_id={setup_id} error={exc}"
+            )
+
+        try:
+            save_execution_memory_report(
+                selected_signal_data=signal_data,
+                strategy_name=strategy_name,
+                signal=signal,
+                score=score,
+                session_name=session_name,
+                market_condition=market_condition,
+                reason=signal_data.get("reason"),
+                trade_plan=trade_plan,
+                decision="MICRO_MOMENTUM_M15_DIRECTION_LOCK_BLOCKED",
+                decision_reason=(
+                    "active M15 setup direction lock is opposite to "
+                    "micro-momentum impulse"
+                ),
+                rr_value=rr_value,
+                required_rr=min_rr_required,
+                extra={
+                    "strength": strength,
+                    "m15_lock": active_m15_lock,
+                    "guard_reason": micro_momentum_m15_guard.get("reason"),
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "[MICRO MOMENTUM M15 LOCK] memory report failed "
+                f"| setup_id={setup_id} error={exc}"
+            )
+
+        return False
+
+    if (
+        micro_momentum_m15_guard.get("reason")
+        == "micro_momentum_aligned_with_m15_lock"
+    ):
+        active_m15_lock = micro_momentum_m15_guard.get("active_lock") or {}
+        trade_plan["m15_direction_lock_status"] = "ALIGNED"
+        trade_plan["m15_direction_lock_setup_id"] = active_m15_lock.get("setup_id")
+        trade_plan["m15_direction_lock_strategy"] = active_m15_lock.get("strategy")
+        trade_plan["m15_direction_lock_signal"] = active_m15_lock.get("signal")
+        trade_plan["m15_direction_lock_session"] = active_m15_lock.get("session")
+
+        signal_data["m15_direction_lock_status"] = "ALIGNED"
+        signal_data["m15_direction_lock_signal"] = active_m15_lock.get("signal")
+
+        logger.info(
+            "[MICRO MOMENTUM M15 LOCK] aligned "
+            f"| setup_id={setup_id} signal={signal} "
+            f"m15_setup_id={active_m15_lock.get('setup_id')} "
+            f"m15_signal={active_m15_lock.get('signal')}"
+        )
+
+    log_setup_event(
+        setup_id=setup_id,
+        event="MICRO_MOMENTUM_EXECUTION_ATTEMPT",
+        strategy=strategy_name,
+        signal=signal,
+        entry_model=signal_data.get("entry_model"),
+        score=score,
+        session=session_name,
+        market_condition=market_condition,
+        entry=trade_plan.get("entry_price"),
+        sl=trade_plan.get("stop_loss"),
+        tp=trade_plan.get("take_profit"),
+        rr=rr_value,
+        required_rr=min_rr_required,
+        reason=signal_data.get("reason"),
+        extra={
+            "strength": strength,
+            "daily_level_context": daily,
+            "fresh_execution": True,
+        },
+    )
+
+    save_execution_memory_report(
+        selected_signal_data=signal_data,
+        strategy_name=strategy_name,
+        signal=signal,
+        score=score,
+        session_name=session_name,
+        market_condition=market_condition,
+        reason=signal_data.get("reason"),
+        trade_plan=trade_plan,
+        decision="MICRO_MOMENTUM_EXECUTION_ATTEMPT",
+        decision_reason="sending micro-momentum order to MT5",
+        rr_value=rr_value,
+        required_rr=min_rr_required,
+        extra={
+            "strength": strength,
+            "daily_level_context": daily,
+        },
+    )
+
+    logger.warning(
+        "[MICRO MOMENTUM LIVE EXECUTE] "
+        f"setup_id={setup_id} signal={signal} "
+        f"entry={trade_plan.get('entry_price')} "
+        f"sl={trade_plan.get('stop_loss')} "
+        f"tp={trade_plan.get('take_profit')} "
+        f"lot={trade_plan.get('lot')} rr={rr_value} "
+        f"strength={strength}"
+    )
+
+    execution_result = execute_trade(signal, trade_plan, SYMBOL)
+
+    if execution_result:
+        try:
+            from src.low_mae_momentum_runner import (
+                register_low_mae_momentum_trade,
+            )
+
+            register_low_mae_momentum_trade(
+                symbol=SYMBOL,
+                setup_id=setup_id,
+                signal=signal,
+                fallback_risk_distance=risk_distance,
+                strength=strength,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[LOW MAE RUNNER] post-execution registration failed open "
+                f"| setup_id={setup_id} error={exc}"
+            )
+
+        save_execution_memory_report(
+            selected_signal_data=signal_data,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=score,
+            session_name=session_name,
+            market_condition=market_condition,
+            reason=signal_data.get("reason"),
+            trade_plan=trade_plan,
+            decision="MICRO_MOMENTUM_EXECUTION_SUCCESS",
+            decision_reason="micro-momentum MT5 order returned success",
+            rr_value=rr_value,
+            required_rr=min_rr_required,
+            execution_result=execution_result,
+            extra={
+                "strength": strength,
+                "daily_level_context": daily,
+            },
+        )
+
+        log_setup_event(
+            setup_id=setup_id,
+            event="MICRO_MOMENTUM_EXECUTION_SUCCESS",
+            strategy=strategy_name,
+            signal=signal,
+            entry_model=signal_data.get("entry_model"),
+            score=score,
+            session=session_name,
+            market_condition=market_condition,
+            entry=trade_plan.get("entry_price"),
+            sl=trade_plan.get("stop_loss"),
+            tp=trade_plan.get("take_profit"),
+            rr=rr_value,
+            required_rr=min_rr_required,
+            reason="Micro momentum live order executed",
+            extra={
+                "strength": strength,
+                "lot": trade_plan.get("lot"),
+                "daily_level_context": daily,
+            },
+        )
+
+        send_telegram_message(
+            f"⚡ Micro Momentum Executed #{setup_id}\n"
+            f"Symbol: {SYMBOL}\n"
+            f"Signal: {signal}\n"
+            f"Strength: {strength}\n"
+            f"Entry: {trade_plan.get('entry_price')}\n"
+            f"SL: {trade_plan.get('stop_loss')}\n"
+            f"TP: {trade_plan.get('take_profit')}\n"
+            f"Lot: {trade_plan.get('lot')}\n"
+            f"RR: {rr_value}"
+        )
+    else:
+        save_execution_memory_report(
+            selected_signal_data=signal_data,
+            strategy_name=strategy_name,
+            signal=signal,
+            score=score,
+            session_name=session_name,
+            market_condition=market_condition,
+            reason=signal_data.get("reason"),
+            trade_plan=trade_plan,
+            decision="MICRO_MOMENTUM_EXECUTION_FAILED",
+            decision_reason="micro-momentum execute_trade returned False",
+            rr_value=rr_value,
+            required_rr=min_rr_required,
+            execution_result=execution_result,
+            extra={
+                "strength": strength,
+                "daily_level_context": daily,
+            },
+        )
+
+        log_setup_event(
+            setup_id=setup_id,
+            event="MICRO_MOMENTUM_EXECUTION_FAILED",
+            strategy=strategy_name,
+            signal=signal,
+            entry_model=signal_data.get("entry_model"),
+            score=score,
+            session=session_name,
+            market_condition=market_condition,
+            entry=trade_plan.get("entry_price"),
+            sl=trade_plan.get("stop_loss"),
+            tp=trade_plan.get("take_profit"),
+            rr=rr_value,
+            required_rr=min_rr_required,
+            reason="Micro momentum execute_trade returned False",
+        )
+
+        send_telegram_message(
+            f"❌ Micro Momentum Execution Failed\n"
+            f"Setup ID: {setup_id}\n"
+            f"Signal: {signal}"
+        )
+
+    # One qualified impulse = one execution attempt.
+    return True
+
+
+
+def _observe_intrabar_optimization_fail_open(tick):
+    try:
+        from src.intrabar_optimization_recorder import (
+            observe_intrabar_open_positions,
+        )
+        observe_intrabar_open_positions(symbol=SYMBOL, tick=tick)
+    except Exception as exc:
+        logger.warning(
+            "[INTRABAR OPTIMIZATION] fast-lane observer failed open "
+            f"| error={exc}"
+        )
+
+
+def process_intrabar_micro_momentum_fast_lane_once():
+    """
+    One lightweight fast-lane poll.
+
+    Normal case: only fetch one MT5 tick and update the in-memory momentum tape.
+    Expensive market/account context is fetched only after a candidate qualifies.
+    """
+    from config import settings as _mm_settings
+    from src.intrabar_micro_momentum_shadow import (
+        detect_intrabar_micro_momentum_fast_tick,
+        finalize_intrabar_micro_momentum_candidate,
+    )
+
+    if not getattr(
+        _mm_settings,
+        "ENABLE_INTRABAR_MICRO_MOMENTUM_FAST_LANE",
+        False,
+    ):
+        return False
+
+    tick = mt5.symbol_info_tick(SYMBOL)
+    if tick is None:
+        return False
+
+    _observe_intrabar_optimization_fail_open(tick)
+
+    try:
+        from src.low_mae_momentum_runner import (
+            manage_low_mae_momentum_runners,
+        )
+
+        manage_low_mae_momentum_runners(
+            symbol=SYMBOL,
+            tick=tick,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[LOW MAE RUNNER] fast-lane management failed open "
+            f"| error={exc}"
+        )
+
+    candidate = detect_intrabar_micro_momentum_fast_tick(tick)
+    if candidate is None:
+        return False
+
+    # Only a qualified impulse pays the cost of fresh candle/account context.
+    df = fetch_market_data()
+    if df is None or len(df) < 2:
+        logger.warning(
+            "[MICRO MOMENTUM FAST] "
+            "qualified impulse dropped | reason=market_data_unavailable"
+        )
+        return False
+
+    account_info = mt5.account_info()
+    if account_info is None:
+        logger.warning(
+            "[MICRO MOMENTUM FAST] "
+            "qualified impulse dropped | reason=account_info_unavailable"
+        )
+        return False
+
+    current_candle_time = df.iloc[-1]["time"]
+
+    setup = finalize_intrabar_micro_momentum_candidate(
+        symbol=SYMBOL,
+        candidate=candidate,
+        df=df,
+        current_candle_time=current_candle_time,
+    )
+    if setup is None:
+        return False
+
+    if getattr(
+        _mm_settings,
+        "ENABLE_INTRABAR_MICRO_MOMENTUM_LIVE",
+        False,
+    ):
+        return bool(
+            process_intrabar_micro_momentum_live(
+                shadow_setup=setup,
+                df=df,
+                account_info=account_info,
+            )
+        )
+
+    return True
+
+
+
+
+def process_micro_momentum_breakeven_fast_lane_once():
+    from config import settings as _mm_be_settings
+    from src.micro_momentum_breakeven import (
+        manage_micro_momentum_breakeven,
+    )
+
+    if not bool(
+        getattr(
+            _mm_be_settings,
+            "ENABLE_MICRO_MOMENTUM_BREAKEVEN_PROTECTION",
+            True,
+        )
+    ):
+        return False
+
+    tick = mt5.symbol_info_tick(SYMBOL)
+    if tick is None:
+        return False
+
+    try:
+        events = manage_micro_momentum_breakeven(
+            symbol=SYMBOL,
+            tick=tick,
+        )
+        return bool(events)
+    except Exception as exc:
+        logger.warning(
+            "[MICRO MOMENTUM BE] fast-lane management failed open "
+            f"| error={exc}"
+        )
+        return False
+
+
+def _step_trail_research_context_fail_open(tick):
+    """
+    Observation-only Step-Trail context.
+
+    This helper must never block or alter Step-Trail eligibility,
+    risk, SL/TP, lot sizing, trail policy, or execution authority.
+    """
+    session_name = "UNKNOWN"
+    market_condition = "UNKNOWN"
+
+    try:
+        import pandas as pd
+        from src.session_engine import detect_session
+
+        tick_time = pd.to_datetime(
+            int(getattr(tick, "time", 0) or 0),
+            unit="s",
+        )
+        session_name = str(
+            detect_session(tick_time) or "UNKNOWN"
+        ).upper()
+    except Exception as exc:
+        logger.warning(
+            "[STEP TRAIL CONTEXT] session capture failed open "
+            f"| error={exc}"
+        )
+
+    try:
+        from src.market_condition import (
+            get_market_condition_display,
+        )
+
+        display = str(
+            get_market_condition_display() or ""
+        ).upper()
+
+        known_regimes = (
+            "PULLBACK_TREND",
+            "CONSOLIDATION",
+            "TRENDING",
+            "RANGING",
+            "VOLATILE",
+        )
+        for regime in known_regimes:
+            if regime in display:
+                market_condition = regime
+                break
+
+        if market_condition == "UNKNOWN" and display:
+            market_condition = display
+    except Exception as exc:
+        logger.warning(
+            "[STEP TRAIL CONTEXT] market regime capture failed open "
+            f"| error={exc}"
+        )
+
+    return session_name, market_condition
+
+
+def process_intrabar_step_trail_fast_lane_once():
+    """
+    One sibling poll for INTRABAR_STEP_TRAIL.
+
+    Entry authority is independent from Micro Momentum:
+    impulse -> controlled pullback -> resume.
+    """
+    from config import settings as _ist_settings
+    from src.intrabar_step_trail_detector import (
+        observe_intrabar_step_trail_tick,
+    )
+    from src.intrabar_step_trail_manager import (
+        build_runtime_step_trail_policy,
+        manage_intrabar_step_trail_positions,
+    )
+    from src.intrabar_step_trail_policy import build_initial_stop
+
+    shadow_enabled = bool(
+        getattr(
+            _ist_settings,
+            "ENABLE_INTRABAR_STEP_TRAIL_SHADOW",
+            False,
+        )
+    )
+    live_enabled = bool(
+        getattr(
+            _ist_settings,
+            "ENABLE_INTRABAR_STEP_TRAIL_LIVE",
+            False,
+        )
+    )
+
+    if not shadow_enabled and not live_enabled:
+        return False
+
+    tick = mt5.symbol_info_tick(SYMBOL)
+    if tick is None:
+        return False
+
+    _observe_intrabar_optimization_fail_open(tick)
+
+    try:
+        manage_intrabar_step_trail_positions(
+            symbol=SYMBOL,
+            tick=tick,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[STEP TRAIL MANAGER] fast-lane management failed open "
+            f"| error={exc}"
+        )
+
+    candidate = observe_intrabar_step_trail_tick(tick)
+    if candidate is None:
+        return False
+
+    (
+        step_trail_session,
+        step_trail_market_condition,
+    ) = _step_trail_research_context_fail_open(tick)
+
+    candidate["session"] = step_trail_session
+    candidate["market_condition"] = (
+        step_trail_market_condition
+    )
+
+    try:
+        from src.intrabar_optimization_recorder import (
+            register_intrabar_candidate_snapshot,
+        )
+        # Refresh the same setup_id after real session/regime
+        # enrichment. This remains telemetry-only.
+        register_intrabar_candidate_snapshot(candidate)
+    except Exception as exc:
+        logger.warning(
+            "[STEP TRAIL CONTEXT] optimizer refresh failed open "
+            f"| setup_id={candidate.get('setup_id')} error={exc}"
+        )
+
+    logger.info(
+        "[STEP TRAIL DETECTED] "
+        f"setup_id={candidate.get('setup_id')} "
+        f"signal={candidate.get('signal')} "
+        f"impulse={round(candidate.get('impulse', 0.0), 3)} "
+        f"pullback={round(candidate.get('pullback', 0.0), 3)} "
+        f"resume={round(candidate.get('resume', 0.0), 3)} "
+        f"spread={candidate.get('spread')}"
+    )
+
+    if not live_enabled:
+        return True
+
+    signal = str(candidate.get("signal") or "").upper()
+    if signal not in {"BUY", "SELL"}:
+        return False
+
+    live_tick = mt5.symbol_info_tick(SYMBOL)
+    if live_tick is None:
+        return False
+
+    trade_allowed, guard_reason = check_trade_guard(signal, live_tick)
+    if not trade_allowed:
+        logger.info(
+            "[STEP TRAIL LIVE BLOCK] "
+            f"setup_id={candidate.get('setup_id')} "
+            f"signal={signal} reason={guard_reason}"
+        )
+        return False
+
+    entry_price = (
+        float(live_tick.ask)
+        if signal == "BUY"
+        else float(live_tick.bid)
+    )
+
+    runtime_policy = build_runtime_step_trail_policy()
+    stop_loss = build_initial_stop(
+        signal=signal,
+        entry_price=entry_price,
+        policy=runtime_policy,
+    )
+
+    lot = float(
+        getattr(
+            _ist_settings,
+            "INTRABAR_STEP_TRAIL_FIXED_LOT",
+            0.25,
+        )
+    )
+
+    trade_plan = {
+        "signal": signal,
+        "entry_price": round(entry_price, 2),
+        "stop_loss": round(stop_loss, 2),
+        "take_profit": 0.0,
+        "lot": lot,
+        "strategy": "INTRABAR_STEP_TRAIL",
+        "setup_id": candidate.get("setup_id"),
+        "entry_model": candidate.get("entry_model"),
+        "risk_mode": "INTRABAR_STEP_TRAIL_NO_FIXED_TP",
+        "market_condition": step_trail_market_condition,
+        "session": step_trail_session,
+        "reason": candidate.get("reason"),
+        "rr": None,
+        "risk_reward": None,
+        "comment": "INTRABAR_STEP_TRAIL",
+        "intrabar_step_trail": True,
+    }
+
+    logger.warning(
+        "[STEP TRAIL LIVE EXECUTE] "
+        f"setup_id={candidate.get('setup_id')} signal={signal} "
+        f"entry={trade_plan['entry_price']} "
+        f"sl={trade_plan['stop_loss']} tp=NONE "
+        f"lot={trade_plan['lot']}"
+    )
+
+    execution_result = execute_trade(
+        signal,
+        trade_plan,
+        SYMBOL,
+    )
+
+    logger.info(
+        "[STEP TRAIL LIVE RESULT] "
+        f"setup_id={candidate.get('setup_id')} "
+        f"signal={signal} result={execution_result}"
+    )
+
+    return bool(execution_result)
+
+
+def run_intrabar_micro_momentum_fast_lane_wait(wait_seconds=10.0):
+    """
+    Replace the old passive 10-second sleep with a momentum-only polling lane.
+
+    The full bot cycle still runs at the same cadence. During the wait between
+    full cycles, only fresh MT5 tick sampling / momentum qualification runs.
+    """
+    from config import settings as _mm_settings
+
+    wait_seconds = max(0.0, float(wait_seconds))
+
+    _micro_momentum_lane_enabled = bool(
+        getattr(
+            _mm_settings,
+            "ENABLE_INTRABAR_MICRO_MOMENTUM_FAST_LANE",
+            False,
+        )
+    )
+    _step_trail_lane_enabled = bool(
+        getattr(
+            _mm_settings,
+            "ENABLE_INTRABAR_STEP_TRAIL_SHADOW",
+            False,
+        )
+        or getattr(
+            _mm_settings,
+            "ENABLE_INTRABAR_STEP_TRAIL_LIVE",
+            False,
+        )
+    )
+    _micro_be_lane_enabled = bool(
+        getattr(
+            _mm_settings,
+            "ENABLE_MICRO_MOMENTUM_BREAKEVEN_PROTECTION",
+            True,
+        )
+    )
+
+    if not (
+        _micro_momentum_lane_enabled
+        or _step_trail_lane_enabled
+        or _micro_be_lane_enabled
+    ):
+        time.sleep(wait_seconds)
+        return
+
+    _micro_poll_seconds = float(
+        getattr(
+            _mm_settings,
+            "MICRO_MOMENTUM_FAST_LANE_POLL_SECONDS",
+            0.25,
+        )
+    )
+    _step_poll_seconds = float(
+        getattr(
+            _mm_settings,
+            "INTRABAR_STEP_TRAIL_POLL_SECONDS",
+            0.25,
+        )
+    )
+    _micro_be_poll_seconds = float(
+        getattr(
+            _mm_settings,
+            "MICRO_MOMENTUM_BREAKEVEN_POLL_SECONDS",
+            0.25,
+        )
+    )
+    _active_poll_seconds = []
+    if _micro_momentum_lane_enabled:
+        _active_poll_seconds.append(_micro_poll_seconds)
+    if _step_trail_lane_enabled:
+        _active_poll_seconds.append(_step_poll_seconds)
+    if _micro_be_lane_enabled:
+        _active_poll_seconds.append(_micro_be_poll_seconds)
+    poll_seconds = max(
+        0.05,
+        min(_active_poll_seconds or [0.25]),
+    )
+
+    deadline = time.monotonic() + wait_seconds
+
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+
+        try:
+            process_intrabar_micro_momentum_fast_lane_once()
+            process_micro_momentum_breakeven_fast_lane_once()
+            process_intrabar_step_trail_fast_lane_once()
+        except Exception as exc:
+            logger.exception(
+                "[MICRO MOMENTUM FAST] lane iteration failed "
+                f"| error={exc}"
+            )
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+
+        time.sleep(min(poll_seconds, remaining))
+
+
 def process_cycle(last_processed_candle_time):
     global last_signal, reversal_count
 
@@ -14254,6 +15637,57 @@ def process_cycle(last_processed_candle_time):
             session_name="PENDING",
         ):
             return current_candle_time
+
+    # =========================
+    # INTRABAR MICRO MOMENTUM SHADOW V1
+    # Runs every loop before the M15 gate.
+    # OBSERVATION ONLY: no orders, no blocking, no risk authority.
+    # =========================
+    try:
+        from config import settings as _micro_momentum_settings
+
+        if (
+            getattr(
+                _micro_momentum_settings,
+                "ENABLE_INTRABAR_MICRO_MOMENTUM_SHADOW",
+                False,
+            )
+            and not getattr(
+                _micro_momentum_settings,
+                "ENABLE_INTRABAR_MICRO_MOMENTUM_FAST_LANE",
+                False,
+            )
+        ):
+            from src.intrabar_micro_momentum_shadow import (
+                observe_intrabar_micro_momentum_shadow,
+            )
+
+            micro_momentum_setup = observe_intrabar_micro_momentum_shadow(
+                symbol=SYMBOL,
+                tick=tick,
+                df=df,
+                current_candle_time=current_candle_time,
+            )
+
+            if (
+                micro_momentum_setup
+                and getattr(
+                    _micro_momentum_settings,
+                    "ENABLE_INTRABAR_MICRO_MOMENTUM_LIVE",
+                    False,
+                )
+                and process_intrabar_micro_momentum_live(
+                    shadow_setup=micro_momentum_setup,
+                    df=df,
+                    account_info=account_info,
+                )
+            ):
+                return current_candle_time
+    except Exception as exc:
+        logger.warning(
+            "[MICRO MOMENTUM SHADOW] observer failed open "
+            f"| error={exc}"
+        )
 
     # =========================
     # SETUP OUTCOME TRACKER
@@ -16133,15 +17567,13 @@ def process_cycle(last_processed_candle_time):
                     ENABLE_CANDIDATE_REJECTION_TELEGRAM_ALERTS
                     and TELEGRAM_NOTIFY_GENERIC_CANDIDATE_REJECTED
                 ):
-                    rejected_participation_block = (
-                        _market_participation_telegram_block_fail_open(
-                            signal=(
-                                candidate.get(
-                                    "signal"
-                                )
-                            ),
-                            tick=tick,
-                        )
+                    (
+                        _generic_rejected_context,
+                        rejected_rithmic_block,
+                        rejected_participation_block,
+                    ) = _directional_alert_context_blocks_fail_open(
+                        signal=candidate.get("signal"),
+                        tick=tick,
                     )
 
                     rejected_message = (
@@ -16163,6 +17595,13 @@ def process_cycle(last_processed_candle_time):
                         f"Score: {candidate.get('score')}\n\n"
                         f"Reason: {rejection_reason}"
                     )
+
+                    if rejected_rithmic_block:
+                        rejected_message = (
+                            rejected_rithmic_block
+                            + "\n--------------------------------\n\n"
+                            + rejected_message
+                        )
 
                     if rejected_participation_block:
                         rejected_message += (
@@ -16356,11 +17795,13 @@ def process_cycle(last_processed_candle_time):
                     ENABLE_CANDIDATE_REJECTION_TELEGRAM_ALERTS
                     and TELEGRAM_NOTIFY_CANDIDATE_REJECTED_LOW_RR
                 ):
-                    low_rr_participation_block = (
-                        _market_participation_telegram_block_fail_open(
-                            signal=candidate_signal,
-                            tick=tick,
-                        )
+                    (
+                        _low_rr_alert_context,
+                        low_rr_rithmic_block,
+                        low_rr_participation_block,
+                    ) = _directional_alert_context_blocks_fail_open(
+                        signal=candidate_signal,
+                        tick=tick,
                     )
 
                     low_rr_message = (
@@ -16402,6 +17843,13 @@ def process_cycle(last_processed_candle_time):
                             required_rr=min_rr_required,
                         )
                     )
+
+                    if low_rr_rithmic_block:
+                        low_rr_message = (
+                            low_rr_rithmic_block
+                            + "\n--------------------------------\n\n"
+                            + low_rr_message
+                        )
 
                     if low_rr_entry_tp_block:
                         low_rr_message += (
@@ -16740,6 +18188,7 @@ def process_cycle(last_processed_candle_time):
                     strategy_name,
                     selected_signal_data,
                     close_price,
+                    selected_signal_data.get("fcr_runtime_entry"),
                 )
 
                 detected_data = {
@@ -18503,6 +19952,7 @@ def process_cycle(last_processed_candle_time):
         from src.fcr_runtime_guard import (
             validate_fcr_runtime_geometry,
         )
+        from config import settings as _fcr_settings
 
         fresh_fcr_tick = mt5.symbol_info_tick(SYMBOL)
 
@@ -18535,6 +19985,11 @@ def process_cycle(last_processed_candle_time):
                 trade_plan=trade_plan,
                 executable_price=fcr_executable_price,
                 min_rr_required=min_rr_required,
+                max_chase_r=getattr(
+                    _fcr_settings,
+                    "FCR_M1_FVG_RUNTIME_MAX_CHASE_R",
+                    0.50,
+                ),
             )
 
         selected_signal_data["fcr_runtime_geometry"] = {
@@ -20117,7 +21572,7 @@ def main():
                 send_critical_alert(str(e))
                 time.sleep(5)  # prevent CPU/log spam
 
-            time.sleep(10)
+            run_intrabar_micro_momentum_fast_lane_wait(10.0)
 
     except KeyboardInterrupt:
         logger.info("🛑 Bot stopped manually")
