@@ -1396,6 +1396,67 @@ def _rithmic_setup_verdict_telegram_fail_open(
         )
 
 
+def _directional_alert_context_blocks_fail_open(
+    *,
+    signal,
+    tick=None,
+    context=None,
+):
+    """
+    Display-only helper for directional setup/candidate Telegram forms.
+
+    Rithmic remains observe-only and cannot change candidate state,
+    score, RR, entry, SL, TP, risk, confirmation, or execution.
+    """
+
+    resolved_context = (
+        context
+        if isinstance(context, dict)
+        else None
+    )
+
+    if resolved_context is None:
+        try:
+            resolved_context = (
+                _capture_market_participation_context(
+                    signal=signal,
+                    symbol=SYMBOL,
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "[DIRECTIONAL ALERT CONTEXT] "
+                f"capture failed open: {exc}"
+            )
+            resolved_context = None
+
+    direction = str(signal or "").upper()
+
+    rithmic_block = ""
+
+    if direction in {"BUY", "SELL"}:
+        _, rithmic_block = (
+            _rithmic_setup_verdict_telegram_fail_open(
+                signal=direction,
+                context=resolved_context,
+            )
+        )
+
+    participation_block = (
+        _market_participation_telegram_block_fail_open(
+            signal=signal,
+            tick=tick,
+            context=resolved_context,
+        )
+    )
+
+    return (
+        resolved_context,
+        rithmic_block,
+        participation_block,
+    )
+
+
 def _notify_market_participation_high_impact_fail_open(
     *,
     context,
@@ -6371,11 +6432,13 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
             ENABLE_CANDIDATE_REJECTION_TELEGRAM_ALERTS
             and TELEGRAM_NOTIFY_CANDIDATE_REJECTED_LOW_RR
         ):
-            intrabar_participation_block = (
-                _market_participation_telegram_block_fail_open(
-                    signal=signal,
-                    tick=tick,
-                )
+            (
+                _intrabar_alert_context,
+                intrabar_rithmic_block,
+                intrabar_participation_block,
+            ) = _directional_alert_context_blocks_fail_open(
+                signal=signal,
+                tick=tick,
             )
 
             intrabar_rejected_message = (
@@ -6433,6 +6496,13 @@ def process_intrabar_price_event_detector(df, tick, account_info, session_name, 
                     required_rr=required_rr,
                 )
             )
+
+            if intrabar_rithmic_block:
+                intrabar_rejected_message = (
+                    intrabar_rithmic_block
+                    + "\n--------------------------------\n\n"
+                    + intrabar_rejected_message
+                )
 
             if intrabar_entry_tp_block:
                 intrabar_rejected_message += (
