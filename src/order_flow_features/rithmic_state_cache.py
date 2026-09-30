@@ -302,14 +302,27 @@ class RithmicRollingStateCache:
             self.order_book_ask_levels = []
             self.order_book_truncation_count = 0
 
+        elif update_type_name == "SNAPSHOT_IMAGE":
+            # A SNAPSHOT_IMAGE is a complete replacement image, not an
+            # incremental delta. Rebuild both sides from the image so stale
+            # levels from a prior subscription/reconnect cannot survive.
+            self.order_book_bid_levels = self._merge_order_book_side(
+                [],
+                clean_bid_levels,
+                side="bid",
+            )
+            self.order_book_ask_levels = self._merge_order_book_side(
+                [],
+                clean_ask_levels,
+                side="ask",
+            )
+
         else:
             has_bid_update = bool(presence_bits & 1) or bool(clean_bid_levels)
             has_ask_update = bool(presence_bits & 2) or bool(clean_ask_levels)
 
-            # Important:
-            # Rithmic OrderBook messages can be partial/incremental.
-            # Do not replace both sides with every message.
-            # Merge only the side that appears in this message.
+            # Rithmic SOLO updates are incremental one-side/price deltas.
+            # Merge only the side represented by this event.
             if has_bid_update:
                 self.order_book_bid_levels = self._merge_order_book_side(
                     self.order_book_bid_levels,
