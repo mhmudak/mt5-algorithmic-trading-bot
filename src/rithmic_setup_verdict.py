@@ -633,11 +633,172 @@ def build_rithmic_setup_verdict(
         return result
 
     if not bool(rithmic.get("available")):
-        result["reason"] = _safe_text(
+        unavailable_status = _safe_text(
             rithmic.get("status"),
             "rithmic_snapshot_unavailable",
         )
-        result["alignment"] = "NOT_AVAILABLE_RITHMIC_SNAPSHOT"
+
+        # LOW_SAMPLE remains unavailable to V2. However, the
+        # already-present raw Rithmic metrics may still be shown
+        # through the legacy V1 SHADOW benchmark when every
+        # source freshness flag is explicitly healthy.
+        #
+        # This does NOT change provider availability, V2 verdict
+        # eligibility, numeric-shadow eligibility, or execution.
+        if (
+            unavailable_status.upper()
+            == "LOW_SAMPLE_OBSERVATION_ONLY"
+        ):
+            low_sample_fresh_flags = {
+                "snapshot_fresh": freshness.get(
+                    "snapshot_fresh"
+                ),
+                "has_fresh_trade": freshness.get(
+                    "has_fresh_trade"
+                ),
+                "has_fresh_bbo": freshness.get(
+                    "has_fresh_bbo"
+                ),
+                "has_fresh_order_book": freshness.get(
+                    "has_fresh_order_book"
+                ),
+            }
+
+            low_sample_v1_metrics = {
+                "delta": _safe_float(
+                    metrics.get("delta")
+                ),
+                "cumulative_delta": _safe_float(
+                    metrics.get("cumulative_delta")
+                ),
+                "dom_depth_imbalance": _safe_float(
+                    metrics.get(
+                        "dom_depth_imbalance"
+                    )
+                ),
+                "dom_bid_depth": _safe_float(
+                    metrics.get("dom_bid_depth")
+                ),
+                "dom_ask_depth": _safe_float(
+                    metrics.get("dom_ask_depth")
+                ),
+            }
+
+            low_sample_v1_usable = bool(
+                freshness
+                and all(
+                    value is True
+                    for value
+                    in low_sample_fresh_flags.values()
+                )
+                and all(
+                    value is not None
+                    for value
+                    in low_sample_v1_metrics.values()
+                )
+                and low_sample_v1_metrics[
+                    "dom_bid_depth"
+                ] > 0
+                and low_sample_v1_metrics[
+                    "dom_ask_depth"
+                ] > 0
+            )
+
+            if low_sample_v1_usable:
+                trade_count = _safe_float(
+                    metrics.get("trade_count")
+                )
+                bbo_count = _safe_float(
+                    metrics.get("bbo_count")
+                )
+                nonzero_bbo_count = _safe_float(
+                    metrics.get("nonzero_bbo_count")
+                )
+                order_book_count = _safe_float(
+                    metrics.get("order_book_count")
+                )
+
+                result["trade_count"] = (
+                    int(trade_count)
+                    if trade_count is not None
+                    else None
+                )
+                result["bbo_count"] = (
+                    int(bbo_count)
+                    if bbo_count is not None
+                    else None
+                )
+                result["nonzero_bbo_count"] = (
+                    int(nonzero_bbo_count)
+                    if nonzero_bbo_count is not None
+                    else None
+                )
+                result["order_book_count"] = (
+                    int(order_book_count)
+                    if order_book_count is not None
+                    else None
+                )
+
+                (
+                    legacy_v1_support,
+                    legacy_v1_against,
+                    legacy_v1_evidence,
+                ) = score_rithmic_setup_alignment_for_direction(
+                    direction,
+                    metrics,
+                )
+
+                result["legacy_v1_evaluated"] = True
+                result[
+                    "legacy_v1_support_score"
+                ] = legacy_v1_support
+                result[
+                    "legacy_v1_against_score"
+                ] = legacy_v1_against
+                result["legacy_v1_evidence"] = (
+                    legacy_v1_evidence[:12]
+                )
+
+                if (
+                    legacy_v1_support
+                    >= RITHMIC_SETUP_MIN_DECISIVE_SCORE
+                    and legacy_v1_support
+                    > legacy_v1_against
+                ):
+                    result["legacy_v1_alignment"] = (
+                        f"SUPPORTS_{direction}"
+                    )
+
+                elif (
+                    legacy_v1_against
+                    >= RITHMIC_SETUP_MIN_DECISIVE_SCORE
+                    and legacy_v1_against
+                    > legacy_v1_support
+                ):
+                    result["legacy_v1_alignment"] = (
+                        f"AGAINST_{direction}"
+                    )
+
+                elif (
+                    legacy_v1_support == 0
+                    and legacy_v1_against == 0
+                ):
+                    result["legacy_v1_alignment"] = (
+                        "NEUTRAL_INSUFFICIENT_"
+                        "RITHMIC_EVIDENCE"
+                    )
+
+                else:
+                    result["legacy_v1_alignment"] = (
+                        "NEUTRAL_OR_MIXED_"
+                        "RITHMIC_EVIDENCE"
+                    )
+
+        # Preserve the original V2 unavailable contract.
+        result["reason"] = unavailable_status
+        result["alignment"] = (
+            "NOT_AVAILABLE_RITHMIC_SNAPSHOT"
+        )
         return result
 
     # Source freshness is authoritative. The participation-cache timestamp only
@@ -1213,7 +1374,7 @@ def format_rithmic_setup_verdict_telegram_block(
         lines.extend(
             [
                 "",
-                "V1 LEGACY — SHADOW ONLY",
+                "\U0001F9EA V1 LEGACY \u2014 SHADOW ONLY",
                 (
                     f"Trades {trades_label} | "
                     f"Δ {_format_signed(metrics.get('delta'))} | "
@@ -1221,7 +1382,7 @@ def format_rithmic_setup_verdict_telegram_block(
                     f"DOM {_format_signed(metrics.get('dom_depth_imbalance'))}"
                 ),
                 (
-                    f"Evidence: {v1_support} SUPPORT / "
+                    f"\U0001F4CA Evidence: {v1_support} SUPPORT / "
                     f"{v1_against} AGAINST"
                 ),
             ]
